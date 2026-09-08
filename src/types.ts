@@ -1,16 +1,29 @@
 export type UserRole = 'admin' | 'manager' | 'staff';
 
-export interface AppUser {
+/**
+ * User Model (matches Python Flask / Django: id, staff_id, name, role)
+ * class User(db.Model):
+ *     id = db.Column(db.Integer, primary_key=True)
+ *     staff_id = db.Column(db.String(20), unique=True) # e.g. HK-001
+ *     name = db.Column(db.String(100))
+ *     role = db.Column(db.String(20), default='staff') # 'staff' OR 'admin'
+ */
+export interface User {
   id: number;
-  username: string;
+  staff_id: string; // e.g. 'HK-001' (unique)
   name: string;
-  role: UserRole;
+  role: UserRole; // 'staff' | 'admin' | 'manager' (default: 'staff')
   password?: string;
-  is_approved?: boolean; // Security Check for Self-Signup
-  assigned_area?: string; // Default: 'Unassigned'
-  staffId?: number;
+  password_hash?: string;
+  assigned_area?: string; // default: 'General Ward'
   department?: string;
   shift?: 'Morning' | 'Evening' | 'Night';
+  is_approved?: boolean;
+}
+
+export interface AppUser extends User {
+  username: string; // alias for staff_id / login handle
+  staffId?: number;
 }
 
 export interface FlashMessage {
@@ -31,15 +44,35 @@ export interface StaffUser {
   active: boolean;
 }
 
+export interface AttendanceSession {
+  id: string;
+  staff_id: number | string; // staff ID or userId
+  date: string; // YYYY-MM-DD
+  punch_in: string; // ISO timestamp or HH:mm
+  punch_out: string | null; // ISO timestamp or HH:mm
+  notes?: string;
+}
+
+export interface DailyAttendanceCalculation {
+  regular_hours: number;
+  overtime_hours: number;
+  total_sessions: number;
+  total_hours?: number;
+  total_minutes_worked?: number;
+}
+
 export interface AttendanceRecord {
   id: string;
   userId: number;
   date: string; // YYYY-MM-DD
   punchIn: string | null; // HH:mm
   punchOut: string | null; // HH:mm
+  punchInTimestamp?: string | null; // ISO string for exact ms calculation
+  punchOutTimestamp?: string | null; // ISO string for exact ms calculation
   regularHours: number;
   otHours: number;
-  status: 'Present' | 'Absent' | 'Half Day' | 'On Leave' | 'Weekly Off';
+  sessions?: AttendanceSession[]; // Multiple punch sessions per day
+  status: 'Present' | 'Absent' | 'Half Day' | 'On Leave' | 'Weekly Off' | 'Duty Completed';
   notes?: string;
 }
 

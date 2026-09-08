@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LogIn,
   LogOut,
@@ -10,9 +10,12 @@ import {
   ChevronDown,
   ArrowLeft,
   Sparkles,
-  ShieldAlert
+  ShieldAlert,
+  Layers,
+  History,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, AppUser } from '../types';
+import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession } from '../types';
+import { calculateDailyAttendance, getSessionDurationInMinutes } from '../utils/attendanceCalculator';
 
 interface StaffPunchPortalProps {
   staff: StaffUser[];
@@ -65,7 +68,16 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   const formatTime12h = (timeStr: string) => {
     if (!timeStr) return '--:--';
     if (timeStr.includes('AM') || timeStr.includes('PM')) return timeStr;
-    const [h, m] = timeStr.split(':').map(Number);
+    if (timeStr.includes('T') || (timeStr.includes('-') && timeStr.includes(':'))) {
+      const d = new Date(timeStr);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+      }
+    }
+    const parts = timeStr.split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return timeStr;
     const period = h >= 12 ? 'PM' : 'AM';
     const hour12 = h % 12 === 0 ? 12 : h % 12;
     return `${hour12.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} ${period}`;
@@ -93,8 +105,11 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     active: true,
   };
 
-  // Formatted Staff ID HK-%03d and assigned area matching {{ current_user.assigned_area or 'General' }}
-  const formattedStaffId = `HK-${String(activeStaff.id).padStart(3, '0')}`;
+  // Formatted Staff ID from User model staff_id or staffCode HK-%03d
+  const formattedStaffId =
+    (isStaffLoggedIn && currentUser?.staff_id)
+      ? currentUser.staff_id
+      : (activeStaff.staffCode || `HK-${String(activeStaff.id).padStart(3, '0')}`);
   const assignedArea = activeStaff.department || currentUser?.department || 'General';
 
   // Find attendance record for selected staff & selected date
@@ -107,111 +122,244 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   const regularHours = todayRecord?.regularHours ?? (punchInTime ? 8.0 : 0);
   const otHours = todayRecord?.otHours ?? (punchInTime && punchOutTime ? 1.5 : 0);
 
-  // Handle Punch In / Punch Out (/staff/punch_action)
-  const handlePunch = (actionType: 'in' | 'out') => {
-    const nowTimeStr = getCurrent24hTime();
-    const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
-
-    if (actionType === 'in') {
-      // Route logic: if not attendance (or not punch_in)
-      if (!todayRecord || !todayRecord.punchIn) {
-        const newPunchIn = nowTimeStr;
-        const updatedRecord: AttendanceRecord = {
-          id: recordId,
-          userId: activeStaff.id,
-          date: selectedDate,
-          punchIn: newPunchIn,
-          punchOut: null,
-          regularHours: 0.0,
-          otHours: 0.0,
-          status: 'Present',
-          notes: todayRecord?.notes || assignedArea,
-        };
-
-        onSaveRecord(updatedRecord);
-        const msg = 'Punch In safaltapurvak ho gaya hai!';
-        if (onFlash) onFlash(msg, 'success');
-        setFeedbackMessage({
-          type: 'success',
-          text: msg,
-        });
-      } else {
-        // flash("Aap pehle se Punch In kar chuke hain.", "warning")
-        const warnMsg = 'Aap pehle se Punch In kar chuke hain.';
-        if (onFlash) onFlash(warnMsg, 'warning');
-        setFeedbackMessage({
-          type: 'warning',
-          text: warnMsg,
-        });
-      }
-    } else if (actionType === 'out') {
-      // Route logic: if attendance and attendance.punch_in and not attendance.punch_out:
-      if (todayRecord && todayRecord.punchIn && !todayRecord.punchOut) {
-        const effectiveIn = todayRecord.punchIn;
-        const effectiveOut = nowTimeStr;
-
-        // Hours Calculation Logic: delta = attendance.punch_out - attendance.punch_in
-        const [inH, inM] = effectiveIn.split(':').map(Number);
-        const [outH, outM] = effectiveOut.split(':').map(Number);
-        let diffHours = (outH + outM / 60) - (inH + inM / 60);
-        if (diffHours < 0) diffHours += 24; // Cross-midnight shifts
-
-        // If punched out immediately within same minute during testing/demo, simulate realistic standard duty
-        if (diffHours <= 0.05) {
-          diffHours = 9.5; // 8.0 hrs regular + 1.5 hrs OT
-        }
-
-        const totalHours = diffHours;
-        let regHours: number;
-        let otHoursCalculated: number;
-
-        // Standard 8 Hours Limit
-        if (totalHours > 8.0) {
-          regHours = 8.0;
-          otHoursCalculated = Math.round((totalHours - 8.0) * 100) / 100;
-        } else {
-          regHours = Math.round(totalHours * 100) / 100;
-          otHoursCalculated = 0.0;
-        }
-
-        const updatedRecord: AttendanceRecord = {
-          id: recordId,
-          userId: activeStaff.id,
-          date: selectedDate,
-          punchIn: effectiveIn,
-          punchOut: effectiveOut,
-          regularHours: regHours,
-          otHours: otHoursCalculated,
-          status: 'Present',
-          notes: todayRecord?.notes || assignedArea,
-        };
-
-        onSaveRecord(updatedRecord);
-        const infoMsg = 'Punch Out safaltapurvak ho gaya hai!';
-        if (onFlash) onFlash(infoMsg, 'info');
-        setFeedbackMessage({
-          type: 'info',
-          text: infoMsg,
-        });
-      } else {
-        // flash("Pehle Punch In karna aavashyak hai.", "danger")
-        const dangerMsg = 'Pehle Punch In karna aavashyak hai.';
-        if (onFlash) onFlash(dangerMsg, 'danger');
-        setFeedbackMessage({
-          type: 'warning',
-          text: dangerMsg,
-        });
-      }
+  // Global/State Variables for exact real-time punch timestamp tracking
+  const punchInTimestampRef = useRef<Date | null>(null);
+  const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+  const [punchInTimestamp, setPunchInTimestamp] = useState<Date | null>(() => {
+    if (todayRecord?.punchInTimestamp) {
+      return new Date(todayRecord.punchInTimestamp);
     }
+    if (todayRecord?.punchIn) {
+      const [h, m] = todayRecord.punchIn.split(':').map(Number);
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      return d;
+    }
+    return null;
+  });
 
-    // Clear feedback after 4.5 seconds
-    setTimeout(() => {
-      setFeedbackMessage(null);
-    }, 4500);
+  // Sync punchInTimestamp with todayRecord updates
+  useEffect(() => {
+    if (todayRecord?.punchInTimestamp) {
+      const d = new Date(todayRecord.punchInTimestamp);
+      punchInTimestampRef.current = d;
+      setPunchInTimestamp(d);
+    } else if (todayRecord?.punchIn) {
+      const [h, m] = todayRecord.punchIn.split(':').map(Number);
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      punchInTimestampRef.current = d;
+      setPunchInTimestamp(d);
+    } else {
+      punchInTimestampRef.current = null;
+      setPunchInTimestamp(null);
+    }
+  }, [todayRecord?.punchIn, todayRecord?.punchInTimestamp, selectedDate, activeStaff.id]);
+
+  // 3. BACKEND API SYNC
+  const syncPunchWithBackend = (
+    action: 'IN' | 'OUT',
+    timestamp: Date,
+    reg: string | number = 0,
+    ot: string | number = 0
+  ) => {
+    try {
+      fetch('/api/attendance/punch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action_type: action,
+          timestamp: timestamp.toISOString(),
+          regular_hours: parseFloat(String(reg)),
+          overtime_hours: parseFloat(String(ot)),
+        }),
+      })
+        .then((response) => {
+          if (!response.ok) {
+            return { message: `Backend punch responded with status ${response.status}` };
+          }
+          return response.json().catch(() => ({ message: 'Punch synced' }));
+        })
+        .then((data) => {
+          if (data?.message) {
+            console.log('Sync Status:', data.message);
+          }
+        })
+        .catch((error) => console.warn('Sync notice:', error));
+    } catch (err) {
+      console.warn('Network sync notice:', err);
+    }
   };
 
-  // Reset punch for testing/demo
+  // 1. PUNCH IN FUNCTION
+  const handlePunchIn = () => {
+    const timestamp = new Date(); // Captures exact real-time Punch In
+    punchInTimestampRef.current = timestamp;
+    setPunchInTimestamp(timestamp);
+
+    const formattedTime = timestamp.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const hours = timestamp.getHours().toString().padStart(2, '0');
+    const minutes = timestamp.getMinutes().toString().padStart(2, '0');
+    const time24h = `${hours}:${minutes}`;
+
+    // UI Updates
+    const dutyStatusTextEl = document.getElementById('dutyStatusText');
+    if (dutyStatusTextEl) {
+      dutyStatusTextEl.innerHTML = `<span class="text-success fw-bold text-[#198754] font-bold">Punched In (${formattedTime})</span>`;
+    }
+
+    // Toggle Buttons
+    const inBtn = document.getElementById('punchInBtn');
+    if (inBtn) inBtn.classList.add('d-none');
+    const outBtn = document.getElementById('punchOutBtn');
+    if (outBtn) outBtn.classList.remove('d-none');
+
+    // Update Attendance State
+    const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
+    const updatedRecord: AttendanceRecord = {
+      id: recordId,
+      userId: activeStaff.id,
+      date: selectedDate,
+      punchIn: time24h,
+      punchOut: null,
+      punchInTimestamp: timestamp.toISOString(),
+      punchOutTimestamp: null,
+      regularHours: todayRecord?.regularHours || 0.0,
+      otHours: todayRecord?.otHours || 0.0,
+      sessions: todayRecord?.sessions || [],
+      status: 'Present',
+      notes: todayRecord?.notes || assignedArea,
+    };
+    onSaveRecord(updatedRecord);
+
+    // Backend API Call
+    syncPunchWithBackend('IN', timestamp);
+
+    const msg = `Punch In safaltapurvak ho gaya (${formattedTime})!`;
+    if (onFlash) onFlash(msg, 'success');
+    setFeedbackMessage({ type: 'success', text: msg });
+    setTimeout(() => setFeedbackMessage(null), 4500);
+  };
+
+  // 2. PUNCH OUT & REAL-TIME HOURS CALCULATION
+  const handlePunchOut = () => {
+    const effectiveInTimestamp =
+      punchInTimestampRef.current ||
+      punchInTimestamp ||
+      (todayRecord?.punchInTimestamp ? new Date(todayRecord.punchInTimestamp) : null) ||
+      (todayRecord?.punchIn ? new Date() : null);
+
+    if (!effectiveInTimestamp) {
+      const errMsg = 'Error: Punch In time record nahi mila!';
+      setFeedbackMessage({ type: 'warning', text: errMsg });
+      if (onFlash) onFlash(errMsg, 'danger');
+      return;
+    }
+
+    const punchOutTimestamp = new Date(); // Captures exact Punch Out
+    const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
+
+    // Create session record for multi-session support
+    const currentSession: AttendanceSession = {
+      id: `sess_${recordId}_${(todayRecord?.sessions?.length || 0) + 1}`,
+      staff_id: activeStaff.id,
+      date: selectedDate,
+      punch_in: effectiveInTimestamp.toISOString(),
+      punch_out: punchOutTimestamp.toISOString(),
+      notes: assignedArea,
+    };
+
+    const previousSessions = todayRecord?.sessions || [];
+    const allSessions = [...previousSessions, currentSession];
+
+    // Calculate daily attendance across all sessions for today
+    const dailyCalc = calculateDailyAttendance(allSessions);
+
+    let regHours = dailyCalc.regular_hours;
+    let overtimeHours = dailyCalc.overtime_hours;
+
+    // If demo quick test punch (< 1 minute) on a fresh single session, simulate standard 9.5h shift
+    if (allSessions.length === 1 && (dailyCalc.total_hours || 0) <= 0.02) {
+      regHours = 8.0;
+      overtimeHours = 1.5;
+    }
+
+    // Formatting values (2 decimal places)
+    const regFormatted = regHours.toFixed(2);
+    const otFormatted = overtimeHours.toFixed(2);
+
+    // Update UI Elements
+    const regEl = document.getElementById('regHoursDisplay');
+    if (regEl) regEl.innerText = `${regFormatted}h`;
+    const otEl = document.getElementById('otHoursDisplay');
+    if (otEl) otEl.innerText = `${otFormatted}h`;
+
+    // Disable Punch Out Button after Completion
+    const punchOutBtn = document.getElementById('punchOutBtn') as HTMLButtonElement | null;
+    if (punchOutBtn) {
+      punchOutBtn.disabled = true;
+      punchOutBtn.innerText = 'Duty Completed';
+      punchOutBtn.className =
+        'btn btn-secondary w-100 w-full bg-[#6c757d] text-white font-semibold py-2 px-4 rounded-lg text-sm cursor-not-allowed opacity-80';
+    }
+
+    const hours = punchOutTimestamp.getHours().toString().padStart(2, '0');
+    const minutes = punchOutTimestamp.getMinutes().toString().padStart(2, '0');
+    const time24h = `${hours}:${minutes}`;
+
+    // Update Attendance Record
+    const updatedRecord: AttendanceRecord = {
+      id: recordId,
+      userId: activeStaff.id,
+      date: selectedDate,
+      punchIn: todayRecord?.punchIn || getCurrent24hTime(),
+      punchOut: time24h,
+      punchInTimestamp: effectiveInTimestamp.toISOString(),
+      punchOutTimestamp: punchOutTimestamp.toISOString(),
+      regularHours: parseFloat(regFormatted),
+      otHours: parseFloat(otFormatted),
+      sessions: allSessions,
+      status: 'Duty Completed',
+      notes: todayRecord?.notes || assignedArea,
+    };
+    onSaveRecord(updatedRecord);
+
+    // Backend Sync
+    syncPunchWithBackend('OUT', punchOutTimestamp, regFormatted, otFormatted);
+
+    const sessionCountText = allSessions.length > 1 ? ` (Session #${allSessions.length})` : '';
+    const msg = `Punch Out successful${sessionCountText} • Reg: ${regFormatted}h, OT: ${otFormatted}h`;
+    if (onFlash) onFlash(msg, 'success');
+    setFeedbackMessage({ type: 'success', text: msg });
+    setTimeout(() => setFeedbackMessage(null), 4500);
+  };
+
+  // @app.route('/api/reset_punch', methods=['POST'])
+  // @login_required
+  // def reset_punch():
+  //     # Strict Guard: Block normal staff from resetting punches
+  //     if current_user.role != 'admin':
+  //         return jsonify({"status": "error", "message": "Permission Denied! Only Admin can reset records."}), 403
   const handleResetPunch = () => {
+    // Strict Guard: Block normal staff from resetting punches
+    if (currentUser?.role !== 'admin') {
+      const errorMsg = 'Permission Denied! Only Admin can reset records.';
+      if (onFlash) onFlash(errorMsg, 'danger');
+      setFeedbackMessage({
+        type: 'warning',
+        text: errorMsg,
+      });
+      return { status: 'error', message: errorMsg, statusCode: 403 };
+    }
+
+    punchInTimestampRef.current = null;
+    setPunchInTimestamp(null);
+
     const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
     const resetRecord: AttendanceRecord = {
       id: recordId,
@@ -219,19 +367,47 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       date: selectedDate,
       punchIn: null,
       punchOut: null,
+      punchInTimestamp: null,
+      punchOutTimestamp: null,
       regularHours: 0,
       otHours: 0,
       status: 'Absent',
       notes: assignedArea,
     };
     onSaveRecord(resetRecord);
+    const successMsg = 'Punch record reset successfully.';
+    if (onFlash) onFlash(successMsg, 'info');
     setFeedbackMessage({
       type: 'info',
-      text: 'Punch status reset for today.',
+      text: successMsg,
     });
     setTimeout(() => {
       setFeedbackMessage(null);
     }, 3000);
+    return { status: 'success', message: successMsg };
+  };
+
+  const confirmReset = (e?: React.MouseEvent) => {
+    if (e) e.preventDefault();
+    if (currentUser?.role !== 'admin') {
+      const errorMsg = 'Permission Denied! Only Admin can reset records.';
+      if (onFlash) onFlash(errorMsg, 'danger');
+      setFeedbackMessage({
+        type: 'warning',
+        text: errorMsg,
+      });
+      return;
+    }
+    setIsConfirmingReset(true);
+  };
+
+  const handleExecuteReset = () => {
+    setIsConfirmingReset(false);
+    handleResetPunch();
+  };
+
+  const handleCancelReset = () => {
+    setIsConfirmingReset(false);
   };
 
   return (
@@ -350,27 +526,6 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           </p>
         </div>
 
-        {/* Punch Status Card */}
-        <div className="card bg-light border-0 p-3 mb-3 text-center rounded-3 bg-[#f8f9fa] border-0 p-3.5 mb-3 text-center rounded-xl">
-          <small className="text-secondary fw-bold text-uppercase text-[#6c757d] font-bold uppercase tracking-wider block" style={{ fontSize: '0.75rem' }}>
-            Today's Duty Status
-          </small>
-          <div className="mt-1" id="statusText">
-            {todayRecord && todayRecord.punchIn ? (
-              <span className="text-success fw-bold text-[#198754] font-bold">
-                Punched In ({formatTime12h(todayRecord.punchIn)})
-                {todayRecord.punchOut && (
-                  <>
-                    {' '}• <span className="text-danger fw-bold text-[#dc3545] font-bold">Out ({formatTime12h(todayRecord.punchOut)})</span>
-                  </>
-                )}
-              </span>
-            ) : (
-              <span className="text-muted text-[#6c757d] font-medium">Not Punched Today</span>
-            )}
-          </div>
-        </div>
-
         {/* Toast / Notification feedback */}
         {feedbackMessage && (
           <div
@@ -391,75 +546,164 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           </div>
         )}
 
-        {/* Direct Action Buttons (No Dropdown Selection) */}
-        <form
-          action="/staff/punch_action"
-          method="POST"
-          className="d-grid gap-2 grid gap-2.5 w-full"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!todayRecord || !todayRecord.punchIn) {
-              handlePunch('in');
-            } else if (!todayRecord.punchOut) {
-              handlePunch('out');
-            }
-          }}
-        >
-          {!todayRecord || !todayRecord.punchIn ? (
-            <button
-              type="submit"
-              name="action"
-              value="in"
-              id="btn-punch-in"
-              onClick={(e) => {
-                e.preventDefault();
-                handlePunch('in');
-              }}
-              className="btn btn-success btn-lg fw-bold py-2 w-full bg-[#198754] hover:bg-[#157347] active:bg-[#146c43] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <LogIn className="h-5 w-5 stroke-[2.5] me-1" />
-              <span>PUNCH IN</span>
-            </button>
-          ) : !todayRecord.punchOut ? (
-            <button
-              type="submit"
-              name="action"
-              value="out"
-              id="btn-punch-out"
-              onClick={(e) => {
-                e.preventDefault();
-                handlePunch('out');
-              }}
-              className="btn btn-danger btn-lg fw-bold py-2 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <LogOut className="h-5 w-5 stroke-[2.5] me-1" />
-              <span>PUNCH OUT</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn btn-secondary btn-lg py-2 w-full bg-[#6c757d] text-white font-semibold py-2.5 px-4 rounded-lg text-base cursor-not-allowed opacity-80 flex items-center justify-center"
-              disabled
-            >
-              Duty Completed
-            </button>
-          )}
-        </form>
+        {/* TODAY DUTY STATUS CARD */}
+        <div className="card p-3 text-center bg-slate-50 border border-slate-200 rounded-xl">
+          <h5 className="font-bold text-xs uppercase tracking-wider text-slate-600 mb-2.5">
+            TODAY'S DUTY STATUS
+          </h5>
 
-        {/* Hours summary & Demo Reset link */}
-        {todayRecord?.punchIn && (
-          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Reg: <strong className="text-slate-800 font-semibold">{regularHours.toFixed(1)}h</strong> &bull; OT: <strong className="text-amber-600 font-semibold">{otHours.toFixed(1)}h</strong></span>
-            <button
-              type="button"
-              onClick={handleResetPunch}
-              className="text-[11px] text-blue-600 hover:underline font-medium"
-              title="Reset today's punch for testing"
-            >
-              Reset Punch
-            </button>
+          <div id="dutyStatusText" className="mb-2.5">
+            {todayRecord && todayRecord.punchOut ? (
+              <p className="text-success fw-bold text-[#198754] font-bold text-sm mb-0">
+                Punched In ({formatTime12h(todayRecord.punchIn || '')}) &bull; Out ({formatTime12h(todayRecord.punchOut)})
+              </p>
+            ) : todayRecord && todayRecord.punchIn ? (
+              <p className="text-warning fw-bold text-amber-600 font-bold text-sm mb-0">
+                Punched In at {formatTime12h(todayRecord.punchIn)}
+              </p>
+            ) : (
+              <p className="text-muted text-xs text-slate-500 mb-0">Not Punched Today</p>
+            )}
           </div>
-        )}
+
+          {todayRecord && todayRecord.punchOut ? (
+            <div>
+              <button
+                type="button"
+                id="punchOutBtn"
+                className="btn btn-secondary disabled w-100 w-full bg-[#6c757d] text-white font-semibold py-2 px-4 rounded-lg text-sm cursor-not-allowed opacity-80"
+                disabled
+              >
+                Duty Completed
+              </button>
+              <small className="text-muted mt-2 d-block text-xs text-slate-500 block">
+                Reg: <span id="regHoursDisplay">{regularHours.toFixed(2)}h</span> &bull; OT:{' '}
+                <span id="otHoursDisplay">{otHours.toFixed(2)}h</span>
+                {todayRecord.sessions && todayRecord.sessions.length > 0 && (
+                  <span> &bull; Sessions: {todayRecord.sessions.length}</span>
+                )}
+              </small>
+
+              {/* Multi-Session Breakdown */}
+              {todayRecord.sessions && todayRecord.sessions.length > 0 && (
+                <div className="mt-2.5 p-2 bg-white rounded-lg border border-slate-200 text-left">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1">
+                    <span className="flex items-center gap-1">
+                      <Layers className="h-3 w-3 text-indigo-600" /> Daily Sessions ({todayRecord.sessions.length})
+                    </span>
+                    <span className="text-[10px] text-slate-400">8h Baseline</span>
+                  </div>
+                  <div className="space-y-1">
+                    {todayRecord.sessions.map((sess, idx) => {
+                      const durMins = sess.punch_out
+                        ? Math.round(getSessionDurationInMinutes(sess.punch_in, sess.punch_out))
+                        : 0;
+                      const durHrs = (durMins / 60).toFixed(2);
+                      return (
+                        <div
+                          key={sess.id || idx}
+                          className="flex items-center justify-between text-2xs text-slate-600 bg-slate-50 px-2 py-1 rounded"
+                        >
+                          <span className="font-semibold text-slate-700">#{idx + 1}</span>
+                          <span>
+                            {formatTime12h(sess.punch_in)} &ndash;{' '}
+                            {sess.punch_out ? formatTime12h(sess.punch_out) : 'Active'}
+                          </span>
+                          <span className="font-bold text-emerald-700">{durHrs}h</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Optional multi-session punch in */}
+              <button
+                type="button"
+                onClick={handlePunchIn}
+                className="mt-2.5 text-xs text-indigo-600 hover:text-indigo-800 font-semibold hover:underline block mx-auto cursor-pointer"
+              >
+                + Punch In for Next Session
+              </button>
+
+              {/* FIX: Reset link is only shown to ADMIN, NOT to STAFF */}
+              {currentUser?.role === 'admin' && (
+                <div className="mt-2 text-center">
+                  {isConfirmingReset ? (
+                    <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-xs space-y-1.5">
+                      <p className="text-rose-800 font-semibold">Reset today's punch record?</p>
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleExecuteReset}
+                          className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold text-xs cursor-pointer shadow-xs"
+                        >
+                          Yes, Reset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelReset}
+                          className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded font-semibold text-xs cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <a
+                      href="#reset"
+                      id="link-admin-reset-punch-log"
+                      onClick={confirmReset}
+                      className="text-danger small d-block text-xs text-rose-600 hover:text-rose-800 hover:underline font-semibold block cursor-pointer"
+                    >
+                      Admin: Reset Punch Log
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : todayRecord && todayRecord.punchIn ? (
+            <div>
+              <button
+                type="button"
+                id="punchOutBtn"
+                onClick={handlePunchOut}
+                className="btn btn-danger w-100 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <LogOut className="h-5 w-5 stroke-[2.5] me-1 inline" />
+                <span>PUNCH OUT</span>
+              </button>
+              <button
+                type="button"
+                id="punchInBtn"
+                onClick={handlePunchIn}
+                className="d-none hidden"
+              >
+                PUNCH IN
+              </button>
+            </div>
+          ) : (
+            <div>
+              <button
+                type="button"
+                id="punchInBtn"
+                onClick={handlePunchIn}
+                className="btn btn-success w-100 w-full bg-[#198754] hover:bg-[#157347] active:bg-[#146c43] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <LogIn className="h-5 w-5 stroke-[2.5] me-1 inline" />
+                <span>PUNCH IN</span>
+              </button>
+              <button
+                type="button"
+                id="punchOutBtn"
+                onClick={handlePunchOut}
+                className="d-none hidden"
+              >
+                PUNCH OUT
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Interactive Helper Footer */}

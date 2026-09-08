@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Eye, EyeOff, Info, UserPlus, LogIn, ShieldAlert } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LogIn, Lock, ShieldCheck, Ticket, Hospital } from 'lucide-react';
 import type { AppUser } from '../types';
+import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 
 interface LoginViewProps {
   onLoginSuccess: (user: AppUser) => void;
   users: AppUser[];
-  onSignupUser?: (userData: { name: string; username: string; password: string }) => { success: boolean; message: string };
   errorFlash?: string | null;
   onClearError?: () => void;
   onFlashMessage?: (message: string, type?: 'danger' | 'warning' | 'success' | 'info') => void;
@@ -14,58 +14,56 @@ interface LoginViewProps {
 export const LoginView: React.FC<LoginViewProps> = ({
   onLoginSuccess,
   users,
-  onSignupUser,
   errorFlash,
   onClearError,
   onFlashMessage,
 }) => {
-  const [activeTab, setActiveTab] = useState<'login' | 'signup'>('login');
-  
-  // Login Form States
+  // Login Form States (matching Flask /login)
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  
-  // Signup Form States
-  const [signupName, setSignupName] = useState('');
-  const [signupUsername, setSignupUsername] = useState('');
-  const [signupPassword, setSignupPassword] = useState('');
-  const [showSignupPassword, setShowSignupPassword] = useState(false);
+  const [activeSlip, setActiveSlip] = useState<CredentialCardData | null>(null);
 
-  // Local flash state
+  // Local flash state matching Flask get_flashed_messages(with_categories=true)
   const [flash, setFlash] = useState<{ message: string; type: 'danger' | 'warning' | 'success' | 'info' } | null>(
     errorFlash ? { message: errorFlash, type: 'danger' } : null
   );
 
-  // Synchronize document title
   useEffect(() => {
     const originalTitle = document.title;
-    document.title = activeTab === 'signup' 
-      ? 'Staff Self Signup - Housekeeping Attendance System'
-      : 'Login - Housekeeping Attendance System';
+    document.title = 'Universal Login - Housekeeping Secure Portal';
     return () => {
       document.title = originalTitle;
     };
-  }, [activeTab]);
+  }, []);
 
   const setLocalFlash = (message: string, type: 'danger' | 'warning' | 'success' | 'info') => {
     setFlash({ message, type });
     onFlashMessage?.(message, type);
   };
 
-  // Route 2: Universal Login (Auto Redirection by Role & is_approved Security Check)
+  // 1. Universal Login Route matching @app.route('/login', methods=['GET', 'POST'])
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (onClearError) onClearError();
 
     const cleanInput = username.trim().toLowerCase();
+    const cleanNormalized = cleanInput.replace(/[-_\s]/g, '');
     const cleanPass = password;
 
-    // Lookup user by username or staff code aliases (e.g. hk101, hk-001)
+    // User lookup: User.query.filter_by(staff_id=staff_id).first() OR username
     const matched = users.find((u) => {
-      const uName = u.username.toLowerCase().trim();
-      if (uName === cleanInput) return true;
+      // 1. Direct staff_id match (e.g. HK-001)
+      if (u.staff_id) {
+        const sid = u.staff_id.toLowerCase().trim();
+        const sidNorm = sid.replace(/[-_\s]/g, '');
+        if (sid === cleanInput || sidNorm === cleanNormalized) return true;
+      }
 
+      // 2. Username match
+      if (u.username && u.username.toLowerCase().trim() === cleanInput) return true;
+
+      // 3. Staff ID numeric codes like HK-001, hk001, hk101
       if (u.role === 'staff' && u.staffId) {
         const idStr = u.staffId.toString();
         const codePadded = `hk-${u.staffId.toString().padStart(3, '0')}`;
@@ -86,72 +84,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
       return false;
     });
 
+    // Flash error if user does not exist or password mismatch
     if (!matched || matched.password !== cleanPass) {
-      // flash("Galat Username ya Password!", "danger")
-      setLocalFlash('Galat Username ya Password!', 'danger');
+      setLocalFlash('Aapka Staff ID ya Password sahi nahi hai!', 'danger');
       return;
     }
 
-    // Approval Check: if not user.is_approved
-    if (matched.is_approved === false) {
-      // flash("Aapka account abhi Admin approval ke liye pending hai.", "warning")
-      setLocalFlash('Aapka account abhi Admin approval ke liye pending hai.', 'warning');
-      return;
-    }
-
-    // Strict Role Redirection handled in onLoginSuccess:
-    // if user.role in ['admin', 'manager']: admin_dashboard
-    // else: staff_portal
     setFlash(null);
     onLoginSuccess(matched);
-  };
-
-  // Route 1: Staff Self Signup (Pending State)
-  const handleSignupSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (onClearError) onClearError();
-
-    const name = signupName.trim();
-    const cleanUser = signupUsername.trim().toLowerCase();
-    const pass = signupPassword;
-
-    if (!name || !cleanUser || !pass) {
-      setLocalFlash('Kripya sabhi fields bharein.', 'warning');
-      return;
-    }
-
-    // Check if User.query.filter_by(username=username).first():
-    const existing = users.find((u) => u.username.toLowerCase().trim() === cleanUser);
-    if (existing) {
-      // flash("Yeh Username pehle se registered hai!", "warning")
-      setLocalFlash('Yeh Username pehle se registered hai!', 'warning');
-      return;
-    }
-
-    if (onSignupUser) {
-      const res = onSignupUser({
-        name,
-        username: signupUsername.trim(),
-        password: pass,
-      });
-
-      if (!res.success) {
-        setLocalFlash(res.message, 'warning');
-        return;
-      }
-    }
-
-    // Account banega par is_approved = False rahega
-    // flash("Registration safal! Admin approval ke baad aap login kar paayenge.", "info")
-    setLocalFlash('Registration safal! Admin approval ke baad aap login kar paayenge.', 'info');
-    
-    // Clear inputs and switch back to login tab with pre-filled username
-    setUsername(signupUsername.trim());
-    setPassword('');
-    setSignupName('');
-    setSignupUsername('');
-    setSignupPassword('');
-    setActiveTab('login');
   };
 
   const handleQuickFill = (u: string, p: string) => {
@@ -163,71 +103,53 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
   return (
     <div
-      className="bg-[#f8f9fa] flex items-center justify-center min-h-screen px-4 py-8 antialiased"
+      className="flex flex-col items-center justify-center min-h-screen px-4 py-8 antialiased bg-[#F0F4F8] font-sans text-slate-800"
       id="login-page-root"
     >
       <div
-        className="bg-white border-0 shadow-2xl p-6 sm:p-8 rounded-3xl w-full max-w-[440px] transition-all"
+        className="shadow-xl p-6 sm:p-8 w-full max-w-[440px] relative overflow-hidden bg-white border border-slate-200 rounded-2xl text-slate-800 font-sans"
         id="login-card"
         style={{ maxWidth: '440px', width: '100%' }}
       >
+        {/* Top Accent Line */}
+        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-700 via-blue-500 to-teal-500" />
+
         {/* Header Bar */}
-        <div className="text-center mb-5">
-          <h3 className="text-2xl sm:text-[26px] font-bold text-[#0d6efd] tracking-tight mb-1">
-            HK Ops Portal
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-3xs font-bold mb-3 bg-blue-50 border border-blue-200 text-blue-800">
+            <Hospital className="h-3.5 w-3.5 text-blue-600" />
+            <span>ApexCare Hospital Operations</span>
+          </div>
+
+          <h3 className="text-2xl font-extrabold tracking-tight font-sans text-slate-900">
+            Housekeeping Portal
           </h3>
-          <p className="text-[#6c757d] text-xs sm:text-sm">
-            {activeTab === 'login'
-              ? 'Apna Username aur Password darj karein'
-              : 'Staff Self-Registration (Pending Admin Approval)'}
+          <p className="text-xs mt-1 text-slate-500 font-sans">
+            Universal Staff &amp; Administrator Login
           </p>
         </div>
 
-        {/* Tab Toggle: Universal Login vs Staff Self Signup */}
-        <div className="flex rounded-xl bg-slate-100 p-1 mb-5 border border-slate-200">
-          <button
-            type="button"
-            id="tab-btn-login"
-            onClick={() => {
-              setActiveTab('login');
-              setFlash(null);
-            }}
-            className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === 'login'
-                ? 'bg-white text-[#0d6efd] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <LogIn className="h-4 w-4" />
-            <span>Universal Login</span>
-          </button>
-
-          <button
-            type="button"
-            id="tab-btn-signup"
-            onClick={() => {
-              setActiveTab('signup');
-              setFlash(null);
-            }}
-            className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === 'signup'
-                ? 'bg-white text-[#0d6efd] shadow-xs'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <UserPlus className="h-4 w-4" />
-            <span>Staff Self Signup</span>
-          </button>
+        {/* Security Notice */}
+        <div className="mb-5 p-3 rounded-lg flex items-start gap-2.5 text-2xs bg-blue-50/60 border border-blue-100 text-blue-900 font-sans">
+          <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5 text-blue-600" />
+          <div className="leading-snug">
+            <span className="font-bold block">No Public Signup</span>
+            Staff accounts are created exclusively by Admin via{' '}
+            <code className="px-1 py-0.5 rounded font-mono text-blue-700 bg-blue-100/50">
+              /admin/create_staff_account
+            </code>
+            .
+          </div>
         </div>
 
         {/* Flask Flash Alert if any */}
         {flash && (
           <div
-            className={`mb-4 flex items-start gap-2.5 rounded-xl border p-3 text-xs sm:text-sm font-medium shadow-xs transition-all animate-in fade-in ${
+            className={`mb-4 flex items-start gap-2.5 rounded-lg border p-3 text-xs font-medium transition-all animate-in fade-in ${
               flash.type === 'danger'
                 ? 'bg-rose-50 border-rose-200 text-rose-800'
                 : flash.type === 'warning'
-                ? 'bg-amber-50 border-amber-300 text-amber-900'
+                ? 'bg-amber-50 border-amber-200 text-amber-800'
                 : flash.type === 'success'
                 ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                 : 'bg-blue-50 border-blue-200 text-blue-800'
@@ -235,241 +157,173 @@ export const LoginView: React.FC<LoginViewProps> = ({
             role="alert"
             id="flask-login-flash-alert"
           >
-            {flash.type === 'danger' && <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />}
-            {flash.type === 'warning' && <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />}
-            {flash.type === 'success' && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 mt-0.5" />}
-            {flash.type === 'info' && <Info className="h-4 w-4 shrink-0 text-blue-600 mt-0.5" />}
+            {flash.type === 'danger' && <AlertCircle className="h-4 w-4 shrink-0 text-rose-500 mt-0.5" />}
+            {flash.type === 'warning' && <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />}
+            {flash.type === 'success' && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500 mt-0.5" />}
+            {flash.type === 'info' && <Info className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />}
             <span className="leading-snug">{flash.message}</span>
           </div>
         )}
 
-        {activeTab === 'login' ? (
-          /* ---------------- Universal Login Form (/login) ---------------- */
-          <form onSubmit={handleLoginSubmit} method="POST" action="/login" className="w-full">
-            <div className="mb-4">
-              <label
-                htmlFor="login-username"
-                className="block text-xs sm:text-sm font-bold text-slate-800 mb-1.5"
-              >
-                Username / Staff ID
-              </label>
+        {/* Universal Login Form (/login) */}
+        <form onSubmit={handleLoginSubmit} method="POST" action="/login" className="w-full">
+          <div className="mb-4">
+            <label
+              htmlFor="login-username"
+              className="block text-2xs uppercase tracking-wider font-bold mb-1.5 text-slate-700 font-sans"
+            >
+              Staff ID (staff_id) / Username
+            </label>
+            <input
+              type="text"
+              id="login-username"
+              name="username"
+              required
+              placeholder="e.g. HK-001, HK-005, or admin"
+              value={username}
+              onChange={(e) => {
+                setUsername(e.target.value);
+                if (flash) setFlash(null);
+              }}
+              autoComplete="username"
+              className="w-full rounded-lg px-3.5 py-2.5 text-xs transition-all bg-slate-50 border border-slate-300 font-sans text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-2 focus:ring-blue-600/20"
+            />
+          </div>
+
+          <div className="mb-4">
+            <label
+              htmlFor="login-password"
+              className="block text-2xs uppercase tracking-wider font-bold mb-1.5 text-slate-700 font-sans"
+            >
+              Password
+            </label>
+            <div className="relative">
               <input
-                type="text"
-                id="login-username"
-                name="username"
+                type={showPassword ? 'text' : 'password'}
+                id="login-password"
+                name="password"
                 required
-                placeholder="e.g. admin, manager, or hk101"
-                value={username}
+                placeholder="••••••••"
+                value={password}
                 onChange={(e) => {
-                  setUsername(e.target.value);
+                  setPassword(e.target.value);
                   if (flash) setFlash(null);
                 }}
-                autoComplete="username"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0d6efd] focus:outline-hidden focus:ring-3 focus:ring-[#0d6efd]/20 transition-all"
+                autoComplete="current-password"
+                className="w-full rounded-lg px-3.5 py-2.5 pr-10 text-xs transition-all bg-slate-50 border border-slate-300 font-sans text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-2 focus:ring-blue-600/20"
               />
-            </div>
-
-            <div className="mb-4">
-              <label
-                htmlFor="login-password"
-                className="block text-xs sm:text-sm font-medium text-slate-800 mb-1.5"
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center transition-colors text-slate-400 hover:text-slate-700"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
-                Password
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  id="login-password"
-                  name="password"
-                  required
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    if (flash) setFlash(null);
-                  }}
-                  autoComplete="current-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0d6efd] focus:outline-hidden focus:ring-3 focus:ring-[#0d6efd]/20 transition-all"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </div>
+          </div>
 
-            <button
-              type="submit"
-              id="btn-login-submit"
-              className="w-full mt-2 py-2.5 px-4 bg-[#0d6efd] hover:bg-[#0b5ed7] active:bg-[#0a58ca] text-white font-bold text-sm tracking-wide rounded-lg shadow-sm hover:shadow transition-colors"
-            >
-              LOGIN
-            </button>
-          </form>
-        ) : (
-          /* ---------------- Staff Self Signup Form (/signup) ---------------- */
-          <form onSubmit={handleSignupSubmit} method="POST" action="/signup" className="w-full">
-            <div className="mb-3.5">
-              <label
-                htmlFor="signup-name"
-                className="block text-xs sm:text-sm font-bold text-slate-800 mb-1"
-              >
-                Full Name *
-              </label>
-              <input
-                type="text"
-                id="signup-name"
-                name="name"
-                required
-                placeholder="e.g. Vikram Joshi"
-                value={signupName}
-                onChange={(e) => {
-                  setSignupName(e.target.value);
-                  if (flash) setFlash(null);
-                }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0d6efd] focus:outline-hidden focus:ring-3 focus:ring-[#0d6efd]/20 transition-all"
-              />
-            </div>
+          <button
+            type="submit"
+            id="btn-login-submit"
+            className="w-full py-3 text-xs uppercase tracking-wider font-bold shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-5 rounded-lg bg-[#1a3a8a] hover:bg-blue-900 active:bg-blue-950 text-white"
+          >
+            <LogIn className="h-4 w-4" />
+            <span>Sign In to Portal</span>
+          </button>
+        </form>
 
-            <div className="mb-3.5">
-              <label
-                htmlFor="signup-username"
-                className="block text-xs sm:text-sm font-bold text-slate-800 mb-1"
-              >
-                Desired Username *
-              </label>
-              <input
-                type="text"
-                id="signup-username"
-                name="username"
-                required
-                placeholder="e.g. vikramj"
-                value={signupUsername}
-                onChange={(e) => {
-                  setSignupUsername(e.target.value);
-                  if (flash) setFlash(null);
-                }}
-                autoComplete="username"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0d6efd] focus:outline-hidden focus:ring-3 focus:ring-[#0d6efd]/20 transition-all"
-              />
-            </div>
-
-            <div className="mb-4">
-              <label
-                htmlFor="signup-password"
-                className="block text-xs sm:text-sm font-medium text-slate-800 mb-1"
-              >
-                Password *
-              </label>
-              <div className="relative">
-                <input
-                  type={showSignupPassword ? 'text' : 'password'}
-                  id="signup-password"
-                  name="password"
-                  required
-                  placeholder="Create a password"
-                  value={signupPassword}
-                  onChange={(e) => {
-                    setSignupPassword(e.target.value);
-                    if (flash) setFlash(null);
-                  }}
-                  autoComplete="new-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0d6efd] focus:outline-hidden focus:ring-3 focus:ring-[#0d6efd]/20 transition-all"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSignupPassword(!showSignupPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
-                  aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showSignupPassword ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-lg bg-amber-50 border border-amber-200 p-2.5 mb-4 text-2xs text-amber-800 flex items-center gap-2">
-              <ShieldAlert className="h-4 w-4 shrink-0 text-amber-600" />
-              <span>Self-registered accounts require verification &amp; approval by an Admin before login is allowed.</span>
-            </div>
-
-            <button
-              type="submit"
-              id="btn-signup-submit"
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-sm tracking-wide rounded-lg shadow-sm hover:shadow transition-colors flex items-center justify-center gap-1.5"
-            >
-              <UserPlus className="h-4 w-4" />
-              <span>REGISTER (PENDING APPROVAL)</span>
-            </button>
-          </form>
-        )}
-
-        {/* Quick Test Demo Helpers */}
-        <div className="mt-6 pt-4 border-t border-slate-200 text-xs text-center">
-          <p className="text-slate-500 font-medium mb-2">
-            Demo Credentials (1-Click Fill &amp; Test):
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+        {/* Demo Quick-Fill Accounts */}
+        <div className="mt-6 pt-4 border-t border-slate-200">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-3xs uppercase tracking-widest font-bold text-slate-500 font-sans">
+              Quick Test Credentials:
+            </p>
             <button
               type="button"
-              id="quick-demo-admin"
-              onClick={() => handleQuickFill('admin', 'admin123')}
-              className="flex flex-col items-center py-2 px-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 text-slate-700 transition-all"
-              title="Admin role -> Admin Dashboard"
+              onClick={() =>
+                setActiveSlip({
+                  name: 'Rahul Sharma',
+                  staffId: 'hk005',
+                  defaultPass: '123456',
+                  url: 'hk-app.hospital.com',
+                  department: 'General Ward',
+                  role: 'staff',
+                })
+              }
+              className="inline-flex items-center gap-1 text-3xs uppercase tracking-wider font-bold transition-colors cursor-pointer text-blue-700 hover:text-blue-900"
+              title="View official physical credential slip badge"
             >
-              <span className="font-bold text-[#0d6efd] text-2xs uppercase">Admin</span>
-              <span className="font-mono text-[11px] text-slate-800">admin</span>
-            </button>
-
-            <button
-              type="button"
-              id="quick-demo-manager"
-              onClick={() => handleQuickFill('manager', 'manager123')}
-              className="flex flex-col items-center py-2 px-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-purple-50 hover:border-purple-300 text-slate-700 transition-all"
-              title="Manager role -> Admin Dashboard"
-            >
-              <span className="font-bold text-purple-600 text-2xs uppercase">Manager</span>
-              <span className="font-mono text-[11px] text-slate-800">manager</span>
-            </button>
-
-            <button
-              type="button"
-              id="quick-demo-staff"
-              onClick={() => handleQuickFill('hk101', 'staff123')}
-              className="flex flex-col items-center py-2 px-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-300 text-slate-700 transition-all"
-              title="Approved Staff -> Punch Portal"
-            >
-              <span className="font-bold text-emerald-600 text-2xs uppercase">Staff</span>
-              <span className="font-mono text-[11px] text-slate-800">hk101</span>
-            </button>
-
-            <button
-              type="button"
-              id="quick-demo-pending"
-              onClick={() => handleQuickFill('rahul', 'password123')}
-              className="flex flex-col items-center py-2 px-1 rounded-lg border border-amber-200 bg-amber-50/70 hover:bg-amber-100/70 hover:border-amber-400 text-amber-900 transition-all"
-              title="Pending Approval Staff -> Triggers approval warning"
-            >
-              <span className="font-bold text-amber-700 text-2xs uppercase">Pending</span>
-              <span className="font-mono text-[11px] text-slate-800">rahul</span>
+              <Ticket className="h-3 w-3" />
+              <span>View Slip Card</span>
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 mt-2.5">
-            Admin &amp; Manager &rarr; Admin Dashboard • Staff &rarr; Punch Portal • Pending &rarr; Approval Warning
-          </p>
+
+          <div className="grid grid-cols-2 gap-2 text-2xs">
+            <button
+              type="button"
+              onClick={() => handleQuickFill('admin', 'admin123')}
+              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
+              title="Full System Administrator -> admin_dashboard"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-blue-700">admin</span>
+                <span className="text-3xs uppercase text-slate-400 font-semibold">Admin</span>
+              </div>
+              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: admin123</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleQuickFill('manager', 'manager123')}
+              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
+              title="Operations Manager -> admin_dashboard"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold">manager</span>
+                <span className="text-3xs uppercase text-slate-400 font-semibold">Manager</span>
+              </div>
+              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: manager123</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleQuickFill('HK-001', 'staff123')}
+              className="p-2 rounded-lg border text-left transition-colors cursor-pointer relative bg-blue-50/60 hover:bg-blue-100/60 border-blue-200 text-blue-900 font-sans"
+              title="Staff Member: Ramesh Kumar (staff_id: HK-001) -> staff_portal"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-blue-800">HK-001</span>
+                <span className="text-3xs uppercase font-semibold text-blue-700">Ramesh</span>
+              </div>
+              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: staff123</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleQuickFill('hk009', '123456')}
+              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
+              title="Staff Member: Pooja Verma (hk009 / 123456) -> staff_portal"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-emerald-700">hk009</span>
+                <span className="text-3xs uppercase text-slate-400 font-semibold">Pooja</span>
+              </div>
+              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: 123456</span>
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Credential Slip Modal */}
+      <CredentialCardModal
+        isOpen={Boolean(activeSlip)}
+        onClose={() => setActiveSlip(null)}
+        data={activeSlip}
+        onQuickLogin={(u, p) => {
+          handleQuickFill(u, p);
+        }}
+      />
     </div>
   );
 };

@@ -70,11 +70,14 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       const punchOut = rec?.punchOut || null;
       const assignment = rec?.notes || user.department || 'General Duty';
 
-      let statusType: 'OT_ACTIVE' | 'ON_DUTY' | 'ABSENT';
+      let statusType: 'OT_ACTIVE' | 'DUTY_COMPLETED' | 'ON_DUTY' | 'ABSENT';
       if (otHours > 0) {
         statusType = 'OT_ACTIVE';
         presentTodayCount++;
         otActiveCount++;
+      } else if (rec?.status === 'Duty Completed' || Boolean(rec?.punchOut)) {
+        statusType = 'DUTY_COMPLETED';
+        presentTodayCount++;
       } else if (isPresent) {
         statusType = 'ON_DUTY';
         presentTodayCount++;
@@ -99,14 +102,15 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
 
   // Filter staff based on search & status filter
   const filteredList = staffAttendanceList.filter((item) => {
+    const term = (searchTerm || '').toLowerCase();
     const matchesSearch =
-      item.staffName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.staffCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.assignment.toLowerCase().includes(searchTerm.toLowerCase());
+      (item.staffName || '').toLowerCase().includes(term) ||
+      (item.staffCode || '').toLowerCase().includes(term) ||
+      (item.assignment || '').toLowerCase().includes(term);
 
     const matchesStatus =
       statusFilter === 'ALL' ||
-      (statusFilter === 'ON_DUTY' && (item.statusType === 'ON_DUTY' || item.statusType === 'OT_ACTIVE')) ||
+      (statusFilter === 'ON_DUTY' && (item.statusType === 'ON_DUTY' || item.statusType === 'OT_ACTIVE' || item.statusType === 'DUTY_COMPLETED')) ||
       (statusFilter === 'OT_ACTIVE' && item.statusType === 'OT_ACTIVE') ||
       (statusFilter === 'ABSENT' && item.statusType === 'ABSENT');
 
@@ -356,6 +360,10 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
                       {item.statusType === 'OT_ACTIVE' ? (
                         <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-bold text-amber-800">
                           OT Active
+                        </span>
+                      ) : item.statusType === 'DUTY_COMPLETED' ? (
+                        <span className="inline-flex items-center rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-bold text-sky-800 border border-sky-200">
+                          Duty Completed
                         </span>
                       ) : item.statusType === 'ON_DUTY' ? (
                         <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-800">

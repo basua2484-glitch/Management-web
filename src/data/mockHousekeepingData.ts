@@ -3,6 +3,7 @@ import type { StaffUser, AttendanceRecord, AppUser } from '../types';
 export const INITIAL_USERS: AppUser[] = [
   {
     id: 100,
+    staff_id: 'ADMIN-001',
     username: 'admin',
     password: 'admin123',
     name: 'Admin Staff',
@@ -13,6 +14,7 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 101,
+    staff_id: 'MGR-001',
     username: 'manager',
     password: 'manager123',
     name: 'Operations Manager Priya',
@@ -23,6 +25,7 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 1,
+    staff_id: 'HK-001',
     username: 'ramesh',
     password: 'staff123',
     name: 'Ramesh Kumar',
@@ -35,6 +38,7 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 2,
+    staff_id: 'HK-002',
     username: 'sunita',
     password: 'staff123',
     name: 'Sunita Devi',
@@ -47,6 +51,7 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 3,
+    staff_id: 'HK-003',
     username: 'amit',
     password: 'staff123',
     name: 'Amit Sharma',
@@ -59,6 +64,7 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 4,
+    staff_id: 'HK-004',
     username: 'anita',
     password: 'staff123',
     name: 'Anita Patel',
@@ -71,25 +77,40 @@ export const INITIAL_USERS: AppUser[] = [
   },
   {
     id: 5,
-    username: 'rameshv',
-    password: 'staff123',
-    name: 'Ramesh Verma',
+    staff_id: 'HK-005',
+    username: 'hk005',
+    password: '123456',
+    name: 'Rahul Sharma',
     role: 'staff',
     staffId: 5,
-    department: 'Deep Cleaning & Waste Mgmt',
-    shift: 'Night',
+    department: 'General Ward',
+    shift: 'Morning',
     is_approved: true,
-    assigned_area: 'Deep Cleaning & Waste Mgmt',
+    assigned_area: 'General Ward',
+  },
+  {
+    id: 9,
+    staff_id: 'HK-009',
+    username: 'hk009',
+    password: '123456',
+    name: 'Pooja Verma',
+    role: 'staff',
+    staffId: 9,
+    department: 'General Ward',
+    shift: 'Morning',
+    is_approved: true,
+    assigned_area: 'General Ward',
   },
   {
     id: 201,
+    staff_id: 'HK-201',
     username: 'rahul',
     password: 'password123',
     name: 'Rahul Sharma',
     role: 'staff',
-    is_approved: false, // Security Check: Self-signup pending Admin approval
-    assigned_area: 'Unassigned',
-    department: 'Unassigned',
+    is_approved: true,
+    assigned_area: 'General Ward',
+    department: 'General Ward',
   },
 ];
 
@@ -141,11 +162,11 @@ export const INITIAL_STAFF: StaffUser[] = [
   {
     id: 5,
     staffCode: 'HK-005',
-    name: 'Ramesh Verma',
+    name: 'Rahul Sharma',
     role: 'staff',
-    department: 'Deep Cleaning & Waste Mgmt',
-    shift: 'Night',
-    hourlyRate: 17,
+    department: 'General Ward',
+    shift: 'Morning',
+    hourlyRate: 16,
     phone: '+91 98765 43214',
     active: true,
   },
@@ -336,7 +357,18 @@ const STORAGE_KEY_CURRENT_USER = 'hk_current_user_v2';
 export function getStoredUsers(): AppUser[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_USERS);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const parsed: AppUser[] = JSON.parse(data);
+      // Ensure every user has staff_id conforming to Flask/Django User model
+      return parsed.map((u) => ({
+        ...u,
+        staff_id:
+          u.staff_id ||
+          u.username ||
+          (u.staffId ? `HK-${u.staffId.toString().padStart(3, '0')}` : `USER-${u.id}`),
+        username: u.username || u.staff_id || `user_${u.id}`,
+      }));
+    }
   } catch (e) {
     console.error('Failed to parse users from local storage', e);
   }
@@ -354,7 +386,17 @@ export function saveStoredUsers(users: AppUser[]): void {
 export function getStoredCurrentUser(): AppUser | null {
   try {
     const data = localStorage.getItem(STORAGE_KEY_CURRENT_USER);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const parsed: AppUser = JSON.parse(data);
+      return {
+        ...parsed,
+        staff_id:
+          parsed.staff_id ||
+          parsed.username ||
+          (parsed.staffId ? `HK-${parsed.staffId.toString().padStart(3, '0')}` : `USER-${parsed.id}`),
+        username: parsed.username || parsed.staff_id || `user_${parsed.id}`,
+      };
+    }
   } catch (e) {
     console.error('Failed to parse current user from local storage', e);
   }
@@ -375,15 +417,23 @@ export function saveStoredCurrentUser(user: AppUser | null): void {
 }
 
 export function verifyUserCredentials(
-  username: string,
+  identifier: string,
   password: string
 ): { user: AppUser | null; error?: string; isPending?: boolean } {
   const users = getStoredUsers();
-  const cleanInput = username.toLowerCase().trim();
+  const cleanInput = identifier.toLowerCase().trim();
+  const normalizedInput = cleanInput.replace(/[-_\s]/g, '');
 
   const found = users.find((u) => {
-    if (u.username.toLowerCase().trim() === cleanInput) return true;
-    if (u.role === 'staff' && u.staffId) {
+    // 1. Exact staff_id match (e.g. "HK-001")
+    if (u.staff_id && u.staff_id.toLowerCase().trim() === cleanInput) return true;
+    // 2. Normalized staff_id match (e.g. "hk001" == "hk001")
+    if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedInput) return true;
+    // 3. Username match
+    if (u.username && u.username.toLowerCase().trim() === cleanInput) return true;
+
+    // 4. Staff numeric ID variations
+    if (u.staffId) {
       const codePadded = `hk-${u.staffId.toString().padStart(3, '0')}`;
       const codeNum = `hk${(100 + u.staffId).toString()}`;
       const codeDirect = `hk${u.staffId}`;
@@ -400,7 +450,7 @@ export function verifyUserCredentials(
   });
 
   if (!found || found.password !== password) {
-    return { user: null, error: 'Galat Username ya Password!' };
+    return { user: null, error: 'Aapka Staff ID ya Password sahi nahi hai!' };
   }
 
   // Security Check for Self-Signup: if not user.is_approved

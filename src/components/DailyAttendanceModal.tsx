@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Check, Trash2 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, AppUser } from '../types';
+import { X, Plus, Check, Trash2, Clock, CalendarDays } from 'lucide-react';
+import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession } from '../types';
+import { calculateDailyAttendance } from '../utils/attendanceCalculator';
 
 interface DailyAttendanceModalProps {
   isOpen: boolean;
@@ -85,28 +86,22 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
     })
     .sort((a, b) => b.date.localeCompare(a.date));
 
-  // Auto calculate regular and OT hours when punch times change
+  // Auto calculate regular and OT hours using calculate_daily_attendance
   const handlePunchTimeChange = (inTime: string, outTime: string) => {
     setFormPunchIn(inTime);
     setFormPunchOut(outTime);
 
     if (inTime && outTime) {
-      const [inH, inM] = inTime.split(':').map(Number);
-      const [outH, outM] = outTime.split(':').map(Number);
-
-      let diffMinutes = (outH * 60 + outM) - (inH * 60 + inM);
-      if (diffMinutes < 0) diffMinutes += 24 * 60; // overnight shift
-
-      const totalHours = Math.max(0, diffMinutes / 60);
-      const standardShift = 8.0;
-
-      if (totalHours <= standardShift) {
-        setFormRegHours(Number(totalHours.toFixed(1)));
-        setFormOtHours(0.0);
-      } else {
-        setFormRegHours(standardShift);
-        setFormOtHours(Number((totalHours - standardShift).toFixed(2)));
-      }
+      const virtualSession: AttendanceSession = {
+        id: 'virtual_form_session',
+        staff_id: formStaffId,
+        date: formDate,
+        punch_in: inTime,
+        punch_out: outTime,
+      };
+      const calc = calculateDailyAttendance([virtualSession]);
+      setFormRegHours(calc.regular_hours);
+      setFormOtHours(calc.overtime_hours);
     }
   };
 
@@ -115,6 +110,20 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
 
     const isPresent = formStatus === 'Present' || formStatus === 'Half Day';
     const targetStaff = staffMap.get(formStaffId);
+    const sessionsList: AttendanceSession[] | undefined =
+      isPresent && formPunchIn && formPunchOut
+        ? [
+            {
+              id: `sess_${formStaffId}_${formDate}_1`,
+              staff_id: formStaffId,
+              date: formDate,
+              punch_in: formPunchIn,
+              punch_out: formPunchOut,
+              notes: formNotes || undefined,
+            },
+          ]
+        : undefined;
+
     const newRecord: AttendanceRecord = {
       id: `att_${formStaffId}_${formDate}`,
       userId: formStaffId,
@@ -123,6 +132,7 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
       punchOut: isPresent ? formPunchOut : null,
       regularHours: isPresent ? formRegHours : 0.0,
       otHours: isPresent ? formOtHours : 0.0,
+      sessions: sessionsList,
       status: formStatus,
       notes: formNotes || targetStaff?.department || undefined,
     };

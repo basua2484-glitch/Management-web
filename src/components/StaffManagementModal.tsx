@@ -1,21 +1,28 @@
 import React, { useState } from 'react';
-import { X, Plus, Users, Check, Phone, Building } from 'lucide-react';
-import type { StaffUser } from '../types';
+import { X, Plus, Users, Check, Phone, Building, KeyRound, Ticket } from 'lucide-react';
+import type { StaffUser, AppUser, UserRole } from '../types';
+import type { CredentialCardData } from './CredentialCardModal';
 
 interface StaffManagementModalProps {
   isOpen: boolean;
   onClose: () => void;
   staff: StaffUser[];
+  users?: AppUser[];
+  currentUserRole?: UserRole;
   onAddStaff: (newStaff: Omit<StaffUser, 'id' | 'staffCode'>) => void;
   onToggleActive: (staffId: number) => void;
+  onViewCredentialSlip?: (slip: CredentialCardData) => void;
 }
 
 export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
   isOpen,
   onClose,
   staff,
+  users = [],
+  currentUserRole = 'admin',
   onAddStaff,
   onToggleActive,
+  onViewCredentialSlip,
 }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [name, setName] = useState('');
@@ -23,6 +30,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
   const [shift, setShift] = useState<'Morning' | 'Evening' | 'Night'>('Morning');
   const [role, setRole] = useState<'staff' | 'supervisor' | 'lead'>('staff');
   const [phone, setPhone] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -30,7 +38,14 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
     if (!name.trim()) return;
+
+    // Strict Guard Check: if current_user.role != 'admin': 403
+    if (currentUserRole !== 'admin') {
+      setErrorMessage('Unauthorized Access: Admin Privileges Required');
+      return;
+    }
 
     onAddStaff({
       name: name.trim(),
@@ -92,6 +107,11 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
               onSubmit={handleSubmit}
               className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3"
             >
+              {errorMessage && (
+                <div className="rounded-md bg-red-50 p-2.5 text-xs text-red-700 border border-red-200">
+                  {errorMessage}
+                </div>
+              )}
               <div className="flex items-center justify-between border-b border-blue-200 pb-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-[#1E3A8A]">
                   New Staff Member (ID: {nextStaffCode})
@@ -198,53 +218,91 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                   <th className="border border-slate-200 px-3 py-2.5 text-center">Shift</th>
                   <th className="border border-slate-200 px-3 py-2.5">Contact</th>
                   <th className="border border-slate-200 px-3 py-2.5 text-center">Status</th>
+                  <th className="border border-slate-200 px-3 py-2.5 text-center">Slip</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {staff.map((s) => (
-                  <tr key={s.id} className="hover:bg-slate-50">
-                    <td className="border border-slate-200 px-3 py-2.5 text-center font-mono font-bold text-[#1E3A8A]">
-                      {s.staffCode}
-                    </td>
-                    <td className="border border-slate-200 px-4 py-2.5 font-medium text-slate-900">
-                      {s.name}
-                    </td>
-                    <td className="border border-slate-200 px-3 py-2.5 text-slate-600">
-                      <div className="flex items-center gap-1.5">
-                        <Building className="h-3 w-3 text-slate-400" />
-                        <span>{s.department}</span>
-                      </div>
-                    </td>
-                    <td className="border border-slate-200 px-3 py-2.5 text-center">
-                      <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-2xs font-medium text-slate-700">
-                        {s.shift}
-                      </span>
-                    </td>
-                    <td className="border border-slate-200 px-3 py-2.5 text-slate-600">
-                      {s.phone ? (
-                        <div className="flex items-center gap-1 font-mono text-2xs">
-                          <Phone className="h-3 w-3 text-slate-400" />
-                          <span>{s.phone}</span>
+                {staff.map((s) => {
+                  const matchingUser = users.find(
+                    (u) =>
+                      (u.staffId && u.staffId === s.id) ||
+                      u.name.toLowerCase() === s.name.toLowerCase() ||
+                      u.username.toLowerCase() === s.staffCode.toLowerCase() ||
+                      u.username.toLowerCase() === `hk${s.id.toString().padStart(3, '0')}` ||
+                      u.username.toLowerCase() === `hk${s.id}`
+                  );
+                  const staffIdStr = matchingUser
+                    ? matchingUser.username
+                    : `hk${s.id.toString().padStart(3, '0')}`;
+                  const passStr = matchingUser?.password || '123456';
+
+                  return (
+                    <tr key={s.id} className="hover:bg-slate-50">
+                      <td className="border border-slate-200 px-3 py-2.5 text-center font-mono font-bold text-[#1E3A8A]">
+                        {s.staffCode}
+                      </td>
+                      <td className="border border-slate-200 px-4 py-2.5 font-medium text-slate-900">
+                        {s.name}
+                      </td>
+                      <td className="border border-slate-200 px-3 py-2.5 text-slate-600">
+                        <div className="flex items-center gap-1.5">
+                          <Building className="h-3 w-3 text-slate-400" />
+                          <span>{s.department}</span>
                         </div>
-                      ) : (
-                        <span className="text-slate-400">-</span>
-                      )}
-                    </td>
-                    <td className="border border-slate-200 px-3 py-2.5 text-center">
-                      <button
-                        type="button"
-                        onClick={() => onToggleActive(s.id)}
-                        className={`inline-flex rounded-full px-2 py-0.5 text-2xs font-semibold cursor-pointer ${
-                          s.active
-                            ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                        }`}
-                      >
-                        {s.active ? 'Active' : 'Inactive'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="border border-slate-200 px-3 py-2.5 text-center">
+                        <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-2xs font-medium text-slate-700">
+                          {s.shift}
+                        </span>
+                      </td>
+                      <td className="border border-slate-200 px-3 py-2.5 text-slate-600">
+                        {s.phone ? (
+                          <div className="flex items-center gap-1 font-mono text-2xs">
+                            <Phone className="h-3 w-3 text-slate-400" />
+                            <span>{s.phone}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">-</span>
+                        )}
+                      </td>
+                      <td className="border border-slate-200 px-3 py-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => onToggleActive(s.id)}
+                          className={`inline-flex rounded-full px-2 py-0.5 text-2xs font-semibold cursor-pointer ${
+                            s.active
+                              ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                          }`}
+                        >
+                          {s.active ? 'Active' : 'Inactive'}
+                        </button>
+                      </td>
+                      <td className="border border-slate-200 px-2.5 py-2.5 text-center">
+                        {onViewCredentialSlip && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onViewCredentialSlip({
+                                name: s.name,
+                                staffId: staffIdStr,
+                                defaultPass: passStr,
+                                url: 'hk-app.hospital.com',
+                                department: s.department,
+                                role: s.role,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] font-semibold text-2xs transition-colors border border-blue-200 cursor-pointer"
+                            title={`View & Print Credential Slip for ${s.name}`}
+                          >
+                            <KeyRound className="h-3 w-3" />
+                            <span>Slip</span>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

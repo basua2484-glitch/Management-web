@@ -30,7 +30,11 @@ export const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
   const generatedDate = new Date().toISOString().split('T')[0];
 
   const handlePrint = () => {
-    window.print();
+    try {
+      window.print();
+    } catch (e) {
+      console.warn('Print not supported or blocked in iframe sandbox:', e);
+    }
   };
 
   return (

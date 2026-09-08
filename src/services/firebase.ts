@@ -10,8 +10,17 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase safely
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+let app: any = null;
+let authInstance: any = null;
+
+try {
+  app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+  authInstance = getAuth(app);
+} catch (e) {
+  console.warn('Firebase initialization notice:', e);
+}
+
+export const auth = authInstance;
 
 // Provider with Google Sheets Scope as mandated by workspace skill
 const provider = new GoogleAuthProvider();
@@ -28,21 +37,43 @@ let cachedAccessToken: string | null = null;
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
-) => {
-  return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // When session restored without fresh popup credential token,
-        // we can prompt sign-in when an action is taken or report user state
-        if (onAuthSuccess) onAuthSuccess(user, '');
+): (() => void) => {
+  if (!auth) {
+    if (onAuthFailure) onAuthFailure();
+    return () => {};
+  }
+
+  try {
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user: User | null) => {
+        try {
+          if (user) {
+            if (cachedAccessToken) {
+              if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+            } else if (!isSigningIn) {
+              if (onAuthSuccess) onAuthSuccess(user, '');
+            }
+          } else {
+            cachedAccessToken = null;
+            if (onAuthFailure) onAuthFailure();
+          }
+        } catch (innerErr) {
+          console.warn('Error in auth state listener callback:', innerErr);
+        }
+      },
+      (error) => {
+        console.warn('Firebase Auth state change error:', error);
+        if (onAuthFailure) onAuthFailure();
       }
-    } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
-    }
-  });
+    );
+
+    return typeof unsubscribe === 'function' ? unsubscribe : () => {};
+  } catch (err) {
+    console.warn('Failed to subscribe to auth state changes:', err);
+    if (onAuthFailure) onAuthFailure();
+    return () => {};
+  }
 };
 
 // Sign in with popup and cache access token in memory (MANDATORY in-memory only)

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, ArrowUpDown, Clock, ChevronRight } from 'lucide-react';
+import { Search, ArrowUpDown, ChevronRight } from 'lucide-react';
 import type { MonthlyStaffSummary } from '../types';
 
 interface ReportTableProps {
@@ -26,13 +26,13 @@ export const ReportTable: React.FC<ReportTableProps> = ({
 
   // Filter and sort
   const filteredAndSortedData = useMemo(() => {
+    const query = (searchTerm || '').toLowerCase();
     return summaryData
       .filter((item) => {
-        const query = searchTerm.toLowerCase();
         return (
-          item.staffId.toLowerCase().includes(query) ||
-          item.staffName.toLowerCase().includes(query) ||
-          item.department.toLowerCase().includes(query)
+          (item.staffId || '').toLowerCase().includes(query) ||
+          (item.staffName || '').toLowerCase().includes(query) ||
+          (item.department || '').toLowerCase().includes(query)
         );
       })
       .sort((a, b) => {
@@ -68,208 +68,212 @@ export const ReportTable: React.FC<ReportTableProps> = ({
   const reportId = `GEN-${year}${month.toString().padStart(2, '0')}-HB-102`;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-[#CBD5E1] overflow-hidden" id="report-table-container">
-      {/* Card Header matching Geometric Balance */}
-      <div className="p-6 border-b border-[#CBD5E1] bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h3 className="font-bold text-[#1E3A8A] text-base">
-            Data Summary: {monthName}
-          </h3>
-          <span className="text-xs px-3 py-1 bg-blue-100 text-blue-700 rounded-full font-bold uppercase">
-            Live View
-          </span>
-        </div>
-
-        {/* Search input in card header */}
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+    <div
+      className="rounded-xl shadow-xs bg-white border border-slate-200 p-5 sm:p-6 font-sans text-slate-800"
+      id="report-table-container"
+    >
+      {/* Search Header Container */}
+      <div className="relative mb-5">
+        <div className="relative flex items-center">
+          <Search className="pointer-events-none absolute left-3.5 h-4 w-4 text-blue-600" />
           <input
             type="text"
             id="input-search-staff"
-            placeholder="Search staff ID or name..."
+            placeholder="Search staff by ID, full name, or assigned ward..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full rounded-md border border-[#CBD5E1] bg-white py-1.5 pl-9 pr-3 text-xs text-slate-800 placeholder-slate-400 focus:border-[#1E3A8A] focus:outline-hidden focus:ring-1 focus:ring-[#1E3A8A]"
+            className="w-full rounded-lg py-2.5 pl-10 pr-4 text-xs sm:text-sm transition-all bg-slate-50 border border-slate-200 font-sans text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-2 focus:ring-blue-600/20"
           />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm('')}
+              className="absolute right-3 text-xs font-semibold text-slate-400 hover:text-slate-700 cursor-pointer"
+            >
+              [Clear]
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-1 text-2xs uppercase tracking-wider mt-2 px-1 text-slate-500 font-sans">
+          <span className="font-semibold">
+            Report Period: {monthName} {year}
+          </span>
+          <span className="font-semibold">
+            Showing {filteredAndSortedData.length} Staff Member{filteredAndSortedData.length === 1 ? '' : 's'}
+          </span>
         </div>
       </div>
 
-      {/* Styled Table matching Geometric Balance theme */}
+      {/* Styled Table */}
       <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse" id="table-monthly-report">
+        <table className="w-full text-left border-collapse font-sans text-xs" id="table-monthly-report">
           <thead>
-            <tr className="bg-[#1E3A8A] text-white text-xs uppercase tracking-wider">
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
               <th
                 scope="col"
                 onClick={() => handleSort('staffId')}
-                className="px-6 py-4 font-bold border-r border-blue-700/50 cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '14%' }}
+                className="px-3 py-2.5 cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[80px] text-slate-600 hover:text-blue-700"
               >
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1">
                   <span>Staff ID</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
 
               <th
                 scope="col"
                 onClick={() => handleSort('staffName')}
-                className="px-6 py-4 font-bold border-r border-blue-700/50 cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '28%' }}
+                className="px-3 py-2.5 cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[140px] text-slate-600 hover:text-blue-700"
               >
-                <div className="flex items-center gap-1.5">
-                  <span>Staff Name</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                <div className="flex items-center gap-1">
+                  <span>Staff Name &amp; Area</span>
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
 
               <th
                 scope="col"
                 onClick={() => handleSort('daysPresent')}
-                className="px-6 py-4 font-bold border-r border-blue-700/50 text-center cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '14%' }}
+                className="px-3 py-2.5 text-center cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[50px] text-slate-600 hover:text-blue-700"
               >
-                <div className="inline-flex items-center justify-center gap-1.5">
-                  <span>Days Present</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                <div className="inline-flex items-center justify-center gap-1">
+                  <span>Present</span>
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
 
               <th
                 scope="col"
                 onClick={() => handleSort('totalRegHours')}
-                className="px-6 py-4 font-bold border-r border-blue-700/50 text-center cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '14%' }}
+                className="px-3 py-2.5 text-center cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[60px] text-slate-600 hover:text-blue-700"
               >
-                <div className="inline-flex items-center justify-center gap-1.5">
+                <div className="inline-flex items-center justify-center gap-1">
                   <span>Reg Hrs</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
 
               <th
                 scope="col"
                 onClick={() => handleSort('totalOtHours')}
-                className="px-6 py-4 font-bold border-r border-blue-700/50 text-center cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '14%' }}
+                className="px-3 py-2.5 text-center cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[60px] text-amber-700 hover:text-amber-800"
               >
-                <div className="inline-flex items-center justify-center gap-1.5">
-                  <span>OT Hrs</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                <div className="inline-flex items-center justify-center gap-1">
+                  <span>OT Hrs (8h+)</span>
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
 
               <th
                 scope="col"
                 onClick={() => handleSort('grandTotalHours')}
-                className="px-6 py-4 font-bold text-center cursor-pointer hover:bg-blue-900 transition-colors"
-                style={{ width: '16%' }}
+                className="px-3 py-2.5 text-center cursor-pointer font-bold uppercase tracking-wider text-2xs whitespace-nowrap min-w-[60px] text-blue-900 hover:text-blue-950"
               >
-                <div className="inline-flex items-center justify-center gap-1.5">
+                <div className="inline-flex items-center justify-center gap-1">
                   <span>Total Hrs</span>
-                  <ArrowUpDown className="h-3 w-3 opacity-70" />
+                  <ArrowUpDown className="h-3 w-3 opacity-60" />
                 </div>
               </th>
             </tr>
           </thead>
 
-          <tbody className="text-sm text-[#475569]">
+          <tbody className="text-xs text-slate-800 divide-y divide-slate-100">
             {filteredAndSortedData.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
-                  No staff records found for {monthName} matching your search filter.
+                <td colSpan={6} className="p-8 text-center bg-slate-50 text-slate-400">
+                  No staff records matching filter for {monthName}.
                 </td>
               </tr>
             ) : (
-              filteredAndSortedData.map((row, idx) => {
-                const isEven = idx % 2 === 0;
-                const rowBg = isEven ? 'bg-white' : 'bg-slate-50';
+              filteredAndSortedData.map((row) => (
+                <tr
+                  key={row.userId}
+                  onClick={() => onSelectStaff(row.userId)}
+                  className="group cursor-pointer transition-colors hover:bg-blue-50/70"
+                  title="Click to view daily punch ledger"
+                >
+                  {/* STAFF_ID */}
+                  <td className="px-3 py-2.5 font-mono font-bold whitespace-nowrap text-[#1a3a8a]">
+                    {row.staffId}
+                  </td>
 
-                return (
-                  <tr
-                    key={row.userId}
-                    id={`staff-row-${row.userId}`}
-                    onClick={() => onSelectStaff(row.userId)}
-                    className={`${rowBg} border-b border-[#E2E8F0] cursor-pointer hover:bg-blue-50/60 transition-colors duration-150`}
-                  >
-                    {/* Staff ID */}
-                    <td className="px-6 py-3 font-mono font-semibold text-[#1E3A8A]">
-                      {row.staffId}
-                    </td>
-
-                    {/* Staff Name */}
-                    <td className="px-6 py-3 font-medium text-slate-900">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span>{row.staffName}</span>
-                          <span className="ml-2 text-xs text-slate-400">({row.department})</span>
-                        </div>
-                        <ChevronRight className="h-3.5 w-3.5 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </div>
-                    </td>
-
-                    {/* Days Present */}
-                    <td className="px-6 py-3 text-center font-medium text-slate-800">
-                      {row.daysPresent}
-                    </td>
-
-                    {/* Total Reg Hrs */}
-                    <td className="px-6 py-3 text-center">
-                      {row.totalRegHours.toFixed(1)} hrs
-                    </td>
-
-                    {/* Total OT Hrs (Orange in Geometric Balance theme) */}
-                    <td className="px-6 py-3 text-center text-orange-600 font-medium">
-                      {row.totalOtHours > 0 ? (
-                        <span className="inline-flex items-center gap-1">
-                          <Clock className="h-3 w-3 text-orange-500" />
-                          {row.totalOtHours.toFixed(1)} hrs
+                  {/* NAME_REF */}
+                  <td className="px-3 py-2.5 text-slate-900 font-medium">
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="min-w-0">
+                        <span className="font-semibold whitespace-nowrap">{row.staffName}</span>
+                        <span className="text-3xs uppercase tracking-wider block sm:inline sm:ml-2 truncate max-w-[150px] sm:max-w-none text-slate-500 font-normal">
+                          • {row.department}
                         </span>
-                      ) : (
-                        <span>0.0 hrs</span>
-                      )}
-                    </td>
+                      </div>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block text-blue-600" />
+                    </div>
+                  </td>
 
-                    {/* Grand Total Hrs */}
-                    <td className="px-6 py-3 text-center font-bold text-slate-900">
-                      {row.grandTotalHours.toFixed(1)} hrs
-                    </td>
-                  </tr>
-                );
-              })
+                  {/* DAYS */}
+                  <td className="px-3 py-2.5 text-center font-bold whitespace-nowrap text-slate-800">
+                    <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 text-xs">
+                      {row.daysPresent}
+                    </span>
+                  </td>
+
+                  {/* REG_H */}
+                  <td className="px-3 py-2.5 text-center font-mono whitespace-nowrap text-slate-600">
+                    {row.totalRegHours.toFixed(1)}h
+                  </td>
+
+                  {/* OT_H */}
+                  <td className="px-3 py-2.5 text-center font-mono font-bold whitespace-nowrap text-amber-700">
+                    {row.totalOtHours > 0 ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-100/80 text-amber-800 text-xs font-bold">
+                        +{row.totalOtHours.toFixed(1)}h
+                      </span>
+                    ) : (
+                      `${row.totalOtHours.toFixed(1)}h`
+                    )}
+                  </td>
+
+                  {/* TOTAL */}
+                  <td className="px-3 py-2.5 text-center font-mono font-extrabold whitespace-nowrap text-[#1a3a8a]">
+                    {row.grandTotalHours.toFixed(1)}h
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
 
           {/* Table Footer Totals */}
-          <tfoot>
-            <tr className="border-t-2 border-[#CBD5E1] bg-slate-100 font-bold text-slate-900 text-sm">
-              <td className="px-6 py-3.5 font-mono text-xs uppercase tracking-wider text-[#1E3A8A]">
-                TOTAL
-              </td>
-              <td className="px-6 py-3.5">
-                Staff Count: {filteredAndSortedData.length}
-              </td>
-              <td className="px-6 py-3.5 text-center text-[#1E3A8A]">
-                {totalDaysPresent}
-              </td>
-              <td className="px-6 py-3.5 text-center">
-                {totalRegHrs.toFixed(1)} hrs
-              </td>
-              <td className="px-6 py-3.5 text-center text-orange-600">
-                {totalOtHrs.toFixed(1)} hrs
-              </td>
-              <td className="px-6 py-3.5 text-center text-[#1E3A8A]">
-                {grandTotalHrs.toFixed(1)} hrs
-              </td>
-            </tr>
-          </tfoot>
+          {filteredAndSortedData.length > 0 && (
+            <tfoot>
+              <tr className="font-bold text-xs uppercase tracking-wider border-t-2 border-slate-200 bg-slate-50 text-slate-800">
+                <td className="px-3 py-2.5 whitespace-nowrap font-bold">
+                  TOTAL
+                </td>
+                <td className="px-3 py-2.5 whitespace-nowrap text-slate-600">
+                  {filteredAndSortedData.length} Staff Records
+                </td>
+                <td className="px-3 py-2.5 text-center whitespace-nowrap font-extrabold">
+                  {totalDaysPresent}
+                </td>
+                <td className="px-3 py-2.5 text-center whitespace-nowrap text-slate-700">
+                  {totalRegHrs.toFixed(1)}h
+                </td>
+                <td className="px-3 py-2.5 text-center whitespace-nowrap text-amber-700 font-extrabold">
+                  +{totalOtHrs.toFixed(1)}h
+                </td>
+                <td className="px-3 py-2.5 text-center whitespace-nowrap text-blue-900 font-black">
+                  {grandTotalHrs.toFixed(1)}h
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
-      {/* Card Footer matching Geometric Balance */}
-      <div className="p-6 bg-slate-50 border-t border-[#CBD5E1] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 font-medium italic">
-        <span>* Overtime calculation based on 8.0 hr daily baseline</span>
-        <span>Report ID: {reportId}</span>
+      {/* Card Footer */}
+      <div className="mt-4 pt-3 border-t flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-2xs border-slate-200 text-slate-500 font-sans">
+        <span>Baseline shift standard: 8.0 hrs/day • Overtime trigger: &gt; 8.0 hrs</span>
+        <span className="font-mono">Report ID: {reportId}</span>
       </div>
     </div>
   );
