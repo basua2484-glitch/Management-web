@@ -1,6 +1,0 @@
-{
-  "name": "Housekeeping Attendance & OT Reports",
-  "description": "Track housekeeping staff attendance, compute regular and overtime hours, generate styled monthly PDF reports, and sync with Google Sheets.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
