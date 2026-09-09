@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LogIn,
   LogOut,
@@ -14,8 +14,14 @@ import {
   Layers,
   History,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession } from '../types';
-import { calculateDailyAttendance, getSessionDurationInMinutes } from '../utils/attendanceCalculator';
+import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession, StaffSummaryResponse } from '../types';
+import {
+  calculateDailyAttendance,
+  getSessionDurationInMinutes,
+  getStaffSummary,
+  formatTimeTo12hStr,
+  updateUI,
+} from '../utils/attendanceCalculator';
 
 interface StaffPunchPortalProps {
   staff: StaffUser[];
@@ -117,10 +123,39 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     (r) => r.userId === activeStaff.id && r.date === selectedDate
   );
 
-  const punchInTime = todayRecord?.punchIn || null;
-  const punchOutTime = todayRecord?.punchOut || null;
-  const regularHours = todayRecord?.regularHours ?? (punchInTime ? 8.0 : 0);
-  const otHours = todayRecord?.otHours ?? (punchInTime && punchOutTime ? 1.5 : 0);
+  // Dynamic active sessions for selected staff & date
+  const activeSessions: AttendanceSession[] = useMemo(() => {
+    if (todayRecord?.sessions && todayRecord.sessions.length > 0) {
+      return todayRecord.sessions;
+    }
+    if (todayRecord?.punchIn) {
+      return [
+        {
+          id: `sess_${todayRecord.id}_1`,
+          staff_id: activeStaff.id,
+          date: selectedDate,
+          punch_in: todayRecord.punchInTimestamp || todayRecord.punchIn,
+          punch_out: todayRecord.punchOutTimestamp || todayRecord.punchOut || null,
+          notes: assignedArea,
+        },
+      ];
+    }
+    return [];
+  }, [todayRecord, activeStaff.id, selectedDate, assignedArea]);
+
+  // Dynamic Total Calculation (NO HARDCODED 8.0h / 1.5h) matching @app.route('/api/get_staff_summary/<staff_id>')
+  const staffSummary: StaffSummaryResponse = useMemo(() => {
+    return getStaffSummary(activeSessions);
+  }, [activeSessions]);
+
+  const regularHours = staffSummary.regular_hours;
+  const otHours = staffSummary.overtime_hours;
+  const isDutyActive = staffSummary.is_duty_active;
+
+  // Active in-progress session (if any)
+  const currentOpenSession = useMemo(() => {
+    return activeSessions.find((s) => !s.punch_out) || null;
+  }, [activeSessions]);
 
   // Global/State Variables for exact real-time punch timestamp tracking
   const punchInTimestampRef = useRef<Date | null>(null);
@@ -140,6 +175,14 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
   // Sync punchInTimestamp with todayRecord updates
   useEffect(() => {
+    if (currentOpenSession?.punch_in) {
+      const d = new Date(currentOpenSession.punch_in);
+      if (!isNaN(d.getTime())) {
+        punchInTimestampRef.current = d;
+        setPunchInTimestamp(d);
+        return;
+      }
+    }
     if (todayRecord?.punchInTimestamp) {
       const d = new Date(todayRecord.punchInTimestamp);
       punchInTimestampRef.current = d;
@@ -154,7 +197,13 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       punchInTimestampRef.current = null;
       setPunchInTimestamp(null);
     }
-  }, [todayRecord?.punchIn, todayRecord?.punchInTimestamp, selectedDate, activeStaff.id]);
+  }, [todayRecord?.punchIn, todayRecord?.punchInTimestamp, currentOpenSession?.punch_in, selectedDate, activeStaff.id]);
+
+  // Synchronize updateUI(data) dynamically with current staffSummary and expose to window
+  useEffect(() => {
+    (window as unknown as { updateUI: typeof updateUI }).updateUI = updateUI;
+    updateUI(staffSummary);
+  }, [staffSummary]);
 
   // 3. BACKEND API SYNC
   const syncPunchWithBackend = (
@@ -207,40 +256,45 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     const minutes = timestamp.getMinutes().toString().padStart(2, '0');
     const time24h = `${hours}:${minutes}`;
 
-    // UI Updates
-    const dutyStatusTextEl = document.getElementById('dutyStatusText');
-    if (dutyStatusTextEl) {
-      dutyStatusTextEl.innerHTML = `<span class="text-success fw-bold text-[#198754] font-bold">Punched In (${formattedTime})</span>`;
-    }
+    const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
+    
+    // Existing completed sessions
+    const existingClosedSessions = activeSessions.filter((s) => Boolean(s.punch_out));
+    const newSession: AttendanceSession = {
+      id: `sess_${recordId}_${existingClosedSessions.length + 1}`,
+      staff_id: activeStaff.id,
+      date: selectedDate,
+      punch_in: timestamp.toISOString(),
+      punch_out: null,
+      notes: assignedArea,
+    };
 
-    // Toggle Buttons
-    const inBtn = document.getElementById('punchInBtn');
-    if (inBtn) inBtn.classList.add('d-none');
-    const outBtn = document.getElementById('punchOutBtn');
-    if (outBtn) outBtn.classList.remove('d-none');
+    const allSessions = [...existingClosedSessions, newSession];
+    const summary = getStaffSummary(allSessions);
 
     // Update Attendance State
-    const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
     const updatedRecord: AttendanceRecord = {
       id: recordId,
       userId: activeStaff.id,
       date: selectedDate,
-      punchIn: time24h,
+      punchIn: todayRecord?.punchIn || time24h,
       punchOut: null,
-      punchInTimestamp: timestamp.toISOString(),
+      punchInTimestamp: todayRecord?.punchInTimestamp || timestamp.toISOString(),
       punchOutTimestamp: null,
-      regularHours: todayRecord?.regularHours || 0.0,
-      otHours: todayRecord?.otHours || 0.0,
-      sessions: todayRecord?.sessions || [],
+      regularHours: summary.regular_hours,
+      otHours: summary.overtime_hours,
+      sessions: allSessions,
       status: 'Present',
       notes: todayRecord?.notes || assignedArea,
     };
     onSaveRecord(updatedRecord);
 
     // Backend API Call
-    syncPunchWithBackend('IN', timestamp);
+    syncPunchWithBackend('IN', timestamp, summary.regular_hours, summary.overtime_hours);
 
-    const msg = `Punch In safaltapurvak ho gaya (${formattedTime})!`;
+    const sessionNum = allSessions.length;
+    const sessionLabel = sessionNum > 1 ? ` (Session #${sessionNum})` : '';
+    const msg = `Punch In successful (${formattedTime})${sessionLabel}! Duty active.`;
     if (onFlash) onFlash(msg, 'success');
     setFeedbackMessage({ type: 'success', text: msg });
     setTimeout(() => setFeedbackMessage(null), 4500);
@@ -248,65 +302,49 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
   // 2. PUNCH OUT & REAL-TIME HOURS CALCULATION
   const handlePunchOut = () => {
-    const effectiveInTimestamp =
-      punchInTimestampRef.current ||
-      punchInTimestamp ||
-      (todayRecord?.punchInTimestamp ? new Date(todayRecord.punchInTimestamp) : null) ||
-      (todayRecord?.punchIn ? new Date() : null);
-
-    if (!effectiveInTimestamp) {
-      const errMsg = 'Error: Punch In time record nahi mila!';
-      setFeedbackMessage({ type: 'warning', text: errMsg });
-      if (onFlash) onFlash(errMsg, 'danger');
-      return;
-    }
-
     const punchOutTimestamp = new Date(); // Captures exact Punch Out
     const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
 
-    // Create session record for multi-session support
-    const currentSession: AttendanceSession = {
-      id: `sess_${recordId}_${(todayRecord?.sessions?.length || 0) + 1}`,
-      staff_id: activeStaff.id,
-      date: selectedDate,
-      punch_in: effectiveInTimestamp.toISOString(),
-      punch_out: punchOutTimestamp.toISOString(),
-      notes: assignedArea,
-    };
+    let allSessions = [...activeSessions];
+    const openIdx = allSessions.findIndex((s) => !s.punch_out);
 
-    const previousSessions = todayRecord?.sessions || [];
-    const allSessions = [...previousSessions, currentSession];
+    if (openIdx !== -1) {
+      allSessions[openIdx] = {
+        ...allSessions[openIdx],
+        punch_out: punchOutTimestamp.toISOString(),
+      };
+    } else {
+      const effectiveInTimestamp =
+        punchInTimestampRef.current ||
+        punchInTimestamp ||
+        (todayRecord?.punchInTimestamp ? new Date(todayRecord.punchInTimestamp) : null) ||
+        (todayRecord?.punchIn ? new Date() : null);
 
-    // Calculate daily attendance across all sessions for today
-    const dailyCalc = calculateDailyAttendance(allSessions);
+      if (!effectiveInTimestamp) {
+        const errMsg = 'Error: Punch In time record nahi mila!';
+        setFeedbackMessage({ type: 'warning', text: errMsg });
+        if (onFlash) onFlash(errMsg, 'danger');
+        return;
+      }
 
-    let regHours = dailyCalc.regular_hours;
-    let overtimeHours = dailyCalc.overtime_hours;
-
-    // If demo quick test punch (< 1 minute) on a fresh single session, simulate standard 9.5h shift
-    if (allSessions.length === 1 && (dailyCalc.total_hours || 0) <= 0.02) {
-      regHours = 8.0;
-      overtimeHours = 1.5;
+      allSessions.push({
+        id: `sess_${recordId}_${allSessions.length + 1}`,
+        staff_id: activeStaff.id,
+        date: selectedDate,
+        punch_in: effectiveInTimestamp.toISOString(),
+        punch_out: punchOutTimestamp.toISOString(),
+        notes: assignedArea,
+      });
     }
+
+    // Dynamic Total Calculation (NO HARDCODED 8.0h / 1.5h) matching get_staff_summary
+    const summary = getStaffSummary(allSessions);
+    const regHours = summary.regular_hours;
+    const overtimeHours = summary.overtime_hours;
 
     // Formatting values (2 decimal places)
     const regFormatted = regHours.toFixed(2);
     const otFormatted = overtimeHours.toFixed(2);
-
-    // Update UI Elements
-    const regEl = document.getElementById('regHoursDisplay');
-    if (regEl) regEl.innerText = `${regFormatted}h`;
-    const otEl = document.getElementById('otHoursDisplay');
-    if (otEl) otEl.innerText = `${otFormatted}h`;
-
-    // Disable Punch Out Button after Completion
-    const punchOutBtn = document.getElementById('punchOutBtn') as HTMLButtonElement | null;
-    if (punchOutBtn) {
-      punchOutBtn.disabled = true;
-      punchOutBtn.innerText = 'Duty Completed';
-      punchOutBtn.className =
-        'btn btn-secondary w-100 w-full bg-[#6c757d] text-white font-semibold py-2 px-4 rounded-lg text-sm cursor-not-allowed opacity-80';
-    }
 
     const hours = punchOutTimestamp.getHours().toString().padStart(2, '0');
     const minutes = punchOutTimestamp.getMinutes().toString().padStart(2, '0');
@@ -319,10 +357,10 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       date: selectedDate,
       punchIn: todayRecord?.punchIn || getCurrent24hTime(),
       punchOut: time24h,
-      punchInTimestamp: effectiveInTimestamp.toISOString(),
+      punchInTimestamp: todayRecord?.punchInTimestamp || punchOutTimestamp.toISOString(),
       punchOutTimestamp: punchOutTimestamp.toISOString(),
-      regularHours: parseFloat(regFormatted),
-      otHours: parseFloat(otFormatted),
+      regularHours: regHours,
+      otHours: overtimeHours,
       sessions: allSessions,
       status: 'Duty Completed',
       notes: todayRecord?.notes || assignedArea,
@@ -333,7 +371,8 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     syncPunchWithBackend('OUT', punchOutTimestamp, regFormatted, otFormatted);
 
     const sessionCountText = allSessions.length > 1 ? ` (Session #${allSessions.length})` : '';
-    const msg = `Punch Out successful${sessionCountText} • Reg: ${regFormatted}h, OT: ${otFormatted}h`;
+    const totalDurationText = summary.total_hours !== undefined ? ` • Total: ${summary.total_hours.toFixed(2)}h` : '';
+    const msg = `Punch Out successful${sessionCountText} • Reg: ${regFormatted}h, OT: ${otFormatted}h${totalDurationText}`;
     if (onFlash) onFlash(msg, 'success');
     setFeedbackMessage({ type: 'success', text: msg });
     setTimeout(() => setFeedbackMessage(null), 4500);
@@ -546,6 +585,32 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           </div>
         )}
 
+        {/* 1. Top Summary Cards (regularHoursCard & otHoursCard) */}
+        <div className="row g-2 mb-3 grid grid-cols-2 gap-2.5">
+          <div className="col card bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-2xs">
+            <span className="text-2xs text-muted text-slate-500 font-bold uppercase tracking-wider block">
+              Regular Hours
+            </span>
+            <h4
+              id="regularHoursCard"
+              className="fw-bold text-primary text-[#0d6efd] font-bold text-xl mb-0 mt-1 tracking-tight"
+            >
+              {staffSummary.regular_hours}h
+            </h4>
+          </div>
+          <div className="col card bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-2xs">
+            <span className="text-2xs text-muted text-slate-500 font-bold uppercase tracking-wider block">
+              Overtime Hours
+            </span>
+            <h4
+              id="otHoursCard"
+              className="fw-bold text-warning text-amber-600 font-bold text-xl mb-0 mt-1 tracking-tight"
+            >
+              {staffSummary.overtime_hours}h
+            </h4>
+          </div>
+        </div>
+
         {/* TODAY DUTY STATUS CARD */}
         <div className="card p-3 text-center bg-slate-50 border border-slate-200 rounded-xl">
           <h5 className="font-bold text-xs uppercase tracking-wider text-slate-600 mb-2.5">
@@ -553,20 +618,77 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           </h5>
 
           <div id="dutyStatusText" className="mb-2.5">
-            {todayRecord && todayRecord.punchOut ? (
-              <p className="text-success fw-bold text-[#198754] font-bold text-sm mb-0">
-                Punched In ({formatTime12h(todayRecord.punchIn || '')}) &bull; Out ({formatTime12h(todayRecord.punchOut)})
-              </p>
-            ) : todayRecord && todayRecord.punchIn ? (
-              <p className="text-warning fw-bold text-amber-600 font-bold text-sm mb-0">
-                Punched In at {formatTime12h(todayRecord.punchIn)}
-              </p>
+            {isDutyActive ? (
+              <div className="space-y-1">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                  <span className="h-2 w-2 rounded-full bg-amber-500 animate-ping"></span>
+                  Active Duty in Progress {activeSessions.length > 1 ? `(Session #${activeSessions.length})` : ''}
+                </span>
+                <p className="text-warning fw-bold text-amber-700 font-bold text-sm mb-0">
+                  Punched In at {formatTimeTo12hStr(currentOpenSession?.punch_in || todayRecord?.punchIn)}
+                </p>
+              </div>
+            ) : staffSummary.sessions.length > 0 ? (
+              <div className="space-y-1">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                  Duty Completed ({staffSummary.sessions.length} session{staffSummary.sessions.length > 1 ? 's' : ''})
+                </span>
+                <p className="text-success fw-bold text-[#198754] font-bold text-sm mb-0">
+                  Total Worked: {(staffSummary.total_hours ?? (regularHours + otHours)).toFixed(2)}h
+                </p>
+              </div>
             ) : (
               <p className="text-muted text-xs text-slate-500 mb-0">Not Punched Today</p>
             )}
           </div>
 
-          {todayRecord && todayRecord.punchOut ? (
+          {isDutyActive ? (
+            <div>
+              <button
+                type="button"
+                id="punchOutBtn"
+                onClick={handlePunchOut}
+                className="btn btn-danger w-100 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <LogOut className="h-5 w-5 stroke-[2.5] me-1 inline" />
+                <span>PUNCH OUT</span>
+              </button>
+
+              {/* 3. Status Subtitle */}
+              <small id="statusSummaryText" className="text-muted mt-2 d-block text-xs text-slate-500 block">
+                Reg: <span id="regHoursDisplay">{staffSummary.regular_hours}h</span> &bull; OT:{' '}
+                <span id="otHoursDisplay">{staffSummary.overtime_hours}h</span> &bull; Sessions: {staffSummary.sessions.length}
+              </small>
+
+              {/* 2. Daily Sessions Container (sessionList) */}
+              {staffSummary.sessions && staffSummary.sessions.length > 0 && (
+                <div className="mt-2.5 p-2 bg-white rounded-lg border border-slate-200 text-left">
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1">
+                    <span className="flex items-center gap-1">
+                      <Layers className="h-3 w-3 text-indigo-600" /> Daily Sessions ({staffSummary.sessions.length})
+                    </span>
+                    <span className="text-[10px] text-slate-400">Dynamic 8h Baseline</span>
+                  </div>
+                  <div id="sessionList" className="space-y-1 session-container">
+                    {staffSummary.sessions.map((s) => (
+                      <div
+                        key={s.session_num}
+                        className="d-flex justify-content-between border-bottom py-2 flex items-center justify-between border-b border-slate-100 py-2 text-xs"
+                      >
+                        <span>
+                          #{s.session_num} &nbsp; {s.in_time} – {s.out_time}
+                        </span>
+                        <span className="fw-bold text-success font-bold text-[#198754]">
+                          {s.hours}h
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : staffSummary.sessions.length > 0 ? (
             <div>
               <button
                 type="button"
@@ -576,46 +698,37 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
               >
                 Duty Completed
               </button>
-              <small className="text-muted mt-2 d-block text-xs text-slate-500 block">
-                Reg: <span id="regHoursDisplay">{regularHours.toFixed(2)}h</span> &bull; OT:{' '}
-                <span id="otHoursDisplay">{otHours.toFixed(2)}h</span>
-                {todayRecord.sessions && todayRecord.sessions.length > 0 && (
-                  <span> &bull; Sessions: {todayRecord.sessions.length}</span>
-                )}
+
+              {/* 3. Status Subtitle */}
+              <small id="statusSummaryText" className="text-muted mt-2 d-block text-xs text-slate-500 block">
+                Reg: <span id="regHoursDisplay">{staffSummary.regular_hours}h</span> &bull; OT:{' '}
+                <span id="otHoursDisplay">{staffSummary.overtime_hours}h</span> &bull; Sessions: {staffSummary.sessions.length}
               </small>
 
-              {/* Multi-Session Breakdown */}
-              {todayRecord.sessions && todayRecord.sessions.length > 0 && (
-                <div className="mt-2.5 p-2 bg-white rounded-lg border border-slate-200 text-left">
-                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1">
-                    <span className="flex items-center gap-1">
-                      <Layers className="h-3 w-3 text-indigo-600" /> Daily Sessions ({todayRecord.sessions.length})
-                    </span>
-                    <span className="text-[10px] text-slate-400">8h Baseline</span>
-                  </div>
-                  <div className="space-y-1">
-                    {todayRecord.sessions.map((sess, idx) => {
-                      const durMins = sess.punch_out
-                        ? Math.round(getSessionDurationInMinutes(sess.punch_in, sess.punch_out))
-                        : 0;
-                      const durHrs = (durMins / 60).toFixed(2);
-                      return (
-                        <div
-                          key={sess.id || idx}
-                          className="flex items-center justify-between text-2xs text-slate-600 bg-slate-50 px-2 py-1 rounded"
-                        >
-                          <span className="font-semibold text-slate-700">#{idx + 1}</span>
-                          <span>
-                            {formatTime12h(sess.punch_in)} &ndash;{' '}
-                            {sess.punch_out ? formatTime12h(sess.punch_out) : 'Active'}
-                          </span>
-                          <span className="font-bold text-emerald-700">{durHrs}h</span>
-                        </div>
-                      );
-                    })}
-                  </div>
+              {/* 2. Daily Sessions Container (sessionList) */}
+              <div className="mt-2.5 p-2 bg-white rounded-lg border border-slate-200 text-left">
+                <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 mb-1">
+                  <span className="flex items-center gap-1">
+                    <Layers className="h-3 w-3 text-indigo-600" /> Daily Sessions ({staffSummary.sessions.length})
+                  </span>
+                  <span className="text-[10px] text-slate-400">Dynamic 8h Baseline</span>
                 </div>
-              )}
+                <div id="sessionList" className="space-y-1 session-container">
+                  {staffSummary.sessions.map((s) => (
+                    <div
+                      key={s.session_num}
+                      className="d-flex justify-content-between border-bottom py-2 flex items-center justify-between border-b border-slate-100 py-2 text-xs"
+                    >
+                      <span>
+                        #{s.session_num} &nbsp; {s.in_time} – {s.out_time}
+                      </span>
+                      <span className="fw-bold text-success font-bold text-[#198754]">
+                        {s.hours}h
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               {/* Optional multi-session punch in */}
               <button
@@ -662,26 +775,6 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
                 </div>
               )}
             </div>
-          ) : todayRecord && todayRecord.punchIn ? (
-            <div>
-              <button
-                type="button"
-                id="punchOutBtn"
-                onClick={handlePunchOut}
-                className="btn btn-danger w-100 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
-              >
-                <LogOut className="h-5 w-5 stroke-[2.5] me-1 inline" />
-                <span>PUNCH OUT</span>
-              </button>
-              <button
-                type="button"
-                id="punchInBtn"
-                onClick={handlePunchIn}
-                className="d-none hidden"
-              >
-                PUNCH IN
-              </button>
-            </div>
           ) : (
             <div>
               <button
@@ -693,14 +786,15 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
                 <LogIn className="h-5 w-5 stroke-[2.5] me-1 inline" />
                 <span>PUNCH IN</span>
               </button>
-              <button
-                type="button"
-                id="punchOutBtn"
-                onClick={handlePunchOut}
-                className="d-none hidden"
-              >
-                PUNCH OUT
-              </button>
+
+              {/* 3. Status Subtitle */}
+              <small id="statusSummaryText" className="text-muted mt-2 d-block text-xs text-slate-500 block">
+                Reg: <span id="regHoursDisplay">{staffSummary.regular_hours}h</span> &bull; OT:{' '}
+                <span id="otHoursDisplay">{staffSummary.overtime_hours}h</span> &bull; Sessions: {staffSummary.sessions.length}
+              </small>
+
+              {/* 2. Daily Sessions Container (sessionList) */}
+              <div id="sessionList" className="space-y-1 session-container mt-2"></div>
             </div>
           )}
         </div>

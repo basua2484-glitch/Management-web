@@ -383,8 +383,14 @@ export function saveStoredUsers(users: AppUser[]): void {
   }
 }
 
+const STORAGE_KEY_LOGGED_OUT = 'housekeeping_user_logged_out';
+
 export function getStoredCurrentUser(): AppUser | null {
   try {
+    const isLoggedOut = localStorage.getItem(STORAGE_KEY_LOGGED_OUT);
+    if (isLoggedOut === 'true') {
+      return null;
+    }
     const data = localStorage.getItem(STORAGE_KEY_CURRENT_USER);
     if (data) {
       const parsed: AppUser = JSON.parse(data);
@@ -408,8 +414,10 @@ export function saveStoredCurrentUser(user: AppUser | null): void {
   try {
     if (user) {
       localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(user));
+      localStorage.removeItem(STORAGE_KEY_LOGGED_OUT);
     } else {
       localStorage.removeItem(STORAGE_KEY_CURRENT_USER);
+      localStorage.setItem(STORAGE_KEY_LOGGED_OUT, 'true');
     }
   } catch (e) {
     console.error('Failed to save current user to local storage', e);

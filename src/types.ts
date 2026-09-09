@@ -53,6 +53,21 @@ export interface AttendanceSession {
   notes?: string;
 }
 
+export interface StaffSummarySession {
+  session_num: number;
+  in_time: string; // '%I:%M %p' e.g. "08:00 AM" or "--"
+  out_time: string; // '%I:%M %p' e.g. "05:30 PM" or "--"
+  hours: number;
+}
+
+export interface StaffSummaryResponse {
+  regular_hours: number;
+  overtime_hours: number;
+  sessions: StaffSummarySession[];
+  is_duty_active: boolean;
+  total_hours?: number;
+}
+
 export interface DailyAttendanceCalculation {
   regular_hours: number;
   overtime_hours: number;

@@ -42,6 +42,7 @@ import {
   saveStoredCurrentUser,
 } from './data/mockHousekeepingData';
 import { initAuth, logout } from './services/firebase';
+import { performLogout, handleLogout, checkAdminRequired, adminRequired } from './services/auth';
 import { downloadMonthlyReportPdf } from './services/pdfGenerator';
 import { ReportTable } from './components/ReportTable';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
@@ -120,8 +121,55 @@ export default function App() {
   // Role Access Checker
   const isAdminOrManager = currentUser?.role === 'admin' || currentUser?.role === 'manager';
 
-  // Listen for Firebase Auth on load
+  // Listen for Firebase Auth & URL routes on load
   useEffect(() => {
+    // Expose logout, handleLogout, and admin_required on window for direct testing/scripts
+    (window as unknown as {
+      logout: typeof handleAppLogout;
+      handleLogout: typeof handleLogout;
+      admin_required: typeof checkAdminRequired;
+    }).logout = handleAppLogout;
+    (window as unknown as {
+      logout: typeof handleAppLogout;
+      handleLogout: typeof handleLogout;
+      admin_required: typeof checkAdminRequired;
+    }).handleLogout = handleLogout;
+    (window as unknown as {
+      logout: typeof handleAppLogout;
+      handleLogout: typeof handleLogout;
+      admin_required: typeof checkAdminRequired;
+    }).admin_required = checkAdminRequired;
+
+    const handleRouteInspection = () => {
+      if (typeof window === 'undefined') return;
+      const pathname = window.location.pathname;
+
+      if (pathname === '/logout') {
+        handleAppLogout();
+        return;
+      }
+
+      // @app.route('/admin/dashboard') with @admin_required
+      // If 'user_id' not in session or session.get('role') != 'admin': return redirect('/login')
+      if (pathname === '/admin/dashboard' || pathname === '/admin') {
+        const check = checkAdminRequired(currentUser);
+        if (!check.authorized) {
+          // Unauthorized attempt -> Redirect to login
+          window.history.replaceState({}, '', '/login');
+          if (currentUser) {
+            addFlash('Unauthorized attempt: Admin privileges required. Redirected to login.', 'danger');
+            handleAppLogout();
+          }
+          return;
+        }
+        // Authorized: open admin dashboard
+        setActiveTab('live');
+      }
+    };
+
+    handleRouteInspection();
+    window.addEventListener('popstate', handleRouteInspection);
+
     let unsubscribe: (() => void) | undefined;
     try {
       unsubscribe = initAuth(
@@ -371,10 +419,27 @@ export default function App() {
   const handleAppLogin = (user: AppUser) => {
     saveStoredCurrentUser(user);
     setCurrentUser(user);
+
+    // Set user tokens & session cookies matching Flask session ('user_id', 'role', 'session')
+    try {
+      localStorage.setItem("user_token", `token_${user.id}_${Date.now()}`);
+      localStorage.setItem("user_role", user.role);
+      document.cookie = `session=active_${user.id}; Path=/; SameSite=Lax`;
+      document.cookie = `user_id=${user.id}; Path=/; SameSite=Lax`;
+      document.cookie = `role=${user.role}; Path=/; SameSite=Lax`;
+    } catch (e) {
+      console.warn('Cookie set notice:', e);
+    }
+
     // Strict Role Redirection:
-    // if user.role in ['admin', 'manager']: redirect(url_for('admin_dashboard'))
+    // if user.role == 'admin': redirect(url_for('admin_dashboard')) -> /admin/dashboard
     // else: redirect(url_for('staff_portal'))
-    if (user.role === 'admin' || user.role === 'manager') {
+    if (user.role === 'admin') {
+      setActiveTab('live');
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.pushState({}, '', '/admin/dashboard');
+      }
+    } else if (user.role === 'manager') {
       setActiveTab('live');
     } else {
       setActiveTab('portal');
@@ -391,29 +456,46 @@ export default function App() {
     );
   };
 
-  const handleAppLogout = () => {
-    saveStoredCurrentUser(null);
+  const handleAppLogout = async () => {
+    // Local Tokens Wipe Out
+    try {
+      localStorage.removeItem("user_token");
+      localStorage.removeItem("user_role");
+      sessionStorage.clear();
+    } catch (e) {
+      console.warn("Storage wipe warning:", e);
+    }
+
+    await performLogout();
     setCurrentUser(null);
     addFlash('Aap safaltapurvak logout ho gaye hain.', 'info');
   };
 
-  // Role Access Control Decorator: @role_required(allowed_roles)
+  // Role Access Control Decorator: @admin_required & @role_required
   const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal') => {
     if (!currentUser) {
-      setCurrentUser(null);
+      handleAppLogout();
       return;
     }
 
-    // Admin / Manager Dashboards: @role_required(['admin', 'manager'])
-    if (targetTab === 'live' || targetTab === 'monthly') {
+    // Admin Dashboard: @app.route('/admin/dashboard') protected by @admin_required
+    if (targetTab === 'live') {
+      const check = checkAdminRequired(currentUser);
+      if (!check.authorized) {
+        // Unauthorized attempt -> Redirect to login
+        addFlash('Unauthorized attempt: Admin privileges required. Redirected to /login.', 'danger');
+        handleAppLogout();
+        return;
+      }
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.pushState({}, '', '/admin/dashboard');
+      }
+    } else if (targetTab === 'monthly') {
       const allowedRoles: UserRole[] = ['admin', 'manager'];
       if (!allowedRoles.includes(currentUser.role)) {
-        // Exact flash: "Aapko is section ko access karne ki permission nahi hai." ("danger")
         addFlash('Aapko is section ko access karne ki permission nahi hai.', 'danger');
         if (currentUser.role === 'staff') {
           setActiveTab('portal');
-        } else {
-          setActiveTab('live');
         }
         return;
       }
@@ -1178,21 +1260,39 @@ export default function App() {
               onSelectStaff={handleSelectStaffRow}
             />
           ) : activeTab === 'live' ? (
-            <LiveAttendanceView
-              selectedDate={selectedLiveDate}
-              onDateChange={setSelectedLiveDate}
-              staff={visibleStaff}
-              records={records}
-              onOpenAssignModal={handleOpenAssignModal}
-              onOpenPunchPortal={(staffId) => {
-                setPunchPortalStaffId(staffId || 1);
-                setIsPunchPortalModalOpen(true);
-              }}
-              onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
-              pendingUsersCount={pendingUsers.length}
-              onOpenPendingApprovalModal={() => setIsPendingModalOpen(true)}
-              currentUserRole={currentUser?.role}
-            />
+            /* @app.route('/admin/dashboard') protected by @admin_required */
+            currentUser?.role === 'admin' ? (
+              <LiveAttendanceView
+                selectedDate={selectedLiveDate}
+                onDateChange={setSelectedLiveDate}
+                staff={visibleStaff}
+                records={records}
+                onOpenAssignModal={handleOpenAssignModal}
+                onOpenPunchPortal={(staffId) => {
+                  setPunchPortalStaffId(staffId || 1);
+                  setIsPunchPortalModalOpen(true);
+                }}
+                onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
+                pendingUsersCount={pendingUsers.length}
+                onOpenPendingApprovalModal={() => setIsPendingModalOpen(true)}
+                currentUserRole={currentUser?.role}
+              />
+            ) : (
+              <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
+                <ShieldAlert className="h-12 w-12 text-rose-500 mx-auto mb-3" />
+                <h3 className="text-base font-bold text-slate-800 mb-1">Access Restricted (@admin_required)</h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Admin authorization required. Unauthorized attempts are redirected to login.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleAppLogout}
+                  className="px-4 py-2 bg-rose-600 text-white rounded-xl text-xs font-semibold hover:bg-rose-700 transition-colors"
+                >
+                  Redirect to Login
+                </button>
+              </div>
+            )
           ) : (
             <div className="p-3 sm:p-6 flex justify-center">
               <div className="w-full max-w-[460px]">
