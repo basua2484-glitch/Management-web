@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LogIn, Lock, ShieldCheck, Ticket, Hospital } from 'lucide-react';
 import type { AppUser } from '../types';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
+import { USERS_DB } from '../services/auth';
 
 interface LoginViewProps {
-  onLoginSuccess: (user: AppUser) => void;
+  onLoginSuccess: (user: AppUser, redirectUrl?: string) => void;
   users: AppUser[];
   errorFlash?: string | null;
   onClearError?: () => void;
@@ -51,7 +52,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
     const cleanNormalized = cleanInput.replace(/[-_\s]/g, '');
     const cleanPass = password;
 
-    // User lookup: User.query.filter_by(staff_id=staff_id).first() OR username
+    // 1. Credentials Verification against USERS_DB
+    const dbUser = USERS_DB.find(
+      (u) => u.id.toLowerCase() === cleanInput && u.pass === cleanPass
+    );
+
+    // 2. User lookup: User.query.filter_by(staff_id=staff_id).first() OR username
     const matched = users.find((u) => {
       // 1. Direct staff_id match (e.g. HK-001)
       if (u.staff_id) {
@@ -84,14 +90,36 @@ export const LoginView: React.FC<LoginViewProps> = ({
       return false;
     });
 
+    if (dbUser) {
+      setFlash(null);
+      const appUser: AppUser = matched || {
+        id: dbUser.id === 'admin' ? 1 : dbUser.id === 'manager' ? 2 : 3,
+        username: dbUser.id,
+        name: dbUser.id === 'admin' ? 'ApexCare Admin' : dbUser.id === 'manager' ? 'Operations Manager' : 'Staff Member (' + dbUser.id.toUpperCase() + ')',
+        role: dbUser.role.toLowerCase() as 'admin' | 'manager' | 'staff',
+        is_approved: true,
+        staff_id: dbUser.id.toUpperCase(),
+        staffId: dbUser.role === 'STAFF' ? 1 : undefined,
+        assigned_area: dbUser.role === 'STAFF' ? 'General Ward' : 'Hospital Wide',
+      };
+      onLoginSuccess(appUser, dbUser.redirect);
+      return;
+    }
+
     // Flash error if user does not exist or password mismatch
     if (!matched || matched.password !== cleanPass) {
-      setLocalFlash('Aapka Staff ID ya Password sahi nahi hai!', 'danger');
+      setLocalFlash('Invalid ID or Password! Access Denied.', 'danger');
       return;
     }
 
     setFlash(null);
-    onLoginSuccess(matched);
+    const redirect =
+      matched.role === 'admin'
+        ? '/admin-dashboard'
+        : matched.role === 'manager'
+        ? '/manager-dashboard'
+        : '/staff-portal';
+    onLoginSuccess(matched, redirect);
   };
 
   const handleQuickFill = (u: string, p: string) => {
@@ -288,13 +316,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
             <button
               type="button"
-              onClick={() => handleQuickFill('HK-001', 'staff123')}
+              onClick={() => handleQuickFill('hk001', 'staff123')}
               className="p-2 rounded-lg border text-left transition-colors cursor-pointer relative bg-blue-50/60 hover:bg-blue-100/60 border-blue-200 text-blue-900 font-sans"
-              title="Staff Member: Ramesh Kumar (staff_id: HK-001) -> staff_portal"
+              title="Staff Member: hk001 / staff123 -> staff-portal"
             >
               <div className="flex items-center justify-between">
-                <span className="font-bold text-blue-800">HK-001</span>
-                <span className="text-3xs uppercase font-semibold text-blue-700">Ramesh</span>
+                <span className="font-bold text-blue-800">hk001</span>
+                <span className="text-3xs uppercase font-semibold text-blue-700">Staff</span>
               </div>
               <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: staff123</span>
             </button>

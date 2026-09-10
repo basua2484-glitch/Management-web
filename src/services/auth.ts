@@ -46,6 +46,9 @@ export async function performLogout(): Promise<LogoutResult> {
 
   // 3. Local Tokens Wipe Out & Clear browser session storage
   try {
+    localStorage.removeItem("userToken");
+    localStorage.removeItem("userRole");
+    localStorage.removeItem("userId");
     localStorage.removeItem("user_token");
     localStorage.removeItem("user_role");
     sessionStorage.clear();
@@ -140,6 +143,9 @@ export function adminRequired<T extends (...args: any[]) => any>(
 export function handleLogout(): void {
   // Local Tokens Wipe Out
   try {
+    localStorage.removeItem("userToken");
+    localStorage.removeItem("userRole");
+    localStorage.removeItem("userId");
     localStorage.removeItem("user_token");
     localStorage.removeItem("user_role");
   } catch (e) {
@@ -164,7 +170,45 @@ export function handleLogout(): void {
 
   // Redirect to Login
   if (typeof window !== 'undefined') {
-    window.location.href = '/login';
+    window.location.href = '/';
   }
 }
+
+// Mock User Database (Aap ise apne Backend API / Firebase se replace kar sakte hain)
+export const USERS_DB = [
+  { id: "admin", pass: "admin123", role: "ADMIN", redirect: "/admin-dashboard" },
+  { id: "manager", pass: "manager123", role: "MANAGER", redirect: "/manager-dashboard" },
+  { id: "hk001", pass: "staff123", role: "STAFF", redirect: "/staff-portal" }
+];
+
+export const handleLogin = (
+  staffId: string,
+  password: string,
+  navigate: (to: string, options?: { replace?: boolean }) => void,
+  setError: (msg: string) => void
+) => {
+  // 1. Credentials Verification
+  const user = USERS_DB.find(
+    (u) => u.id.toLowerCase() === staffId.trim().toLowerCase() && u.pass === password
+  );
+
+  if (!user) {
+    setError("Invalid ID or Password! Access Denied.");
+    return false;
+  }
+
+  // 2. Save Session Token & Role in Local Storage / Session
+  const token = "JWT_SECRET_SESSION_TOKEN_" + Date.now();
+  localStorage.setItem("userToken", token);
+  localStorage.setItem("userRole", user.role);
+  localStorage.setItem("userId", user.id);
+
+  // Cross-compatibility session keys
+  localStorage.setItem("user_token", token);
+  localStorage.setItem("user_role", user.role.toLowerCase());
+
+  // 3. Automatic Role-Based Dynamic Redirection
+  navigate(user.redirect, { replace: true });
+  return true;
+};
 
