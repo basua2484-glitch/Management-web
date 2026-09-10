@@ -246,3 +246,23 @@ body {
   color: #f59e0b !important;
 }
 
+/* Clean Login Form Component Helpers */
+.login-card {
+  box-sizing: border-box;
+}
+
+.error-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-primary {
+  cursor: pointer;
+}
+
+.footer-note {
+  user-select: none;
+}
+
+

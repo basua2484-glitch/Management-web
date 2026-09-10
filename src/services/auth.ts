@@ -1,4 +1,4 @@
-import { saveStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getStoredUsers, saveStoredCurrentUser } from '../data/mockHousekeepingData';
 import { logout as firebaseLogout } from './firebase';
 
 export interface LogoutResult {
@@ -181,23 +181,112 @@ export const USERS_DB = [
   { id: "hk001", pass: "staff123", role: "STAFF", redirect: "/staff-portal" }
 ];
 
-export const handleLogin = (
+export const handleLogin = async (
   staffId: string,
   password: string,
   navigate: (to: string, options?: { replace?: boolean }) => void,
   setError: (msg: string) => void
-) => {
-  // 1. Credentials Verification
+): Promise<boolean> => {
+  const cleanId = staffId.trim().toLowerCase();
+  const cleanPass = password;
+
+  // 1. Try server-side /api/login endpoint with bcrypt & signed JWT
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ staffId: cleanId, password: cleanPass }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.token) {
+        const roleUpper = (data.role || 'STAFF').toUpperCase();
+        localStorage.setItem("userToken", data.token);
+        localStorage.setItem("userRole", roleUpper);
+        localStorage.setItem("userId", cleanId);
+        localStorage.setItem("user_token", data.token);
+        localStorage.setItem("user_role", roleUpper.toLowerCase());
+
+        const allUsers = getStoredUsers();
+        const matched = allUsers.find(
+          (u) =>
+            u.username.toLowerCase() === cleanId ||
+            (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, ''))
+        );
+        if (matched) {
+          saveStoredCurrentUser(matched);
+        } else {
+          saveStoredCurrentUser({
+            id: cleanId === 'admin' ? 1 : cleanId === 'manager' ? 2 : 3,
+            username: cleanId,
+            name:
+              cleanId === 'admin'
+                ? 'ApexCare Admin'
+                : cleanId === 'manager'
+                ? 'Operations Manager'
+                : `Staff Member (${cleanId.toUpperCase()})`,
+            role: roleUpper.toLowerCase() as any,
+            is_approved: true,
+            staff_id: cleanId.toUpperCase(),
+            assigned_area: roleUpper === 'STAFF' ? 'General Ward' : 'Hospital Wide',
+          });
+        }
+
+        const dest = data.redirect || (roleUpper === 'ADMIN' ? '/admin-dashboard' : roleUpper === 'MANAGER' ? '/manager-dashboard' : '/staff-portal');
+        navigate(dest, { replace: true });
+        return true;
+      }
+    } else if (res.status === 401 || res.status === 400) {
+      const errorData = await res.json().catch(() => ({}));
+      setError(errorData.error || "Invalid credentials");
+      return false;
+    }
+  } catch (err) {
+    // Graceful fallback to client-side database verification if offline
+    console.warn("Backend /api/login offline, using client database verification:", err);
+  }
+
+  // 2. Credentials Verification from USERS_DB
   const user = USERS_DB.find(
-    (u) => u.id.toLowerCase() === staffId.trim().toLowerCase() && u.pass === password
+    (u) => u.id.toLowerCase() === cleanId && u.pass === cleanPass
   );
 
   if (!user) {
-    setError("Invalid ID or Password! Access Denied.");
+    // Also check dynamic registered staff in mock/persistent storage
+    const allUsers = getStoredUsers();
+    const registered = allUsers.find((u) => {
+      if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, '')) return true;
+      if (u.username && u.username.toLowerCase() === cleanId) return true;
+      return false;
+    });
+
+    if (registered && registered.password === cleanPass) {
+      const roleUpper = registered.role.toUpperCase();
+      const token = "JWT_SECRET_SESSION_TOKEN_" + Date.now();
+      const redirect =
+        roleUpper === 'ADMIN'
+          ? '/admin-dashboard'
+          : roleUpper === 'MANAGER'
+          ? '/manager-dashboard'
+          : '/staff-portal';
+
+      localStorage.setItem("userToken", token);
+      localStorage.setItem("userRole", roleUpper);
+      localStorage.setItem("userId", registered.staff_id || registered.username);
+      localStorage.setItem("user_token", token);
+      localStorage.setItem("user_role", registered.role);
+      saveStoredCurrentUser(registered);
+
+      navigate(redirect, { replace: true });
+      return true;
+    }
+
+    setError("Invalid credentials");
     return false;
   }
 
-  // 2. Save Session Token & Role in Local Storage / Session
+  // 3. Save Session Token & Role in Local Storage / Session
   const token = "JWT_SECRET_SESSION_TOKEN_" + Date.now();
   localStorage.setItem("userToken", token);
   localStorage.setItem("userRole", user.role);
@@ -207,7 +296,40 @@ export const handleLogin = (
   localStorage.setItem("user_token", token);
   localStorage.setItem("user_role", user.role.toLowerCase());
 
-  // 3. Automatic Role-Based Dynamic Redirection
+  // Set current user details for application views
+  const allUsers = getStoredUsers();
+  const matched = allUsers.find(
+    (u) =>
+      u.username.toLowerCase() === user.id.toLowerCase() ||
+      (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === user.id.toLowerCase().replace(/[-_\s]/g, ''))
+  );
+
+  if (matched) {
+    saveStoredCurrentUser(matched);
+  } else {
+    saveStoredCurrentUser({
+      id: user.id === 'admin' ? 1 : user.id === 'manager' ? 2 : 3,
+      username: user.id,
+      name:
+        user.id === 'admin'
+          ? 'ApexCare Admin'
+          : user.id === 'manager'
+          ? 'Operations Manager'
+          : `Staff Member (${user.id.toUpperCase()})`,
+      role: user.role.toLowerCase() as any,
+      is_approved: true,
+      staff_id: user.id.toUpperCase(),
+      assigned_area: user.role === 'STAFF' ? 'General Ward' : 'Hospital Wide',
+    });
+  }
+
+  try {
+    document.cookie = `session=active_${user.id}; Path=/; SameSite=Lax`;
+    document.cookie = `user_id=${user.id}; Path=/; SameSite=Lax`;
+    document.cookie = `role=${user.role.toLowerCase()}; Path=/; SameSite=Lax`;
+  } catch (e) {}
+
+  // 4. Automatic Role-Based Dynamic Redirection
   navigate(user.redirect, { replace: true });
   return true;
 };

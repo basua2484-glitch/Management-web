@@ -2,6 +2,8 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, Plugin} from 'vite';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 function attendanceApiPlugin(): Plugin {
   // In-memory session store for dev server API
@@ -49,6 +51,116 @@ function attendanceApiPlugin(): Plugin {
     name: 'attendance-api-plugin',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        // Vercel & Express compatible /api/login route
+        if ((req.url === '/api/login' || req.url?.startsWith('/api/login?')) && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', (chunk) => {
+            bodyStr += chunk;
+          });
+          req.on('end', async () => {
+            res.setHeader('Content-Type', 'application/json');
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const { staffId, password } = body;
+
+              if (!staffId || !password) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ error: 'Please provide both staffId and password' }));
+                return;
+              }
+
+              const cleanId = String(staffId).trim().toLowerCase().replace(/[-_\s]/g, '');
+              const users = [
+                {
+                  id: 'admin',
+                  role: 'ADMIN',
+                  passwordHash: '$2b$10$7CTgGVjgJXKMmGDen4EiYusKIVthdBqzMB.L0B/a55tl3WcTkkX3W',
+                  name: 'ApexCare Admin',
+                  redirect: '/admin-dashboard',
+                },
+                {
+                  id: 'manager',
+                  role: 'MANAGER',
+                  passwordHash: '$2b$10$4eXapasHkkAa6cf6fCDkfeAef.UJYOAqjEXH/S5zAZHtuPYt6eRhO',
+                  name: 'Operations Manager',
+                  redirect: '/manager-dashboard',
+                },
+                {
+                  id: 'hk001',
+                  role: 'STAFF',
+                  passwordHash: '$2b$10$as.6Vk8oadpFbSYz/c9Yf.x/OeoDd8sJ/bV0SUUaIk8UHuIYRSYpW',
+                  name: 'Ramesh Sharma',
+                  redirect: '/staff-portal',
+                },
+                {
+                  id: 'hk002',
+                  role: 'STAFF',
+                  passwordHash: '$2b$10$as.6Vk8oadpFbSYz/c9Yf.x/OeoDd8sJ/bV0SUUaIk8UHuIYRSYpW',
+                  name: 'Sunita Devi',
+                  redirect: '/staff-portal',
+                },
+                {
+                  id: 'hk003',
+                  role: 'STAFF',
+                  passwordHash: '$2b$10$as.6Vk8oadpFbSYz/c9Yf.x/OeoDd8sJ/bV0SUUaIk8UHuIYRSYpW',
+                  name: 'Amit Patel',
+                  redirect: '/staff-portal',
+                },
+              ];
+
+              const user = users.find(
+                (u) =>
+                  u.id.toLowerCase() === cleanId ||
+                  u.id.toLowerCase().replace(/[-_\s]/g, '') === cleanId
+              );
+
+              if (!user) {
+                res.statusCode = 401;
+                res.end(JSON.stringify({ error: 'Invalid credentials' }));
+                return;
+              }
+
+              const isMatch = await bcrypt.compare(password, user.passwordHash);
+              if (!isMatch) {
+                res.statusCode = 401;
+                res.end(JSON.stringify({ error: 'Invalid credentials' }));
+                return;
+              }
+
+              const jwtSecret = process.env.JWT_SECRET || 'apexcare_hospital_jwt_secret_key_2026';
+              const token = jwt.sign(
+                { userId: user.id, role: user.role, name: user.name },
+                jwtSecret,
+                { expiresIn: '8h' }
+              );
+
+              res.setHeader('Set-Cookie', [
+                `authToken=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800`,
+                `userRole=${user.role}; Path=/; SameSite=Lax; Max-Age=28800`,
+              ]);
+
+              res.statusCode = 200;
+              res.end(
+                JSON.stringify({
+                  success: true,
+                  token,
+                  role: user.role,
+                  redirect: user.redirect,
+                  user: {
+                    id: user.id,
+                    role: user.role,
+                    name: user.name,
+                  },
+                })
+              );
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.end(JSON.stringify({ error: 'Internal Server Error' }));
+            }
+          });
+          return;
+        }
+
         // Flask @app.route('/logout')
         const isLogoutUrl =
           req.url === '/logout' ||
