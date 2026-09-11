@@ -41,6 +41,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   onOpenPendingApprovalModal,
   currentUserRole,
 }) => {
+  const isAdmin = (currentUserRole || '').toLowerCase() === 'admin';
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ON_DUTY' | 'OT_ACTIVE' | 'ABSENT'>('ALL');
 
@@ -131,7 +132,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {currentUserRole === 'admin' && onOpenPendingApprovalModal && (
+          {isAdmin && onOpenPendingApprovalModal && (
             <button
               type="button"
               id="btn-open-pending-approvals"
@@ -152,7 +153,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
             </button>
           )}
 
-          {currentUserRole === 'admin' && onOpenAddUser && (
+          {isAdmin && onOpenAddUser && (
             <button
               type="button"
               id="btn-add-user-modal-trigger"

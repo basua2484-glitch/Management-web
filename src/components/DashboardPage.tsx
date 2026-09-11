@@ -41,7 +41,7 @@ import {
   getStoredCurrentUser,
   saveStoredCurrentUser,
 } from '../data/mockHousekeepingData';
-import { initAuth, logout } from '../services/firebase';
+import { logout } from '../services/firebase';
 import { performLogout, handleLogout, checkAdminRequired, adminRequired } from '../services/auth';
 import { downloadMonthlyReportPdf } from '../services/pdfGenerator';
 import { ReportTable } from './ReportTable';
@@ -53,15 +53,11 @@ import { LiveAttendanceView } from './LiveAttendanceView';
 import { DutyAssignmentModal } from './DutyAssignmentModal';
 import { StaffPunchPortal } from './StaffPunchPortal';
 import { StaffPunchPortalModal } from './StaffPunchPortalModal';
-import { LoginView } from './LoginView';
 import { RegisterStaffModal } from './RegisterStaffModal';
 import { PendingApprovalModal } from './PendingApprovalModal';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LoginPage } from './LoginPage';
-import ProtectedRoute from './ProtectedRoute';
-import { UnauthorizedPage } from './UnauthorizedPage';
 
 export interface DashboardPageProps {
   defaultTab?: 'live' | 'monthly' | 'portal';
@@ -77,24 +73,19 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Live overview date (defaults to 2026-09-06)
   const [selectedLiveDate, setSelectedLiveDate] = useState<string>('2026-09-06');
 
-  // App Authentication Users & Current User
+  // App Authentication Users & Current User (synchronous resolution, no refresh lag)
   const [users, setUsers] = useState<AppUser[]>(() => getStoredUsers());
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+  const currentUser = useMemo<AppUser | null>(() => {
     if (authUser) return authUser;
-    const stored = getStoredCurrentUser();
-    if (stored) return stored;
-    return null;
-  });
-
-  // Synchronize with AuthContext user
-  useEffect(() => {
-    if (authUser) {
-      setCurrentUser(authUser);
-    } else {
-      const stored = getStoredCurrentUser();
-      setCurrentUser(stored);
-    }
+    return getStoredCurrentUser();
   }, [authUser]);
+
+  // Case-insensitive role resolution for robust access controls
+  const userRole: UserRole = ((authRole || currentUser?.role || 'staff').toLowerCase() as UserRole);
+  const isAdmin = userRole === 'admin';
+  const isManager = userRole === 'manager';
+  const isStaff = userRole === 'staff';
+  const isAdminOrManager = isAdmin || isManager;
 
   // Flask Flash Messages Queue
   const [flashes, setFlashes] = useState<FlashMessage[]>([]);
@@ -145,10 +136,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Pending user approvals (is_approved === false)
   const pendingUsers = useMemo(() => users.filter((u) => u.is_approved === false), [users]);
 
-  // Role Access Checker
-  const isAdminOrManager = currentUser?.role === 'admin' || currentUser?.role === 'manager';
-
-  // Listen for Firebase Auth & URL routes on load
+  // Listen for route changes and expose helpers
   useEffect(() => {
     // Expose logout, handleLogout, and admin_required on window for direct testing/scripts
     (window as unknown as {
@@ -179,7 +167,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       // @app.route('/admin/dashboard') with @admin_required
       // If 'user_id' not in session or session.get('role') != 'admin': return redirect('/login')
       if (pathname === '/admin-dashboard' || pathname === '/admin/dashboard' || pathname === '/admin') {
-        if (currentUser && currentUser.role !== 'admin' && currentUser.role !== 'manager') {
+        if (currentUser && !isAdminOrManager) {
           // Unauthorized attempt -> Redirect to their appropriate portal
           navigate('/staff-portal', { replace: true });
           return;
@@ -192,31 +180,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     handleRouteInspection();
     window.addEventListener('popstate', handleRouteInspection);
 
-    let unsubscribe: (() => void) | undefined;
-    try {
-      unsubscribe = initAuth(
-        (user) => {
-          if (user?.email) {
-            setGoogleUserEmail(user.email);
-          }
-        },
-        () => {
-          setGoogleUserEmail(null);
-        }
-      );
-    } catch (e) {
-      console.warn('Notice: Auth listener could not be registered:', e);
-    }
     return () => {
-      if (typeof unsubscribe === 'function') {
-        try {
-          unsubscribe();
-        } catch {
-          // ignore cleanup
-        }
-      }
+      window.removeEventListener('popstate', handleRouteInspection);
     };
-  }, []);
+  }, [currentUser, isAdminOrManager, navigate]);
 
   const handleSaveStaff = (updatedStaff: StaffUser[]) => {
     setStaff(updatedStaff);
@@ -345,7 +312,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   const handleAddStaffMember = (newStaffData: Omit<StaffUser, 'id'>) => {
     // Strict Guard Check
-    if (currentUser?.role !== 'admin') {
+    if (!isAdmin) {
       addFlash('Unauthorized Access: Admin Privileges Required', 'danger');
       return;
     }
@@ -440,7 +407,6 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Flask Authentication Handlers
   const handleAppLogin = (user: AppUser) => {
     saveStoredCurrentUser(user);
-    setCurrentUser(user);
 
     // Set user tokens & session cookies matching Flask session ('user_id', 'role', 'session')
     try {
@@ -452,6 +418,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     } catch (e) {
       console.warn('Cookie set notice:', e);
     }
+    window.dispatchEvent(new Event('auth-state-change'));
 
     // Strict Role Redirection:
     // if user.role == 'admin': redirect(url_for('admin_dashboard')) -> /admin/dashboard
@@ -480,7 +447,6 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   const handleAppLogout = async () => {
     addFlash('Aap safaltapurvak logout ho gaye hain.', 'info');
-    setCurrentUser(null);
     authLogout(navigate);
   };
 
@@ -504,10 +470,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         window.history.pushState({}, '', '/admin-dashboard');
       }
     } else if (targetTab === 'monthly') {
-      const allowedRoles: UserRole[] = ['admin', 'manager'];
-      if (!allowedRoles.includes(currentUser.role)) {
+      if (!isAdminOrManager) {
         addFlash('Aapko is section ko access karne ki permission nahi hai.', 'danger');
-        if (currentUser.role === 'staff') {
+        if (isStaff) {
           setActiveTab('portal');
         }
         return;
@@ -570,7 +535,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     assignedRole: UserRole = 'staff',
     assignedArea: string = 'General Wards'
   ) => {
-    if (currentUser?.role !== 'admin') {
+    if (!isAdmin) {
       addFlash('Aapko is section ko access karne ki permission nahi hai.', 'danger');
       return;
     }
@@ -636,7 +601,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     assigned_area: string;
   }): { success: boolean; message: string; status?: number } => {
     // Strict Guard Check
-    if (currentUser?.role !== 'admin') {
+    if (!isAdmin) {
       const errorMsg = 'Unauthorized Access: Admin Privileges Required';
       addFlash(errorMsg, 'danger');
       return { success: false, message: errorMsg, status: 403 };
@@ -979,9 +944,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               <div className="fw-bold small text-white truncate">{userName}</div>
               <small className="text-white-50 text-uppercase truncate block font-mono" style={{ fontSize: '0.65rem' }}>
                 {currentUser?.staff_id ? `${currentUser.staff_id} • ` : ''}
-                {currentUser?.role === 'admin'
+                {isAdmin
                   ? 'ADMIN_OPERATIONS'
-                  : currentUser?.role === 'manager'
+                  : isManager
                   ? 'OPERATIONS_MGR'
                   : 'STAFF_USER'}
               </small>
@@ -1058,9 +1023,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             <span className="badge bg-light text-dark border d-flex align-items-center gap-1.5 px-2.5 py-1.5 rounded shadow-2xs font-semibold text-xs">
               <ShieldCheck className="text-success inline" style={{ width: '0.85rem', height: '0.85rem' }} />
               <span>
-                {currentUser?.role === 'admin'
+                {isAdmin
                   ? 'Admin Access'
-                  : currentUser?.role === 'manager'
+                  : isManager
                   ? 'Manager Access'
                   : 'Staff Access'}
               </span>
@@ -1069,7 +1034,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         </div>
 
         {/* Staff Only View (Sirf apna data dekhne ke liye) */}
-        {currentUser?.role === 'staff' && (
+        {isStaff && (
           <div className="alert alert-info d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3 shadow-xs">
             <div>
               Welcome <strong>{currentUser.name}</strong>! Aaj aapki duty:{' '}
@@ -1097,7 +1062,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             </button>
 
             {/* Admin Only Buttons (Staff ko nahi dikhega) */}
-            {currentUser?.role === 'admin' && (
+            {isAdmin && (
               <>
                 <button
                   type="button"
@@ -1231,7 +1196,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             />
           ) : activeTab === 'live' ? (
             /* @app.route('/admin/dashboard') protected by @admin_required */
-            currentUser?.role === 'admin' ? (
+            isAdminOrManager ? (
               <LiveAttendanceView
                 selectedDate={selectedLiveDate}
                 onDateChange={setSelectedLiveDate}
@@ -1245,7 +1210,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
                 pendingUsersCount={pendingUsers.length}
                 onOpenPendingApprovalModal={() => setIsPendingModalOpen(true)}
-                currentUserRole={currentUser?.role}
+                currentUserRole={userRole}
               />
             ) : (
               <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
@@ -1337,7 +1302,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onClose={() => setIsStaffModalOpen(false)}
         staff={staff}
         users={users}
-        currentUserRole={currentUser?.role}
+        currentUserRole={userRole}
         onAddStaff={handleAddStaffMember}
         onToggleActive={handleToggleStaffActive}
         onViewCredentialSlip={(slip) => setActiveCredentialSlip(slip)}
@@ -1371,7 +1336,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <RegisterStaffModal
         isOpen={isRegisterStaffModalOpen}
         onClose={() => setIsRegisterStaffModalOpen(false)}
-        currentUserRole={currentUser?.role}
+        currentUserRole={userRole}
         onStaffAccountCreated={(slip) => setActiveCredentialSlip(slip)}
         onRegister={handleCreateStaffAccount}
       />
@@ -1382,7 +1347,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onClose={() => setIsPendingModalOpen(false)}
         pendingUsers={pendingUsers}
         onApproveUser={handleApproveUser}
-        currentUserRole={currentUser?.role}
+        currentUserRole={userRole}
       />
 
       {/* Official HK Ops Login Credential Card Slip Modal */}

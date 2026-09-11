@@ -208,7 +208,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     restoreAuth();
 
-    // 1. Firebase onAuthStateChanged listener to persist session across reloads
+    // 1. Firebase onAuthStateChanged listener in background - never blocks local session
     let unsubscribeFirebase: (() => void) | undefined;
     if (auth) {
       try {
@@ -243,39 +243,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setToken((prev) => (prev === fbToken ? prev : fbToken));
                 setRole((prev) => (prev === resolvedRole ? prev : resolvedRole));
                 setUser((prev) => (isSameUser(prev, userProfile) ? prev : userProfile));
-              } else {
-                // No active Firebase user -> check if local hospital session exists
-                const storedToken = getStoredToken();
-                const storedRole = getStoredRole();
-                if (!storedToken || !storedRole) {
-                  setToken((prev) => (prev !== null ? null : prev));
-                  setRole((prev) => (prev !== null ? null : prev));
-                  setUser((prev) => (prev !== null ? null : prev));
-                }
               }
             } catch (authError) {
               console.warn('Firebase auth state listener error:', authError);
-            } finally {
-              setIsLoading((prev) => (prev ? false : prev));
             }
           },
           (err) => {
             console.warn('Firebase onAuthStateChanged error:', err);
-            setIsLoading((prev) => (prev ? false : prev));
           }
         );
       } catch (err) {
         console.warn('Firebase subscription error:', err);
-        setIsLoading((prev) => (prev ? false : prev));
       }
-    } else {
-      setIsLoading((prev) => (prev ? false : prev));
     }
-
-    // Safety timeout to guarantee ProtectedRoute never remains locked
-    const safetyTimeout = setTimeout(() => {
-      setIsLoading((prev) => (prev ? false : prev));
-    }, 1200);
 
     // 2. Storage event listeners for multi-tab synchronization
     const handleStorageChange = (e: StorageEvent) => {
@@ -298,7 +278,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (typeof unsubscribeFirebase === 'function') {
         unsubscribeFirebase();
       }
-      clearTimeout(safetyTimeout);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('auth-state-change', restoreAuth);
     };
