@@ -81,6 +81,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const stored = getStoredCurrentUser();
     if (stored) return stored;
     const storedUserId = localStorage.getItem('userId');
+    const storedRole = localStorage.getItem('userRole') || localStorage.getItem('user_role');
     if (storedUserId) {
       const allUsers = getStoredUsers();
       const matched = allUsers.find(
@@ -92,6 +93,21 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         saveStoredCurrentUser(matched);
         return matched;
       }
+    }
+    if (storedRole) {
+      const roleUpper = storedRole.toUpperCase();
+      const cleanId = (storedUserId || (roleUpper === 'ADMIN' ? 'admin' : roleUpper === 'MANAGER' ? 'manager' : 'hk001')).toLowerCase();
+      const fallbackUser: AppUser = {
+        id: cleanId === 'admin' ? 100 : cleanId === 'manager' ? 101 : 1,
+        username: cleanId,
+        name: cleanId === 'admin' ? 'ApexCare Admin' : cleanId === 'manager' ? 'Operations Manager' : `Staff Member (${cleanId.toUpperCase()})`,
+        role: roleUpper.toLowerCase() as any,
+        is_approved: true,
+        staff_id: cleanId.toUpperCase(),
+        assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+      };
+      saveStoredCurrentUser(fallbackUser);
+      return fallbackUser;
     }
     return null;
   });

@@ -64,10 +64,10 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
   // Keep filter synced if selectedStaffId changes or role changes
   useEffect(() => {
     if (!isAdminOrManager) {
-      setActiveStaffFilter(currentStaffId);
+      setActiveStaffFilter((prev) => (prev === currentStaffId ? prev : currentStaffId));
     } else if (selectedStaffId) {
-      setActiveStaffFilter(selectedStaffId);
-      setFormStaffId(selectedStaffId);
+      setActiveStaffFilter((prev) => (prev === selectedStaffId ? prev : selectedStaffId));
+      setFormStaffId((prev) => (prev === selectedStaffId ? prev : selectedStaffId));
     }
   }, [selectedStaffId, isAdminOrManager, currentStaffId]);
 

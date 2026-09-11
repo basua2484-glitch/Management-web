@@ -1,17 +1,31 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import SecureLogin from '../components/SecureLogin';
-import { handleLogin } from '../services/auth';
+import { useAuth } from '../context/AuthContext';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
+  const { isAuthenticated, isLoading, role, login } = useAuth();
+
+  // If already authenticated with restored session, navigate to respective dashboard
+  useEffect(() => {
+    if (!isLoading && isAuthenticated && role) {
+      const dest =
+        role === 'ADMIN'
+          ? '/admin-dashboard'
+          : role === 'MANAGER'
+          ? '/manager-dashboard'
+          : '/staff-portal';
+      navigate(dest, { replace: true });
+    }
+  }, [isAuthenticated, isLoading, role, navigate]);
 
   const handleLoginSubmit = async (
     staffId: string,
     password: string,
     setError: (msg: string) => void
   ) => {
-    handleLogin(staffId, password, navigate, setError);
+    await login(staffId, password, navigate, setError);
   };
 
   return (

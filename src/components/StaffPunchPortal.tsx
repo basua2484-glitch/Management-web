@@ -37,6 +37,16 @@ interface StaffPunchPortalProps {
   isModal?: boolean;
 }
 
+const DEFAULT_STAFF_FALLBACK: StaffUser = {
+  id: 1,
+  name: 'Ramesh Kumar',
+  staffCode: 'HK-001',
+  role: 'staff',
+  department: 'General',
+  shift: 'Morning',
+  active: true,
+};
+
 export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   staff,
   records,
@@ -64,11 +74,11 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   // Sync when initialStaffId or currentUser changes
   useEffect(() => {
     if (currentUser?.role === 'staff' && currentUser.staffId) {
-      setSelectedStaffId(currentUser.staffId);
+      setSelectedStaffId((prev) => (prev === currentUser.staffId ? prev : currentUser.staffId!));
     } else if (initialStaffId) {
-      setSelectedStaffId(initialStaffId);
+      setSelectedStaffId((prev) => (prev === initialStaffId ? prev : initialStaffId));
     }
-  }, [initialStaffId, currentUser]);
+  }, [initialStaffId, currentUser?.role, currentUser?.staffId]);
 
   // Time formatting helper
   const formatTime12h = (timeStr: string) => {
@@ -99,17 +109,12 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
   // Active staff user resolution:
   const isStaffLoggedIn = currentUser?.role === 'staff';
-  const activeStaff = (isStaffLoggedIn && currentUser?.staffId
-    ? staff.find((s) => s.id === currentUser.staffId)
-    : staff.find((s) => s.id === selectedStaffId)) || staff[0] || {
-    id: 1,
-    name: currentUser?.name || 'Ramesh Kumar',
-    staffCode: 'HK-001',
-    role: 'staff',
-    department: 'General',
-    shift: 'Morning',
-    active: true,
-  };
+  const activeStaff = useMemo(() => {
+    if (isStaffLoggedIn && currentUser?.staffId) {
+      return staff.find((s) => s.id === currentUser.staffId) || staff[0] || DEFAULT_STAFF_FALLBACK;
+    }
+    return staff.find((s) => s.id === selectedStaffId) || staff[0] || DEFAULT_STAFF_FALLBACK;
+  }, [isStaffLoggedIn, currentUser?.staffId, staff, selectedStaffId]);
 
   // Formatted Staff ID from User model staff_id or staffCode HK-%03d
   const formattedStaffId =
@@ -119,9 +124,11 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   const assignedArea = activeStaff.department || currentUser?.department || 'General';
 
   // Find attendance record for selected staff & selected date
-  const todayRecord = records.find(
-    (r) => r.userId === activeStaff.id && r.date === selectedDate
-  );
+  const todayRecord = useMemo(() => {
+    return records.find(
+      (r) => r.userId === activeStaff.id && r.date === selectedDate
+    );
+  }, [records, activeStaff.id, selectedDate]);
 
   // Dynamic active sessions for selected staff & date
   const activeSessions: AttendanceSession[] = useMemo(() => {
@@ -175,35 +182,42 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
   // Sync punchInTimestamp with todayRecord updates
   useEffect(() => {
+    let nextTimestamp: Date | null = null;
     if (currentOpenSession?.punch_in) {
       const d = new Date(currentOpenSession.punch_in);
       if (!isNaN(d.getTime())) {
-        punchInTimestampRef.current = d;
-        setPunchInTimestamp(d);
-        return;
+        nextTimestamp = d;
       }
     }
-    if (todayRecord?.punchInTimestamp) {
-      const d = new Date(todayRecord.punchInTimestamp);
-      punchInTimestampRef.current = d;
-      setPunchInTimestamp(d);
-    } else if (todayRecord?.punchIn) {
-      const [h, m] = todayRecord.punchIn.split(':').map(Number);
-      const d = new Date();
-      d.setHours(h, m, 0, 0);
-      punchInTimestampRef.current = d;
-      setPunchInTimestamp(d);
-    } else {
-      punchInTimestampRef.current = null;
-      setPunchInTimestamp(null);
+    if (!nextTimestamp) {
+      if (todayRecord?.punchInTimestamp) {
+        const d = new Date(todayRecord.punchInTimestamp);
+        if (!isNaN(d.getTime())) {
+          nextTimestamp = d;
+        }
+      } else if (todayRecord?.punchIn) {
+        const [h, m] = todayRecord.punchIn.split(':').map(Number);
+        if (!isNaN(h) && !isNaN(m)) {
+          const d = new Date();
+          d.setHours(h, m, 0, 0);
+          nextTimestamp = d;
+        }
+      }
     }
+
+    punchInTimestampRef.current = nextTimestamp;
+    setPunchInTimestamp((prev) => {
+      if (!prev && !nextTimestamp) return null;
+      if (prev && nextTimestamp && prev.getTime() === nextTimestamp.getTime()) return prev;
+      return nextTimestamp;
+    });
   }, [todayRecord?.punchIn, todayRecord?.punchInTimestamp, currentOpenSession?.punch_in, selectedDate, activeStaff.id]);
 
   // Synchronize updateUI(data) dynamically with current staffSummary and expose to window
   useEffect(() => {
     (window as unknown as { updateUI: typeof updateUI }).updateUI = updateUI;
     updateUI(staffSummary);
-  }, [staffSummary]);
+  }, [staffSummary.regular_hours, staffSummary.overtime_hours, staffSummary.is_duty_active, staffSummary.sessions.length]);
 
   // 3. BACKEND API SYNC
   const syncPunchWithBackend = (

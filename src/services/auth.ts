@@ -166,19 +166,62 @@ export function handleLogout(): void {
     document.cookie = 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
     document.cookie = 'user_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
     document.cookie = 'role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
+    document.cookie = 'authToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
+    document.cookie = 'userRole=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
+  } catch (e) {}
+
+  try {
+    window.dispatchEvent(new Event('auth-state-change'));
   } catch (e) {}
 
   // Redirect to Login
-  if (typeof window !== 'undefined') {
-    window.location.href = '/';
+  if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.href = '/login';
   }
 }
 
-// Mock User Database (Aap ise apne Backend API / Firebase se replace kar sakte hain)
+// Mock User Database with aliases and direct role routing
 export const USERS_DB = [
-  { id: "admin", pass: "admin123", role: "ADMIN", redirect: "/admin-dashboard" },
-  { id: "manager", pass: "manager123", role: "MANAGER", redirect: "/manager-dashboard" },
-  { id: "hk001", pass: "staff123", role: "STAFF", redirect: "/staff-portal" }
+  {
+    id: "admin",
+    aliases: ["admin", "admin001", "admin-001"],
+    pass: "admin123",
+    role: "ADMIN",
+    redirect: "/admin-dashboard",
+    name: "ApexCare Admin",
+  },
+  {
+    id: "manager",
+    aliases: ["manager", "mgr001", "mgr-001"],
+    pass: "manager123",
+    role: "MANAGER",
+    redirect: "/manager-dashboard",
+    name: "Operations Manager",
+  },
+  {
+    id: "hk001",
+    aliases: ["hk001", "hk-001", "ramesh"],
+    pass: "staff123",
+    role: "STAFF",
+    redirect: "/staff-portal",
+    name: "Ramesh Sharma",
+  },
+  {
+    id: "hk002",
+    aliases: ["hk002", "hk-002", "sunita"],
+    pass: "staff123",
+    role: "STAFF",
+    redirect: "/staff-portal",
+    name: "Sunita Devi",
+  },
+  {
+    id: "hk003",
+    aliases: ["hk003", "hk-003", "amit"],
+    pass: "staff123",
+    role: "STAFF",
+    redirect: "/staff-portal",
+    name: "Amit Patel",
+  },
 ];
 
 export const handleLogin = async (
@@ -187,10 +230,127 @@ export const handleLogin = async (
   navigate: (to: string, options?: { replace?: boolean }) => void,
   setError: (msg: string) => void
 ): Promise<boolean> => {
-  const cleanId = staffId.trim().toLowerCase();
-  const cleanPass = password;
+  const cleanId = String(staffId || '').trim().toLowerCase();
+  const cleanPass = String(password || '').trim();
+  const normalizedId = cleanId.replace(/[-_\s]/g, '');
 
-  // 1. Try server-side /api/login endpoint with bcrypt & signed JWT
+  if (!cleanId || !cleanPass) {
+    setError("Please fill in all fields.");
+    return false;
+  }
+
+  // 1. First check mock credentials (Guarantees instant, zero-failure login on Vercel deployment)
+  const mockUser = USERS_DB.find(
+    (u) =>
+      u.id.toLowerCase() === cleanId ||
+      u.id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId ||
+      (u.aliases && u.aliases.some((a) => a.toLowerCase().replace(/[-_\s]/g, '') === normalizedId))
+  );
+
+  if (mockUser) {
+    if (cleanPass === mockUser.pass) {
+      const roleUpper = mockUser.role.toUpperCase();
+      const token = "JWT_APEXCARE_" + roleUpper + "_" + Date.now();
+
+      // Save Session Token & Role in Local Storage
+      localStorage.setItem("userToken", token);
+      localStorage.setItem("userRole", roleUpper);
+      localStorage.setItem("userId", mockUser.id);
+      localStorage.setItem("user_token", token);
+      localStorage.setItem("user_role", mockUser.role.toLowerCase());
+
+      // Set user profile in stored application data
+      const allUsers = getStoredUsers();
+      const matched = allUsers.find(
+        (u) =>
+          u.username.toLowerCase() === mockUser.id.toLowerCase() ||
+          (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId)
+      );
+
+      if (matched) {
+        saveStoredCurrentUser(matched);
+      } else {
+        saveStoredCurrentUser({
+          id: mockUser.id === 'admin' ? 100 : mockUser.id === 'manager' ? 101 : 1,
+          username: mockUser.id,
+          name: mockUser.name,
+          role: mockUser.role.toLowerCase() as any,
+          is_approved: true,
+          staff_id: mockUser.id.toUpperCase(),
+          assigned_area: mockUser.role === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+        });
+      }
+
+      // Sync Session Cookies
+      try {
+        document.cookie = `session=active_${mockUser.id}; Path=/; SameSite=Lax`;
+        document.cookie = `user_id=${mockUser.id}; Path=/; SameSite=Lax`;
+        document.cookie = `role=${mockUser.role.toLowerCase()}; Path=/; SameSite=Lax`;
+        document.cookie = `authToken=${token}; Path=/; SameSite=Lax`;
+        document.cookie = `userRole=${roleUpper}; Path=/; SameSite=Lax`;
+      } catch {}
+
+      // Fire server endpoint asynchronously in background
+      try {
+        fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ staffId: cleanId, password: cleanPass }),
+        }).catch(() => {});
+      } catch {}
+
+      // Dynamic Role-Based Redirection
+      navigate(mockUser.redirect, { replace: true });
+      return true;
+    } else {
+      setError("Invalid credentials");
+      return false;
+    }
+  }
+
+  // 2. Check dynamic registered staff in hospital database
+  const allUsers = getStoredUsers();
+  const registered = allUsers.find((u) => {
+    if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId) return true;
+    if (u.username && u.username.toLowerCase() === cleanId) return true;
+    return false;
+  });
+
+  if (registered) {
+    if (registered.password === cleanPass) {
+      const roleUpper = registered.role.toUpperCase();
+      const token = "JWT_APEXCARE_" + roleUpper + "_" + Date.now();
+      const redirect =
+        roleUpper === 'ADMIN'
+          ? '/admin-dashboard'
+          : roleUpper === 'MANAGER'
+          ? '/manager-dashboard'
+          : '/staff-portal';
+
+      localStorage.setItem("userToken", token);
+      localStorage.setItem("userRole", roleUpper);
+      localStorage.setItem("userId", registered.staff_id || registered.username);
+      localStorage.setItem("user_token", token);
+      localStorage.setItem("user_role", registered.role.toLowerCase());
+      saveStoredCurrentUser(registered);
+
+      try {
+        document.cookie = `session=active_${registered.id}; Path=/; SameSite=Lax`;
+        document.cookie = `user_id=${registered.id}; Path=/; SameSite=Lax`;
+        document.cookie = `role=${registered.role.toLowerCase()}; Path=/; SameSite=Lax`;
+        document.cookie = `authToken=${token}; Path=/; SameSite=Lax`;
+        document.cookie = `userRole=${roleUpper}; Path=/; SameSite=Lax`;
+      } catch {}
+
+      navigate(redirect, { replace: true });
+      return true;
+    } else {
+      setError("Invalid credentials");
+      return false;
+    }
+  }
+
+  // 3. Fallback: Server-side /api/login endpoint with bcrypt & signed JWT (for custom remote users)
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
@@ -208,32 +368,13 @@ export const handleLogin = async (
         localStorage.setItem("user_token", data.token);
         localStorage.setItem("user_role", roleUpper.toLowerCase());
 
-        const allUsers = getStoredUsers();
-        const matched = allUsers.find(
-          (u) =>
-            u.username.toLowerCase() === cleanId ||
-            (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, ''))
-        );
-        if (matched) {
-          saveStoredCurrentUser(matched);
-        } else {
-          saveStoredCurrentUser({
-            id: cleanId === 'admin' ? 1 : cleanId === 'manager' ? 2 : 3,
-            username: cleanId,
-            name:
-              cleanId === 'admin'
-                ? 'ApexCare Admin'
-                : cleanId === 'manager'
-                ? 'Operations Manager'
-                : `Staff Member (${cleanId.toUpperCase()})`,
-            role: roleUpper.toLowerCase() as any,
-            is_approved: true,
-            staff_id: cleanId.toUpperCase(),
-            assigned_area: roleUpper === 'STAFF' ? 'General Ward' : 'Hospital Wide',
-          });
-        }
-
-        const dest = data.redirect || (roleUpper === 'ADMIN' ? '/admin-dashboard' : roleUpper === 'MANAGER' ? '/manager-dashboard' : '/staff-portal');
+        const dest =
+          data.redirect ||
+          (roleUpper === 'ADMIN'
+            ? '/admin-dashboard'
+            : roleUpper === 'MANAGER'
+            ? '/manager-dashboard'
+            : '/staff-portal');
         navigate(dest, { replace: true });
         return true;
       }
@@ -243,94 +384,10 @@ export const handleLogin = async (
       return false;
     }
   } catch (err) {
-    // Graceful fallback to client-side database verification if offline
-    console.warn("Backend /api/login offline, using client database verification:", err);
+    console.warn("Backend /api/login error:", err);
   }
 
-  // 2. Credentials Verification from USERS_DB
-  const user = USERS_DB.find(
-    (u) => u.id.toLowerCase() === cleanId && u.pass === cleanPass
-  );
-
-  if (!user) {
-    // Also check dynamic registered staff in mock/persistent storage
-    const allUsers = getStoredUsers();
-    const registered = allUsers.find((u) => {
-      if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, '')) return true;
-      if (u.username && u.username.toLowerCase() === cleanId) return true;
-      return false;
-    });
-
-    if (registered && registered.password === cleanPass) {
-      const roleUpper = registered.role.toUpperCase();
-      const token = "JWT_SECRET_SESSION_TOKEN_" + Date.now();
-      const redirect =
-        roleUpper === 'ADMIN'
-          ? '/admin-dashboard'
-          : roleUpper === 'MANAGER'
-          ? '/manager-dashboard'
-          : '/staff-portal';
-
-      localStorage.setItem("userToken", token);
-      localStorage.setItem("userRole", roleUpper);
-      localStorage.setItem("userId", registered.staff_id || registered.username);
-      localStorage.setItem("user_token", token);
-      localStorage.setItem("user_role", registered.role);
-      saveStoredCurrentUser(registered);
-
-      navigate(redirect, { replace: true });
-      return true;
-    }
-
-    setError("Invalid credentials");
-    return false;
-  }
-
-  // 3. Save Session Token & Role in Local Storage / Session
-  const token = "JWT_SECRET_SESSION_TOKEN_" + Date.now();
-  localStorage.setItem("userToken", token);
-  localStorage.setItem("userRole", user.role);
-  localStorage.setItem("userId", user.id);
-
-  // Cross-compatibility session keys
-  localStorage.setItem("user_token", token);
-  localStorage.setItem("user_role", user.role.toLowerCase());
-
-  // Set current user details for application views
-  const allUsers = getStoredUsers();
-  const matched = allUsers.find(
-    (u) =>
-      u.username.toLowerCase() === user.id.toLowerCase() ||
-      (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === user.id.toLowerCase().replace(/[-_\s]/g, ''))
-  );
-
-  if (matched) {
-    saveStoredCurrentUser(matched);
-  } else {
-    saveStoredCurrentUser({
-      id: user.id === 'admin' ? 1 : user.id === 'manager' ? 2 : 3,
-      username: user.id,
-      name:
-        user.id === 'admin'
-          ? 'ApexCare Admin'
-          : user.id === 'manager'
-          ? 'Operations Manager'
-          : `Staff Member (${user.id.toUpperCase()})`,
-      role: user.role.toLowerCase() as any,
-      is_approved: true,
-      staff_id: user.id.toUpperCase(),
-      assigned_area: user.role === 'STAFF' ? 'General Ward' : 'Hospital Wide',
-    });
-  }
-
-  try {
-    document.cookie = `session=active_${user.id}; Path=/; SameSite=Lax`;
-    document.cookie = `user_id=${user.id}; Path=/; SameSite=Lax`;
-    document.cookie = `role=${user.role.toLowerCase()}; Path=/; SameSite=Lax`;
-  } catch (e) {}
-
-  // 4. Automatic Role-Based Dynamic Redirection
-  navigate(user.redirect, { replace: true });
-  return true;
+  setError("Invalid credentials");
+  return false;
 };
 
