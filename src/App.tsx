@@ -1,19 +1,40 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import StaffPortal from './pages/StaffPortal';
 import ProtectedRoute from './components/ProtectedRoute';
 import { UnauthorizedPage } from './components/UnauthorizedPage';
+import { AuthLoadingScreen } from './components/AuthLoadingScreen';
+
+const RootRedirect: React.FC = () => {
+  const { isAuthenticated, isLoading, role } = useAuth();
+
+  if (isLoading) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (isAuthenticated && role) {
+    const dest =
+      role === 'ADMIN'
+        ? '/admin-dashboard'
+        : role === 'MANAGER'
+        ? '/manager-dashboard'
+        : '/staff-portal';
+    return <Navigate to={dest} replace />;
+  }
+
+  return <Navigate to="/login" replace />;
+};
 
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Default URL (`/`) -> Automatically goes to Login */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
+          {/* Default URL (`/`) -> Intelligently routes to dashboard if logged in, or login */}
+          <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
 
           {/* Dynamic Secured Routes */}

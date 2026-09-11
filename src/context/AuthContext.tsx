@@ -29,110 +29,177 @@ function getCookie(name: string): string | null {
   return null;
 }
 
+interface AuthSnapshot {
+  token: string | null;
+  role: 'ADMIN' | 'MANAGER' | 'STAFF' | null;
+  user: AppUser | null;
+  isLoading: boolean;
+}
+
+function getStoredToken(): string | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('userToken') || localStorage.getItem('user_token');
+      if (stored) return stored;
+    }
+    return getCookie('authToken');
+  } catch {
+    return null;
+  }
+}
+
+function getStoredRole(): 'ADMIN' | 'MANAGER' | 'STAFF' | null {
+  try {
+    let rawRole: string | null = null;
+    if (typeof localStorage !== 'undefined') {
+      rawRole = localStorage.getItem('userRole') || localStorage.getItem('user_role');
+    }
+    if (!rawRole) {
+      rawRole = getCookie('userRole') || getCookie('role');
+    }
+    if (rawRole) {
+      const upper = rawRole.toUpperCase();
+      if (upper === 'ADMIN' || upper === 'MANAGER' || upper === 'STAFF') {
+        return upper;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getStoredUserId(): string | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const id = localStorage.getItem('userId');
+      if (id) return id;
+    }
+    return getCookie('user_id');
+  } catch {
+    return null;
+  }
+}
+
+function resolveUserProfile(
+  roleUpper: 'ADMIN' | 'MANAGER' | 'STAFF',
+  storedUserId: string | null
+): AppUser {
+  let userProfile: AppUser | null = null;
+  try {
+    userProfile = getStoredCurrentUser();
+  } catch {}
+
+  if (!userProfile && storedUserId) {
+    try {
+      const allUsers = getStoredUsers();
+      const cleanId = storedUserId.toLowerCase().replace(/[-_\s]/g, '');
+      userProfile =
+        allUsers.find(
+          (u) =>
+            u.username.toLowerCase() === storedUserId.toLowerCase() ||
+            (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId)
+        ) || null;
+    } catch {}
+  }
+
+  if (!userProfile) {
+    const fallbackId =
+      storedUserId ||
+      (roleUpper === 'ADMIN' ? 'admin' : roleUpper === 'MANAGER' ? 'manager' : 'hk001');
+
+    userProfile = {
+      id: fallbackId === 'admin' ? 100 : fallbackId === 'manager' ? 101 : 1,
+      username: fallbackId,
+      name:
+        fallbackId === 'admin'
+          ? 'ApexCare Admin'
+          : fallbackId === 'manager'
+          ? 'Operations Manager'
+          : `Staff Member (${fallbackId.toUpperCase()})`,
+      role: roleUpper.toLowerCase() as any,
+      is_approved: true,
+      staff_id: fallbackId.toUpperCase(),
+      assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+    };
+    try {
+      saveStoredCurrentUser(userProfile);
+    } catch {}
+  }
+
+  return userProfile;
+}
+
+function computeAuthSnapshot(): AuthSnapshot {
+  const token = getStoredToken();
+  const role = getStoredRole();
+  const userId = getStoredUserId();
+
+  if (token && role) {
+    const user = resolveUserProfile(role, userId);
+    return {
+      token,
+      role,
+      user,
+      isLoading: false,
+    };
+  }
+
+  return {
+    token: null,
+    role: null,
+    user: null,
+    isLoading: false,
+  };
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(null);
-  const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'STAFF' | null>(null);
-  const [user, setUser] = useState<AppUser | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Synchronous initialization ensures no initial loading flicker, no redundant mount updates,
+  // and no premature redirection loops on cold starts or page refreshes.
+  const [authState, setAuthState] = useState<AuthSnapshot>(() => computeAuthSnapshot());
 
   const restoreAuth = useCallback(() => {
     try {
-      // 1. Retrieve token and role from localStorage or cookies
-      const storedToken =
-        localStorage.getItem('userToken') ||
-        localStorage.getItem('user_token') ||
-        getCookie('authToken');
-
-      const storedRole =
-        localStorage.getItem('userRole') ||
-        localStorage.getItem('user_role') ||
-        getCookie('userRole') ||
-        getCookie('role');
-
-      const storedUserId =
-        localStorage.getItem('userId') ||
-        getCookie('user_id');
-
-      if (storedToken && storedRole) {
-        const roleUpper = storedRole.toUpperCase() as 'ADMIN' | 'MANAGER' | 'STAFF';
-
-        // 2. Retrieve user object or reconstruct from stored data
-        let userProfile: AppUser | null = getStoredCurrentUser();
-        if (!userProfile && storedUserId) {
-          const allUsers = getStoredUsers();
-          const cleanId = storedUserId.toLowerCase().replace(/[-_\s]/g, '');
-          userProfile =
-            allUsers.find(
-              (u) =>
-                u.username.toLowerCase() === storedUserId.toLowerCase() ||
-                (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId)
-            ) || null;
+      const next = computeAuthSnapshot();
+      setAuthState((prev) => {
+        if (
+          prev.token === next.token &&
+          prev.role === next.role &&
+          prev.isLoading === next.isLoading &&
+          prev.user?.id === next.user?.id &&
+          prev.user?.username === next.user?.username &&
+          prev.user?.role === next.user?.role
+        ) {
+          return prev;
         }
-
-        if (!userProfile) {
-          const fallbackId =
-            storedUserId ||
-            (roleUpper === 'ADMIN' ? 'admin' : roleUpper === 'MANAGER' ? 'manager' : 'hk001');
-
-          userProfile = {
-            id: fallbackId === 'admin' ? 100 : fallbackId === 'manager' ? 101 : 1,
-            username: fallbackId,
-            name:
-              fallbackId === 'admin'
-                ? 'ApexCare Admin'
-                : fallbackId === 'manager'
-                ? 'Operations Manager'
-                : `Staff Member (${fallbackId.toUpperCase()})`,
-            role: roleUpper.toLowerCase() as any,
-            is_approved: true,
-            staff_id: fallbackId.toUpperCase(),
-            assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
-          };
-          saveStoredCurrentUser(userProfile);
-        }
-
-        setToken((prev) => (prev === storedToken ? prev : storedToken));
-        setRole((prev) => (prev === roleUpper ? prev : roleUpper));
-        setUser((prev) => {
-          if (!prev && !userProfile) return null;
-          if (
-            prev &&
-            userProfile &&
-            prev.id === userProfile.id &&
-            prev.role === userProfile.role &&
-            prev.username === userProfile.username
-          ) {
-            return prev;
-          }
-          return userProfile;
-        });
-      } else {
-        setToken((prev) => (prev === null ? null : null));
-        setRole((prev) => (prev === null ? null : null));
-        setUser((prev) => (prev === null ? null : null));
-      }
+        return next;
+      });
     } catch (err) {
       console.warn('Authentication restoration notice:', err);
-      setToken((prev) => (prev === null ? null : null));
-      setRole((prev) => (prev === null ? null : null));
-      setUser((prev) => (prev === null ? null : null));
-    } finally {
-      setIsLoading((prev) => (prev === false ? false : false));
+      setAuthState((prev) => {
+        if (prev.token === null && prev.role === null && prev.user === null && !prev.isLoading) {
+          return prev;
+        }
+        return {
+          token: null,
+          role: null,
+          user: null,
+          isLoading: false,
+        };
+      });
     }
   }, []);
 
-  // Check auth state on app initialization
+  // Listen for storage or custom auth changes across tabs or windows
   useEffect(() => {
-    restoreAuth();
-
-    // Listen for storage or custom auth changes across tabs or windows
     const handleStorageChange = (e: StorageEvent) => {
       if (
         e.key === 'userToken' ||
         e.key === 'userRole' ||
         e.key === 'userId' ||
         e.key === 'user_token' ||
-        e.key === 'user_role'
+        e.key === 'user_role' ||
+        e.key === null
       ) {
         restoreAuth();
       }
@@ -154,21 +221,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       navigate: (to: string, options?: { replace?: boolean }) => void,
       setError: (msg: string) => void
     ): Promise<boolean> => {
-      const success = await authServiceLogin(staffId, password, navigate, setError);
+      let targetRedirect = '';
+      const captureNavigate = (to: string) => {
+        targetRedirect = to;
+      };
+
+      const success = await authServiceLogin(staffId, password, captureNavigate, setError);
       if (success) {
-        restoreAuth();
+        // Synchronously recompute snapshot and commit to state BEFORE navigation
+        const next = computeAuthSnapshot();
+        setAuthState({ ...next, isLoading: false });
+
+        const destination =
+          targetRedirect ||
+          (next.role === 'ADMIN'
+            ? '/admin-dashboard'
+            : next.role === 'MANAGER'
+            ? '/manager-dashboard'
+            : '/staff-portal');
+
+        navigate(destination, { replace: true });
       }
       return success;
     },
-    [restoreAuth]
+    []
   );
 
   const logout = useCallback(
     (navigate?: (to: string, options?: { replace?: boolean }) => void) => {
-      setToken(null);
-      setRole(null);
-      setUser(null);
       authServiceLogout();
+      setAuthState({
+        token: null,
+        role: null,
+        user: null,
+        isLoading: false,
+      });
       if (navigate) {
         navigate('/login', { replace: true });
       }
@@ -178,16 +265,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value = React.useMemo<AuthContextType>(
     () => ({
-      user,
-      token,
-      role,
-      isAuthenticated: Boolean(token && role),
-      isLoading,
+      user: authState.user,
+      token: authState.token,
+      role: authState.role,
+      isAuthenticated: Boolean(authState.token && authState.role),
+      isLoading: authState.isLoading,
       login,
       logout,
       refreshAuth: restoreAuth,
     }),
-    [user, token, role, isLoading, login, logout, restoreAuth]
+    [
+      authState.user,
+      authState.token,
+      authState.role,
+      authState.isLoading,
+      login,
+      logout,
+      restoreAuth,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

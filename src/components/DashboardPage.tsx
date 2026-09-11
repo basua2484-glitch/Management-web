@@ -194,15 +194,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
       // @app.route('/admin/dashboard') with @admin_required
       // If 'user_id' not in session or session.get('role') != 'admin': return redirect('/login')
-      if (pathname === '/admin/dashboard' || pathname === '/admin') {
-        const check = checkAdminRequired(currentUser);
-        if (!check.authorized) {
+      if (pathname === '/admin-dashboard' || pathname === '/admin/dashboard' || pathname === '/admin') {
+        if (currentUser && currentUser.role !== 'admin') {
           // Unauthorized attempt -> Redirect to login
           window.history.replaceState({}, '', '/login');
-          if (currentUser) {
-            addFlash('Unauthorized attempt: Admin privileges required. Redirected to login.', 'danger');
-            handleAppLogout();
-          }
+          addFlash('Unauthorized attempt: Admin privileges required. Redirected to login.', 'danger');
+          handleAppLogout();
           return;
         }
         // Authorized: open admin dashboard
@@ -480,7 +477,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     if (user.role === 'admin') {
       setActiveTab('live');
       if (typeof window !== 'undefined' && window.history) {
-        window.history.pushState({}, '', '/admin/dashboard');
+        window.history.pushState({}, '', '/admin-dashboard');
       }
     } else if (user.role === 'manager') {
       setActiveTab('live');
@@ -535,7 +532,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         return;
       }
       if (typeof window !== 'undefined' && window.history) {
-        window.history.pushState({}, '', '/admin/dashboard');
+        window.history.pushState({}, '', '/admin-dashboard');
       }
     } else if (targetTab === 'monthly') {
       const allowedRoles: UserRole[] = ['admin', 'manager'];
