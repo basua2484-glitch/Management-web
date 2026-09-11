@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
@@ -7,6 +8,17 @@ import StaffPortal from './pages/StaffPortal';
 import ProtectedRoute from './components/ProtectedRoute';
 import { UnauthorizedPage } from './components/UnauthorizedPage';
 import { AuthLoadingScreen } from './components/AuthLoadingScreen';
+
+const LogoutRoute: React.FC = () => {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    logout(navigate);
+  }, [logout, navigate]);
+
+  return <AuthLoadingScreen message="Signing out and clearing session..." />;
+};
 
 const RootRedirect: React.FC = () => {
   const { isAuthenticated, isLoading, role } = useAuth();
@@ -67,6 +79,9 @@ function App() {
 
           {/* Access Denied (Case B Redirect) */}
           <Route path="/unauthorized" element={<UnauthorizedPage />} />
+
+          {/* Session Clear & Logout Route */}
+          <Route path="/logout" element={<LogoutRoute />} />
 
           {/* Legacy & Shortcut Routes */}
           <Route path="/dashboard" element={<Navigate to="/admin-dashboard" replace />} />

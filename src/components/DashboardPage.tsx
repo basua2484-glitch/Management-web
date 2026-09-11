@@ -203,7 +203,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           return;
         }
         // Authorized: open admin dashboard
-        setActiveTab('live');
+        setActiveTab((prev) => (prev === 'live' ? prev : 'live'));
       }
     };
 

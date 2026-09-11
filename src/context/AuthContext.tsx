@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { AppUser } from '../types';
-import { getStoredUsers, getStoredCurrentUser, saveStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
 import { handleLogin as authServiceLogin, handleLogout as authServiceLogout } from '../services/auth';
+import { auth } from '../firebase';
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 
 interface AuthContextType {
   user: AppUser | null;
@@ -21,19 +23,25 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function isSameUser(a: AppUser | null, b: AppUser | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.username === b.username &&
+    a.role === b.role &&
+    a.staff_id === b.staff_id &&
+    a.name === b.name &&
+    a.is_approved === b.is_approved
+  );
+}
+
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
   const value = `; ${document.cookie}`;
   const parts = value.split(`; ${name}=`);
   if (parts.length === 2) return parts.pop()?.split(';').shift() || null;
   return null;
-}
-
-interface AuthSnapshot {
-  token: string | null;
-  role: 'ADMIN' | 'MANAGER' | 'STAFF' | null;
-  user: AppUser | null;
-  isLoading: boolean;
 }
 
 function getStoredToken(): string | null {
@@ -122,76 +130,135 @@ function resolveUserProfile(
       staff_id: fallbackId.toUpperCase(),
       assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
     };
-    try {
-      saveStoredCurrentUser(userProfile);
-    } catch {}
   }
 
   return userProfile;
 }
 
-function computeAuthSnapshot(): AuthSnapshot {
-  const token = getStoredToken();
-  const role = getStoredRole();
-  const userId = getStoredUserId();
-
-  if (token && role) {
-    const user = resolveUserProfile(role, userId);
-    return {
-      token,
-      role,
-      user,
-      isLoading: false,
-    };
-  }
-
-  return {
-    token: null,
-    role: null,
-    user: null,
-    isLoading: false,
-  };
-}
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Synchronous initialization ensures no initial loading flicker, no redundant mount updates,
-  // and no premature redirection loops on cold starts or page refreshes.
-  const [authState, setAuthState] = useState<AuthSnapshot>(() => computeAuthSnapshot());
+  // Synchronous initial check for persistent storage
+  const [token, setToken] = useState<string | null>(() => getStoredToken());
+  const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'STAFF' | null>(() => getStoredRole());
+  const [user, setUser] = useState<AppUser | null>(() => {
+    const t = getStoredToken();
+    const r = getStoredRole();
+    const uid = getStoredUserId();
+    if (t && r) {
+      return resolveUserProfile(r, uid);
+    }
+    return null;
+  });
 
+  // If local tokens exist, initial loading is false; otherwise wait briefly for Firebase auth restoration
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    const initialToken = getStoredToken();
+    const initialRole = getStoredRole();
+    return !(initialToken && initialRole);
+  });
+
+  // Stable authentication restoration function with guarded functional state setters
   const restoreAuth = useCallback(() => {
     try {
-      const next = computeAuthSnapshot();
-      setAuthState((prev) => {
-        if (
-          prev.token === next.token &&
-          prev.role === next.role &&
-          prev.isLoading === next.isLoading &&
-          prev.user?.id === next.user?.id &&
-          prev.user?.username === next.user?.username &&
-          prev.user?.role === next.user?.role
-        ) {
-          return prev;
+      const storedToken = getStoredToken();
+      const storedRole = getStoredRole();
+      const storedUserId = getStoredUserId();
+
+      if (storedToken && storedRole) {
+        const userProfile = resolveUserProfile(storedRole, storedUserId);
+
+        // Guarded state setters - only trigger re-renders if actual value changes
+        setToken((prev) => (prev !== storedToken ? storedToken : prev));
+        setRole((prev) => (prev !== storedRole ? storedRole : prev));
+        setUser((prev) => (isSameUser(prev, userProfile) ? prev : userProfile));
+      } else {
+        // Only clear if neither local session nor Firebase user is active
+        if (!auth?.currentUser) {
+          setToken((prev) => (prev !== null ? null : prev));
+          setRole((prev) => (prev !== null ? null : prev));
+          setUser((prev) => (prev !== null ? null : prev));
         }
-        return next;
-      });
+      }
     } catch (err) {
       console.warn('Authentication restoration notice:', err);
-      setAuthState((prev) => {
-        if (prev.token === null && prev.role === null && prev.user === null && !prev.isLoading) {
-          return prev;
-        }
-        return {
-          token: null,
-          role: null,
-          user: null,
-          isLoading: false,
-        };
-      });
+    } finally {
+      setIsLoading((prev) => (prev ? false : prev));
     }
   }, []);
 
-  // Listen for storage or custom auth changes across tabs or windows
+  // Sync with Firebase Authentication & cross-tab/window storage updates
   useEffect(() => {
+    restoreAuth();
+
+    // 1. Firebase onAuthStateChanged listener to persist session across reloads
+    let unsubscribeFirebase: (() => void) | undefined;
+    if (auth) {
+      try {
+        unsubscribeFirebase = onAuthStateChanged(
+          auth,
+          async (firebaseUser: FirebaseUser | null) => {
+            try {
+              if (firebaseUser) {
+                const fbToken =
+                  (await firebaseUser.getIdToken().catch(() => null)) ||
+                  `FB_${firebaseUser.uid}`;
+                const currentRole = getStoredRole();
+                const emailLower = (firebaseUser.email || '').toLowerCase();
+                let resolvedRole: 'ADMIN' | 'MANAGER' | 'STAFF' = currentRole || 'STAFF';
+
+                if (emailLower.includes('admin')) {
+                  resolvedRole = 'ADMIN';
+                } else if (emailLower.includes('manager')) {
+                  resolvedRole = 'MANAGER';
+                }
+
+                const storedUserId = getStoredUserId() || firebaseUser.uid;
+                let userProfile = resolveUserProfile(resolvedRole, storedUserId);
+                if (firebaseUser.displayName && userProfile) {
+                  userProfile = {
+                    ...userProfile,
+                    name: firebaseUser.displayName || userProfile.name,
+                  };
+                }
+
+                // Strictly prevent re-render loops by checking state equality
+                setToken((prev) => (prev === fbToken ? prev : fbToken));
+                setRole((prev) => (prev === resolvedRole ? prev : resolvedRole));
+                setUser((prev) => (isSameUser(prev, userProfile) ? prev : userProfile));
+              } else {
+                // No active Firebase user -> check if local hospital session exists
+                const storedToken = getStoredToken();
+                const storedRole = getStoredRole();
+                if (!storedToken || !storedRole) {
+                  setToken((prev) => (prev !== null ? null : prev));
+                  setRole((prev) => (prev !== null ? null : prev));
+                  setUser((prev) => (prev !== null ? null : prev));
+                }
+              }
+            } catch (authError) {
+              console.warn('Firebase auth state listener error:', authError);
+            } finally {
+              setIsLoading((prev) => (prev ? false : prev));
+            }
+          },
+          (err) => {
+            console.warn('Firebase onAuthStateChanged error:', err);
+            setIsLoading((prev) => (prev ? false : prev));
+          }
+        );
+      } catch (err) {
+        console.warn('Firebase subscription error:', err);
+        setIsLoading((prev) => (prev ? false : prev));
+      }
+    } else {
+      setIsLoading((prev) => (prev ? false : prev));
+    }
+
+    // Safety timeout to guarantee ProtectedRoute never remains locked
+    const safetyTimeout = setTimeout(() => {
+      setIsLoading((prev) => (prev ? false : prev));
+    }, 1200);
+
+    // 2. Storage event listeners for multi-tab synchronization
     const handleStorageChange = (e: StorageEvent) => {
       if (
         e.key === 'userToken' ||
@@ -209,6 +276,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.addEventListener('auth-state-change', restoreAuth);
 
     return () => {
+      if (typeof unsubscribeFirebase === 'function') {
+        unsubscribeFirebase();
+      }
+      clearTimeout(safetyTimeout);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('auth-state-change', restoreAuth);
     };
@@ -228,15 +299,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const success = await authServiceLogin(staffId, password, captureNavigate, setError);
       if (success) {
-        // Synchronously recompute snapshot and commit to state BEFORE navigation
-        const next = computeAuthSnapshot();
-        setAuthState({ ...next, isLoading: false });
+        const storedToken = getStoredToken();
+        const storedRole = getStoredRole();
+        const storedUserId = getStoredUserId();
+        const userProfile = storedRole ? resolveUserProfile(storedRole, storedUserId) : null;
+
+        // Synchronously update context state before route navigation
+        setToken(storedToken);
+        setRole(storedRole);
+        setUser(userProfile);
+        setIsLoading(false);
 
         const destination =
           targetRedirect ||
-          (next.role === 'ADMIN'
+          (storedRole === 'ADMIN'
             ? '/admin-dashboard'
-            : next.role === 'MANAGER'
+            : storedRole === 'MANAGER'
             ? '/manager-dashboard'
             : '/staff-portal');
 
@@ -250,12 +328,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = useCallback(
     (navigate?: (to: string, options?: { replace?: boolean }) => void) => {
       authServiceLogout();
-      setAuthState({
-        token: null,
-        role: null,
-        user: null,
-        isLoading: false,
-      });
+      if (auth) {
+        auth.signOut().catch(() => {});
+      }
+      // Call serverless logout to destroy server session and clear cookies
+      try {
+        fetch('/api/logout', { method: 'POST' }).catch(() => {});
+      } catch {}
+
+      setToken((prev) => (prev !== null ? null : prev));
+      setRole((prev) => (prev !== null ? null : prev));
+      setUser((prev) => (prev !== null ? null : prev));
+      setIsLoading((prev) => (prev ? false : prev));
+
       if (navigate) {
         navigate('/login', { replace: true });
       }
@@ -265,24 +350,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value = React.useMemo<AuthContextType>(
     () => ({
-      user: authState.user,
-      token: authState.token,
-      role: authState.role,
-      isAuthenticated: Boolean(authState.token && authState.role),
-      isLoading: authState.isLoading,
+      user,
+      token,
+      role,
+      isAuthenticated: Boolean(token && role),
+      isLoading,
       login,
       logout,
       refreshAuth: restoreAuth,
     }),
-    [
-      authState.user,
-      authState.token,
-      authState.role,
-      authState.isLoading,
-      login,
-      logout,
-      restoreAuth,
-    ]
+    [user, token, role, isLoading, login, logout, restoreAuth]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -295,3 +372,4 @@ export const useAuth = (): AuthContextType => {
   }
   return context;
 };
+
