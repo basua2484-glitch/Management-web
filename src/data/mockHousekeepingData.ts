@@ -403,11 +403,29 @@ export function getStoredCurrentUser(): AppUser | null {
         username: parsed.username || parsed.staff_id || `user_${parsed.id}`,
       };
     }
+
+    // Fallback: check if userId and userToken exist in localStorage
+    const token = localStorage.getItem('userToken') || localStorage.getItem('user_token');
+    const userId = localStorage.getItem('userId');
+    const userRole = localStorage.getItem('userRole') || localStorage.getItem('user_role');
+
+    if (token && (userId || userRole)) {
+      const users = getStoredUsers();
+      const cleanId = (userId || '').toLowerCase().replace(/[-_\s]/g, '');
+      const found = users.find(
+        (u) =>
+          (userId && u.username && u.username.toLowerCase() === userId.toLowerCase()) ||
+          (cleanId && u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId) ||
+          (userRole && u.role.toLowerCase() === userRole.toLowerCase())
+      );
+      if (found) {
+        return found;
+      }
+    }
   } catch (e) {
     console.error('Failed to parse current user from local storage', e);
   }
-  // Default to admin user for convenient instant preview, or null if logged out
-  return INITIAL_USERS[0];
+  return null;
 }
 
 export function saveStoredCurrentUser(user: AppUser | null): void {

@@ -16,30 +16,32 @@ export interface LogoutResult {
  *     return response
  */
 export async function performLogout(): Promise<LogoutResult> {
-  // 1. Server session destroy & cookie header clearance via /logout endpoint
+  // 1. Server session destroy & cookie header clearance via /api/logout endpoint
   try {
-    await fetch('/logout', {
+    await fetch('/api/logout', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
       },
       credentials: 'include',
-    }).catch(() => {
-      // Fallback in case POST not accepted
-      return fetch('/api/logout', { method: 'POST', credentials: 'include' });
-    });
+    }).catch(() => {});
   } catch (err) {
     console.warn('Server logout request warning:', err);
   }
 
   // 2. Clear client-side session cookies (expires=0)
   try {
-    const expiredCookie = 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; SameSite=Lax';
-    document.cookie = expiredCookie;
-    document.cookie = 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    // Clear any other session tokens
-    document.cookie = 'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    document.cookie = 'auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
+    const expiredCookies = [
+      'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'authToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'userRole=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'user_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+    ];
+    expiredCookies.forEach((c) => {
+      document.cookie = c;
+    });
   } catch (err) {
     console.warn('Cookie removal warning:', err);
   }
@@ -66,13 +68,11 @@ export async function performLogout(): Promise<LogoutResult> {
     // Ignore Firebase logout failure
   }
 
-  // 6. Update browser URL to /login if possible
+  // 6. Notify all listeners in the window
   try {
-    if (typeof window !== 'undefined' && window.history) {
-      window.history.replaceState({}, '', '/login');
-    }
+    window.dispatchEvent(new Event('auth-state-change'));
   } catch (err) {
-    // Ignore history error
+    // Ignore event dispatch error
   }
 
   return {
@@ -97,11 +97,18 @@ export function checkAdminRequired(user: { id?: number; role?: string } | null):
   authorized: boolean;
   redirectUrl?: string;
 } {
-  // Check if user is logged in AND is an admin
-  if (!user || !user.id || user.role !== 'admin') {
+  // Check if user is logged in AND is an admin or operations manager
+  if (!user || (!user.id && !user.role)) {
     return {
       authorized: false,
       redirectUrl: '/login',
+    };
+  }
+  const roleLower = (user.role || '').toLowerCase();
+  if (roleLower !== 'admin' && roleLower !== 'manager') {
+    return {
+      authorized: false,
+      redirectUrl: '/unauthorized',
     };
   }
   return {
@@ -118,9 +125,6 @@ export function adminRequired<T extends (...args: any[]) => any>(
     const user = getUser();
     const check = checkAdminRequired(user);
     if (!check.authorized) {
-      if (typeof window !== 'undefined' && window.history) {
-        window.history.replaceState({}, '', check.redirectUrl || '/login');
-      }
       onUnauthorized?.();
       return;
     }
@@ -130,17 +134,9 @@ export function adminRequired<T extends (...args: any[]) => any>(
 
 /**
  * Direct client-side handleLogout:
- * function handleLogout() {
- *     // Local Tokens Wipe Out
- *     localStorage.removeItem("user_token");
- *     localStorage.removeItem("user_role");
- *     sessionStorage.clear();
- *     
- *     // Redirect to Login
- *     window.location.href = "/login";
- * }
+ * Clears local tokens, cookies, session storage, and redirects to /login.
  */
-export function handleLogout(): void {
+export function handleLogout(navigate?: (to: string, options?: { replace?: boolean }) => void): void {
   // Local Tokens Wipe Out
   try {
     localStorage.removeItem("userToken");
@@ -163,19 +159,32 @@ export function handleLogout(): void {
 
   // Clear session cookies
   try {
-    document.cookie = 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    document.cookie = 'user_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    document.cookie = 'role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    document.cookie = 'authToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
-    document.cookie = 'userRole=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;';
+    const expiredCookies = [
+      'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'authToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'userRole=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'user_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+      'role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+    ];
+    expiredCookies.forEach((c) => {
+      document.cookie = c;
+    });
   } catch (e) {}
 
   try {
     window.dispatchEvent(new Event('auth-state-change'));
   } catch (e) {}
 
-  // Redirect to Login
-  if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+  // Trigger server logout
+  try {
+    fetch('/api/logout', { method: 'POST' }).catch(() => {});
+  } catch {}
+
+  // Redirect to Login cleanly
+  if (navigate) {
+    navigate('/login', { replace: true });
+  } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
     window.location.href = '/login';
   }
 }

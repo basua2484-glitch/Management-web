@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { AppUser } from '../types';
-import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getStoredUsers, getStoredCurrentUser, saveStoredCurrentUser } from '../data/mockHousekeepingData';
 import { handleLogin as authServiceLogin, handleLogout as authServiceLogout } from '../services/auth';
 import { auth } from '../firebase';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -95,7 +95,18 @@ function resolveUserProfile(
 ): AppUser {
   let userProfile: AppUser | null = null;
   try {
-    userProfile = getStoredCurrentUser();
+    const stored = getStoredCurrentUser();
+    if (stored && stored.role && stored.role.toUpperCase() === roleUpper) {
+      if (
+        !storedUserId ||
+        stored.username.toLowerCase() === storedUserId.toLowerCase() ||
+        (stored.staff_id &&
+          stored.staff_id.toLowerCase().replace(/[-_\s]/g, '') ===
+            storedUserId.toLowerCase().replace(/[-_\s]/g, ''))
+      ) {
+        userProfile = stored;
+      }
+    }
   } catch {}
 
   if (!userProfile && storedUserId) {
@@ -108,6 +119,13 @@ function resolveUserProfile(
             u.username.toLowerCase() === storedUserId.toLowerCase() ||
             (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === cleanId)
         ) || null;
+    } catch {}
+  }
+
+  if (!userProfile) {
+    try {
+      const allUsers = getStoredUsers();
+      userProfile = allUsers.find((u) => u.role && u.role.toUpperCase() === roleUpper) || null;
     } catch {}
   }
 
@@ -132,11 +150,16 @@ function resolveUserProfile(
     };
   }
 
+  // Ensure current user is saved in storage for components that inspect it
+  try {
+    saveStoredCurrentUser(userProfile);
+  } catch {}
+
   return userProfile;
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Synchronous initial check for persistent storage
+  // Synchronous initial check for persistent storage - instant boot, no refresh lag
   const [token, setToken] = useState<string | null>(() => getStoredToken());
   const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'STAFF' | null>(() => getStoredRole());
   const [user, setUser] = useState<AppUser | null>(() => {
@@ -149,12 +172,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   });
 
-  // If local tokens exist, initial loading is false; otherwise wait briefly for Firebase auth restoration
-  const [isLoading, setIsLoading] = useState<boolean>(() => {
-    const initialToken = getStoredToken();
-    const initialRole = getStoredRole();
-    return !(initialToken && initialRole);
-  });
+  // Since storage is checked synchronously, initialize isLoading to false immediately
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // Stable authentication restoration function with guarded functional state setters
   const restoreAuth = useCallback(() => {
@@ -181,7 +200,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err) {
       console.warn('Authentication restoration notice:', err);
     } finally {
-      setIsLoading((prev) => (prev ? false : prev));
+      setIsLoading(false);
     }
   }, []);
 
@@ -327,22 +346,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(
     (navigate?: (to: string, options?: { replace?: boolean }) => void) => {
-      authServiceLogout();
-      if (auth) {
-        auth.signOut().catch(() => {});
+      // 1. Wipe local tokens, storage, and cookies
+      try {
+        authServiceLogout();
+      } catch (e) {
+        console.warn('authServiceLogout error:', e);
       }
-      // Call serverless logout to destroy server session and clear cookies
+
+      // 2. Sign out Firebase if initialized
+      if (auth) {
+        try {
+          auth.signOut().catch(() => {});
+        } catch {}
+      }
+
+      // 3. Clear serverless session
       try {
         fetch('/api/logout', { method: 'POST' }).catch(() => {});
       } catch {}
 
-      setToken((prev) => (prev !== null ? null : prev));
-      setRole((prev) => (prev !== null ? null : prev));
-      setUser((prev) => (prev !== null ? null : prev));
-      setIsLoading((prev) => (prev ? false : prev));
+      // 4. Immediately clear React AuthContext state
+      setToken(null);
+      setRole(null);
+      setUser(null);
+      setIsLoading(false);
 
+      // 5. Navigate to login
       if (navigate) {
         navigate('/login', { replace: true });
+      } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
       }
     },
     []

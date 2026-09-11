@@ -161,14 +161,13 @@ function attendanceApiPlugin(): Plugin {
           return;
         }
 
-        // Flask @app.route('/logout')
-        const isLogoutUrl =
-          req.url === '/logout' ||
-          req.url?.startsWith('/logout?') ||
+        // API @app.route('/api/logout') or POST /logout
+        const isApiLogout =
           req.url === '/api/logout' ||
-          req.url?.startsWith('/api/logout?');
+          req.url?.startsWith('/api/logout?') ||
+          (req.method === 'POST' && (req.url === '/logout' || req.url?.startsWith('/logout?')));
 
-        if (isLogoutUrl) {
+        if (isApiLogout) {
           // 1. Destroy server session (session.clear())
           for (const key of Object.keys(inMemorySessions)) {
             delete inMemorySessions[key];
@@ -178,18 +177,13 @@ function attendanceApiPlugin(): Plugin {
           res.setHeader('Set-Cookie', [
             'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; SameSite=Lax',
             'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+            'authToken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+            'userRole=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+            'user_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
+            'role=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0;',
           ]);
 
-          // 3. Response: make_response(redirect('/login'))
-          const acceptsHtml = Boolean(req.headers.accept && req.headers.accept.includes('text/html'));
-          if (req.method === 'GET' && acceptsHtml) {
-            res.statusCode = 302;
-            res.setHeader('Location', '/login');
-            res.end();
-            return;
-          }
-
-          // For fetch / XHR requests
+          // For API fetch / XHR requests
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 200;
           res.end(
@@ -200,43 +194,6 @@ function attendanceApiPlugin(): Plugin {
             })
           );
           return;
-        }
-
-        // Flask @app.route('/admin/dashboard') with @admin_required
-        const isAdminDashboardUrl =
-          req.url === '/admin/dashboard' ||
-          req.url?.startsWith('/admin/dashboard?') ||
-          req.url === '/admin' ||
-          req.url?.startsWith('/admin?');
-
-        if (isAdminDashboardUrl) {
-          const cookies = req.headers.cookie || '';
-          const hasUserId = cookies.includes('user_id=') && !cookies.includes('user_id=;');
-          const isAdmin = cookies.includes('role=admin');
-
-          // Check if user is logged in AND is an admin:
-          // if 'user_id' not in session or session.get('role') != 'admin':
-          //     return redirect('/login')  # Unauthorized attempt -> Redirect to login
-          if (!hasUserId || !isAdmin) {
-            const acceptsHtml = Boolean(req.headers.accept && req.headers.accept.includes('text/html'));
-            if (acceptsHtml) {
-              res.statusCode = 302;
-              res.setHeader('Location', '/login');
-              res.end();
-              return;
-            } else {
-              res.setHeader('Content-Type', 'application/json');
-              res.statusCode = 403;
-              res.end(
-                JSON.stringify({
-                  status: 'unauthorized',
-                  message: 'Admin required. Redirecting to /login.',
-                  redirect: '/login',
-                })
-              );
-              return;
-            }
-          }
         }
 
         // GET /api/get_staff_summary/<staff_id>

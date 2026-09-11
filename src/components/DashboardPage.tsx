@@ -58,6 +58,7 @@ import { RegisterStaffModal } from './RegisterStaffModal';
 import { PendingApprovalModal } from './PendingApprovalModal';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { LoginPage } from './LoginPage';
 import ProtectedRoute from './ProtectedRoute';
 import { UnauthorizedPage } from './UnauthorizedPage';
@@ -68,6 +69,7 @@ export interface DashboardPageProps {
 
 export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const navigate = useNavigate();
+  const { user: authUser, role: authRole, logout: authLogout } = useAuth();
   // Current monthly report period
   const [year, setYear] = useState<number>(2026);
   const [month, setMonth] = useState<number>(9);
@@ -75,42 +77,24 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Live overview date (defaults to 2026-09-06)
   const [selectedLiveDate, setSelectedLiveDate] = useState<string>('2026-09-06');
 
-  // App Authentication Users & Current User (matching Flask User & Flask-Login)
+  // App Authentication Users & Current User
   const [users, setUsers] = useState<AppUser[]>(() => getStoredUsers());
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    if (authUser) return authUser;
     const stored = getStoredCurrentUser();
     if (stored) return stored;
-    const storedUserId = localStorage.getItem('userId');
-    const storedRole = localStorage.getItem('userRole') || localStorage.getItem('user_role');
-    if (storedUserId) {
-      const allUsers = getStoredUsers();
-      const matched = allUsers.find(
-        (u) =>
-          u.username.toLowerCase() === storedUserId.toLowerCase() ||
-          (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === storedUserId.toLowerCase().replace(/[-_\s]/g, ''))
-      );
-      if (matched) {
-        saveStoredCurrentUser(matched);
-        return matched;
-      }
-    }
-    if (storedRole) {
-      const roleUpper = storedRole.toUpperCase();
-      const cleanId = (storedUserId || (roleUpper === 'ADMIN' ? 'admin' : roleUpper === 'MANAGER' ? 'manager' : 'hk001')).toLowerCase();
-      const fallbackUser: AppUser = {
-        id: cleanId === 'admin' ? 100 : cleanId === 'manager' ? 101 : 1,
-        username: cleanId,
-        name: cleanId === 'admin' ? 'ApexCare Admin' : cleanId === 'manager' ? 'Operations Manager' : `Staff Member (${cleanId.toUpperCase()})`,
-        role: roleUpper.toLowerCase() as any,
-        is_approved: true,
-        staff_id: cleanId.toUpperCase(),
-        assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
-      };
-      saveStoredCurrentUser(fallbackUser);
-      return fallbackUser;
-    }
     return null;
   });
+
+  // Synchronize with AuthContext user
+  useEffect(() => {
+    if (authUser) {
+      setCurrentUser(authUser);
+    } else {
+      const stored = getStoredCurrentUser();
+      setCurrentUser(stored);
+    }
+  }, [authUser]);
 
   // Flask Flash Messages Queue
   const [flashes, setFlashes] = useState<FlashMessage[]>([]);
@@ -195,11 +179,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       // @app.route('/admin/dashboard') with @admin_required
       // If 'user_id' not in session or session.get('role') != 'admin': return redirect('/login')
       if (pathname === '/admin-dashboard' || pathname === '/admin/dashboard' || pathname === '/admin') {
-        if (currentUser && currentUser.role !== 'admin') {
-          // Unauthorized attempt -> Redirect to login
-          window.history.replaceState({}, '', '/login');
-          addFlash('Unauthorized attempt: Admin privileges required. Redirected to login.', 'danger');
-          handleAppLogout();
+        if (currentUser && currentUser.role !== 'admin' && currentUser.role !== 'manager') {
+          // Unauthorized attempt -> Redirect to their appropriate portal
+          navigate('/staff-portal', { replace: true });
           return;
         }
         // Authorized: open admin dashboard
@@ -497,22 +479,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleAppLogout = async () => {
-    // Local Tokens Wipe Out
-    try {
-      localStorage.removeItem("userToken");
-      localStorage.removeItem("userRole");
-      localStorage.removeItem("userId");
-      localStorage.removeItem("user_token");
-      localStorage.removeItem("user_role");
-      sessionStorage.clear();
-    } catch (e) {
-      console.warn("Storage wipe warning:", e);
-    }
-
-    await performLogout();
-    setCurrentUser(null);
     addFlash('Aap safaltapurvak logout ho gaye hain.', 'info');
-    navigate('/');
+    setCurrentUser(null);
+    authLogout(navigate);
   };
 
   // Role Access Control Decorator: @admin_required & @role_required
@@ -734,9 +703,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const userInitial = currentUser ? currentUser.name.charAt(0).toUpperCase() : 'U';
   const userName = currentUser ? currentUser.name : 'Guest User';
 
-  // If not authenticated, redirect to login page (/)
-  if (!currentUser) {
-    return <Navigate to="/" replace />;
+  // If not authenticated, redirect to login page (/login)
+  if (!currentUser && !authUser) {
+    return <Navigate to="/login" replace />;
   }
 
   return (

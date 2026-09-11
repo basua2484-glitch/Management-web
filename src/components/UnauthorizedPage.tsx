@@ -1,12 +1,13 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, ArrowLeft, Home, LogOut, Lock } from 'lucide-react';
-import { handleLogout } from '../services/auth';
+import { useAuth } from '../context/AuthContext';
 
 export const UnauthorizedPage: React.FC = () => {
   const navigate = useNavigate();
-  const userRole = (localStorage.getItem('userRole') || localStorage.getItem('user_role') || 'UNKNOWN').toUpperCase();
-  const userId = localStorage.getItem('userId') || 'User';
+  const { logout, role: contextRole, user: contextUser } = useAuth();
+  const userRole = (contextRole || localStorage.getItem('userRole') || localStorage.getItem('user_role') || 'UNKNOWN').toUpperCase();
+  const userId = contextUser?.staff_id || contextUser?.username || localStorage.getItem('userId') || 'User';
 
   const getSafePortalUrl = () => {
     if (userRole === 'ADMIN') return '/admin-dashboard';
@@ -88,7 +89,7 @@ export const UnauthorizedPage: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => handleLogout()}
+              onClick={() => logout(navigate)}
               className="py-2 px-3 rounded-xl bg-rose-950/40 hover:bg-rose-950/80 text-rose-300 font-medium text-xs flex items-center justify-center gap-1.5 transition border border-rose-800/50"
               id="unauthorized-logout-btn"
             >
