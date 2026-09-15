@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Check, Clock, Building, User, Calendar, ShieldAlert } from 'lucide-react';
 import type { StaffUser, AttendanceRecord } from '../types';
+import { SHIFTS, process_shift_attendance } from '../utils/attendanceCalculator';
 
 interface DutyAssignmentModalProps {
   isOpen: boolean;
@@ -32,75 +33,98 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   onSaveAssignment,
   initialStaffId,
 }) => {
+  const [dutyType, setDutyType] = useState<'FIXED' | 'PERMANENT_RELIEVER' | 'TEMP_RELIEVER'>('FIXED');
+  const [isTempReliever, setIsTempReliever] = useState<boolean>(false);
+  const [tempDepartment, setTempDepartment] = useState<string>('');
   const [staffId, setStaffId] = useState<number>(initialStaffId || staff[0]?.id || 1);
   const [date, setDate] = useState<string>(selectedDate);
   const [dutyArea, setDutyArea] = useState<string>(DUTY_AREAS[0]);
   const [shift, setShift] = useState<'Morning' | 'Evening' | 'Night'>('Morning');
-  const [punchIn, setPunchIn] = useState<string>('08:00');
-  const [punchOut, setPunchOut] = useState<string>('17:00');
+  const [punchIn, setPunchIn] = useState<string>(SHIFTS.MORNING.start);
+  const [punchOut, setPunchOut] = useState<string>(SHIFTS.MORNING.end);
   const [status, setStatus] = useState<'Present' | 'Absent' | 'Half Day' | 'On Leave'>('Present');
   const [regularHours, setRegularHours] = useState<number>(8.0);
-  const [otHours, setOtHours] = useState<number>(1.0);
+  const [otHours, setOtHours] = useState<number>(0.0);
   const [notes, setNotes] = useState<string>('');
 
   if (!isOpen) return null;
 
-  const handlePunchTimes = (inVal: string, outVal: string) => {
+  const handlePunchTimes = (inVal: string, outVal: string, shiftName?: string) => {
     setPunchIn(inVal);
     setPunchOut(outVal);
 
     if (inVal && outVal) {
-      const [inH, inM] = inVal.split(':').map(Number);
-      const [outH, outM] = outVal.split(':').map(Number);
-      let diffMinutes = outH * 60 + outM - (inH * 60 + inM);
-      if (diffMinutes < 0) diffMinutes += 24 * 60;
-
-      // 30 min lunch break if shift > 5 hrs
-      if (diffMinutes > 300) diffMinutes -= 30;
-      const totalHrs = Math.max(0, diffMinutes / 60);
-
-      if (totalHrs <= 8.0) {
-        setRegularHours(Number(totalHrs.toFixed(1)));
-        setOtHours(0);
-      } else {
-        setRegularHours(8.0);
-        setOtHours(Number((totalHrs - 8.0).toFixed(1)));
-      }
+      const activeShift = (shiftName || shift).toUpperCase();
+      const calc = process_shift_attendance(
+        `${date}T${inVal}:00`,
+        `${date}T${outVal}:00`,
+        activeShift,
+        date
+      );
+      setRegularHours(calc.regular_hours);
+      setOtHours(calc.overtime_hours);
     }
   };
 
   const handleShiftPreset = (newShift: 'Morning' | 'Evening' | 'Night') => {
     setShift(newShift);
-    if (newShift === 'Morning') {
-      handlePunchTimes('08:00', '16:30');
-    } else if (newShift === 'Evening') {
-      handlePunchTimes('14:00', '22:30');
-    } else {
-      handlePunchTimes('22:00', '06:30');
+    const key = newShift.toUpperCase() as keyof typeof SHIFTS;
+    const config = SHIFTS[key];
+    if (config) {
+      handlePunchTimes(config.start, config.end, newShift);
     }
   };
+
+  const selectedStaffMember = staff.find((s) => s.id === staffId);
+  const shiftCode = shift === 'Night' ? '11-7' : shift === 'Evening' ? '3-11' : '7-3';
+  const effectiveDepartment = isTempReliever && tempDepartment.trim() ? tempDepartment.trim() : dutyArea;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const isPresent = status === 'Present' || status === 'Half Day';
+    let assignedDate = date;
+    let finalReg = regularHours;
+    let finalOt = otHours;
+
+    if (isPresent && punchIn && punchOut) {
+      const activeShift = shift.toUpperCase();
+      const calc = process_shift_attendance(
+        `${date}T${punchIn}:00`,
+        `${date}T${punchOut}:00`,
+        activeShift,
+        date
+      );
+      assignedDate = calc.calendar_date;
+      finalReg = calc.regular_hours;
+      finalOt = calc.overtime_hours;
+    }
+
+    const staffCodeStr = selectedStaffMember?.staffCode || `HK-${staffId.toString().padStart(3, '0')}`;
 
     const record: AttendanceRecord = {
-      id: `att_${staffId}_${date}`,
+      id: `att_${staffId}_${assignedDate}`,
       userId: staffId,
-      date,
+      staff_id: staffCodeStr,
+      calendar_date: assignedDate,
+      date: assignedDate,
+      shift_name: shiftCode,
+      department_worked: effectiveDepartment,
       punchIn: isPresent ? punchIn : null,
       punchOut: isPresent ? punchOut : null,
-      regularHours: isPresent ? regularHours : 0,
-      otHours: isPresent ? otHours : 0,
-      status: status === 'Present' && otHours > 0 ? 'Present' : status,
-      notes: notes || dutyArea,
+      punch_in_time: isPresent && punchIn ? `${assignedDate}T${punchIn}:00` : null,
+      punch_out_time: isPresent && punchOut ? `${assignedDate}T${punchOut}:00` : null,
+      regularHours: isPresent ? finalReg : 0,
+      regular_hours: isPresent ? finalReg : 0,
+      otHours: isPresent ? finalOt : 0,
+      ot_hours: isPresent ? finalOt : 0,
+      ot_status: finalOt > 0 ? 'PENDING' : 'NONE',
+      status: status === 'Present' && finalOt > 0 ? 'Present' : status,
+      notes: notes || (isTempReliever ? `[Temp Reliever] ${effectiveDepartment}` : dutyArea),
     };
 
-    onSaveAssignment(record, dutyArea);
+    onSaveAssignment(record, effectiveDepartment);
     onClose();
   };
-
-  const selectedStaffMember = staff.find((s) => s.id === staffId);
 
   return (
     <div
@@ -168,10 +192,78 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
             </div>
           </div>
 
+          {/* Duty Allocation Settings & Temp Reliever Overrides */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                Duty Type (Duty Allocation Settings)
+              </label>
+              <span className="text-[10px] font-mono font-medium text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded">
+                Model: User.duty_type
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { type: 'FIXED' as const, label: 'Fixed Ward' },
+                { type: 'PERMANENT_RELIEVER' as const, label: 'Perm Reliever' },
+                { type: 'TEMP_RELIEVER' as const, label: 'Temp Reliever' },
+              ].map((dt) => (
+                <button
+                  key={dt.type}
+                  type="button"
+                  onClick={() => {
+                    setDutyType(dt.type);
+                    if (dt.type === 'TEMP_RELIEVER') {
+                      setIsTempReliever(true);
+                    }
+                  }}
+                  className={`py-1.5 px-2 rounded-md text-xs font-semibold border transition-all text-center ${
+                    dutyType === dt.type
+                      ? 'border-[#1E3A8A] bg-[#1E3A8A] text-white shadow-xs'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  {dt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Temporary Shift/Department Override */}
+            <div className="pt-2 border-t border-slate-200/80">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isTempReliever}
+                  onChange={(e) => setIsTempReliever(e.target.checked)}
+                  className="rounded border-slate-300 text-[#1E3A8A] focus:ring-[#1E3A8A]"
+                />
+                <span className="text-xs font-semibold text-slate-700">
+                  Temporary Reliever Shift Override (is_temp_reliever = True)
+                </span>
+              </label>
+
+              {isTempReliever && (
+                <div className="mt-2 pl-5">
+                  <label className="block text-2xs font-medium text-slate-600 mb-1">
+                    Temporary Department / Ward (temp_department)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Emergency Sanitation, ICU Ward 2"
+                    value={tempDepartment}
+                    onChange={(e) => setTempDepartment(e.target.value)}
+                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Assigned Duty / Area */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Assigned Duty / Area (Karyakshetra)
+              Primary Ward / Area (fixed_department)
             </label>
             <select
               value={dutyArea}
@@ -197,13 +289,16 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
                   key={s}
                   type="button"
                   onClick={() => handleShiftPreset(s)}
-                  className={`rounded-md py-2 px-3 text-xs font-medium border text-center transition-colors ${
+                  className={`rounded-md py-2 px-2 text-xs font-medium border text-center transition-colors flex flex-col items-center justify-center ${
                     shift === s
                       ? 'bg-[#1E3A8A] text-white border-[#1E3A8A]'
                       : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
                   }`}
                 >
-                  {s} Shift
+                  <span className="font-semibold">{s} Shift</span>
+                  <span className={`text-[10px] mt-0.5 ${shift === s ? 'text-blue-100' : 'text-slate-500'}`}>
+                    {s === 'Morning' ? '07:00 - 15:00' : s === 'Evening' ? '15:00 - 23:00' : '23:00 - 07:00'}
+                  </span>
                 </button>
               ))}
             </div>

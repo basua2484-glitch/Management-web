@@ -4,11 +4,7 @@ import { Background4D } from './Background4D';
 import { useAuth } from '../context/AuthContext';
 import { AuthLoadingScreen } from './AuthLoadingScreen';
 
-export interface LoginPageProps {
-  onLoginSuccess?: () => void;
-}
-
-export const LoginPage: React.FC<LoginPageProps> = () => {
+export const LoginPage = () => {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading, role, login } = useAuth();
 
@@ -30,13 +26,11 @@ export const LoginPage: React.FC<LoginPageProps> = () => {
         ? '/admin-dashboard'
         : role === 'MANAGER'
         ? '/manager-dashboard'
-        : role === 'SUPERVISOR'
-        ? '/supervisor-dashboard'
         : '/staff-portal';
     return <Navigate to={dest} replace />;
   }
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = (e) => {
     const card = e.currentTarget.getBoundingClientRect();
     const cardX = e.clientX - card.left - card.width / 2;
     const cardY = e.clientY - card.top - card.height / 2;
@@ -52,7 +46,7 @@ export const LoginPage: React.FC<LoginPageProps> = () => {
     setTransform('perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)');
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!staffId.trim() || !password) {
       setError('Please enter your Staff ID / Username and Password.');
@@ -153,56 +147,7 @@ export const LoginPage: React.FC<LoginPageProps> = () => {
           </button>
         </form>
 
-        {/* Quick Demo Credentials */}
-        <div className="mt-6 pt-4 border-t border-white/10 text-center">
-          <span className="text-[10px] tracking-wider text-gray-400 uppercase font-mono block mb-2">
-            Quick Test Accounts
-          </span>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-2xs">
-            <button
-              type="button"
-              onClick={() => {
-                setStaffId('admin');
-                setPassword('admin123');
-              }}
-              className="px-2 py-1.5 rounded bg-blue-950/60 hover:bg-blue-900 text-blue-300 border border-blue-700/50 font-mono transition-colors cursor-pointer text-center"
-            >
-              Admin
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setStaffId('manager');
-                setPassword('manager123');
-              }}
-              className="px-2 py-1.5 rounded bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-700/50 font-mono transition-colors cursor-pointer text-center"
-            >
-              Manager
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setStaffId('supervisor');
-                setPassword('super123');
-              }}
-              className="px-2 py-1.5 rounded bg-cyan-950/60 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/50 font-mono transition-colors cursor-pointer text-center"
-            >
-              Supervisor
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setStaffId('hk001');
-                setPassword('staff123');
-              }}
-              className="px-2 py-1.5 rounded bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/50 font-mono transition-colors cursor-pointer text-center"
-            >
-              Staff
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-4 text-center">
+        <div className="mt-8 text-center">
           <span className="text-[10px] tracking-widest text-gray-500 uppercase font-mono">
             Authorized Hospital Personnel Only
           </span>

@@ -2,6 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, ArrowLeft, Home, LogOut, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { Background4D } from './Background4D';
 
 export const UnauthorizedPage: React.FC = () => {
   const navigate = useNavigate();
@@ -17,11 +18,12 @@ export const UnauthorizedPage: React.FC = () => {
 
   return (
     <div
-      className="min-h-screen flex items-center justify-center p-4 bg-[#0D0D0E] font-sans antialiased text-slate-100"
+      className="min-h-screen flex items-center justify-center p-4 bg-[#0a0a0f] font-sans antialiased text-slate-100 relative overflow-hidden"
       id="unauthorized-page-root"
     >
+      <Background4D />
       <div
-        className="w-full max-w-md bg-[#161618] border border-rose-900/60 rounded-2xl p-6 sm:p-8 shadow-2xl relative overflow-hidden"
+        className="w-full max-w-md bg-[#161618] border border-rose-900/60 rounded-2xl p-6 sm:p-8 shadow-2xl relative z-10 overflow-hidden"
         id="unauthorized-card"
       >
         {/* Top Accent Line */}

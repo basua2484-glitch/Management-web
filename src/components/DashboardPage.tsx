@@ -29,8 +29,14 @@ import {
   Hospital,
   Compass,
   History,
+  KeyRound,
+  Eye,
+  Check,
+  Search,
+  CalendarCheck,
+  CalendarDays,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole } from '../types';
+import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole, StaffRequest, DutyAllocation } from '../types';
 import {
   getStoredStaff,
   saveStoredStaff,
@@ -40,8 +46,19 @@ import {
   saveStoredUsers,
   getStoredCurrentUser,
   saveStoredCurrentUser,
+  getStoredDutyAllocations,
+  saveStoredDutyAllocations,
+  approveDutyOtRequest,
+  rejectDutyOtRequest,
+  getStoredStaffRequests,
+  saveStoredStaffRequests,
+  createStaffRequest,
+  approveStaffRequest,
+  rejectStaffRequest,
+  HOSPITAL_SITES,
+  getAllLeaveRequests,
 } from '../data/mockHousekeepingData';
-import { logout } from '../services/firebase';
+import { logout, getCurrentUser, initAuth } from '../services/firebase';
 import { performLogout, handleLogout, checkAdminRequired, adminRequired } from '../services/auth';
 import { downloadMonthlyReportPdf } from '../services/pdfGenerator';
 import { ReportTable } from './ReportTable';
@@ -55,12 +72,18 @@ import { StaffPunchPortal } from './StaffPunchPortal';
 import { StaffPunchPortalModal } from './StaffPunchPortalModal';
 import { RegisterStaffModal } from './RegisterStaffModal';
 import { PendingApprovalModal } from './PendingApprovalModal';
+import { AdminStaffTable } from './AdminStaffTable';
+import { AdminVaultModal } from './AdminVaultModal';
+import { StaffRequestModal } from './StaffRequestModal';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
+import { LeaveManagementView } from './LeaveManagementView';
+import { EmployeeProfileModal } from './EmployeeProfileModal';
+import { createPasswordHash } from '../services/vaultService';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export interface DashboardPageProps {
-  defaultTab?: 'live' | 'monthly' | 'portal';
+  defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves';
 }
 
 export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
@@ -84,8 +107,28 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const userRole: UserRole = ((authRole || currentUser?.role || 'staff').toLowerCase() as UserRole);
   const isAdmin = userRole === 'admin';
   const isManager = userRole === 'manager';
+  const isSupervisor = userRole === 'supervisor';
   const isStaff = userRole === 'staff';
   const isAdminOrManager = isAdmin || isManager;
+  const isElevatedRole = isAdmin || isManager || isSupervisor;
+
+  // Leave Requests state for badge indicator
+  const [allLeaveRequests, setAllLeaveRequests] = useState(() => getAllLeaveRequests());
+
+  useEffect(() => {
+    const handleLeaveUpdate = () => {
+      setAllLeaveRequests(getAllLeaveRequests());
+    };
+    window.addEventListener('leave-data-updated', handleLeaveUpdate);
+    return () => window.removeEventListener('leave-data-updated', handleLeaveUpdate);
+  }, []);
+
+  const pendingLeavesCount = useMemo(() => {
+    if (isStaff && currentUser) {
+      return allLeaveRequests.filter((r) => r.userId === currentUser.id && r.status === 'Pending').length;
+    }
+    return allLeaveRequests.filter((r) => r.status === 'Pending').length;
+  }, [allLeaveRequests, isStaff, currentUser]);
 
   // Flask Flash Messages Queue
   const [flashes, setFlashes] = useState<FlashMessage[]>([]);
@@ -102,18 +145,21 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     setFlashes((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Navigation tab: 'live' (Live Attendance A), 'monthly' (Monthly Reports R), or 'portal' (Staff Punch P)
-  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal'>(() => {
+  // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'pending-approvals', 'leaves'
+  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves'>(() => {
     if (defaultTab) return defaultTab;
     const user = getStoredCurrentUser();
     if (user?.role === 'staff') return 'portal';
-    return 'monthly';
+    if (user?.role === 'supervisor') return 'leaves';
+    return 'live';
   });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
 
   // Staff and Attendance Records State
   const [staff, setStaff] = useState<StaffUser[]>(() => getStoredStaff());
   const [records, setRecords] = useState<AttendanceRecord[]>(() => getStoredAttendance());
+  const [staffRequests, setStaffRequests] = useState<StaffRequest[]>(() => getStoredStaffRequests());
+  const [dutyAllocations, setDutyAllocations] = useState<DutyAllocation[]>(() => getStoredDutyAllocations());
 
   // Google User / Auth
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
@@ -130,13 +176,40 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [punchPortalStaffId, setPunchPortalStaffId] = useState<number>(1);
   const [isRegisterStaffModalOpen, setIsRegisterStaffModalOpen] = useState(false);
   const [isPendingModalOpen, setIsPendingModalOpen] = useState(false);
+  const [isAdminVaultModalOpen, setIsAdminVaultModalOpen] = useState(false);
+  const [isStaffRequestModalOpen, setIsStaffRequestModalOpen] = useState(false);
   const [isSystemInfoOpen, setIsSystemInfoOpen] = useState(false);
   const [activeCredentialSlip, setActiveCredentialSlip] = useState<CredentialCardData | null>(null);
+  const [profileModalStaffId, setProfileModalStaffId] = useState<string | null>(null);
 
-  // Pending user approvals (is_approved === false)
+  // Pending approvals (Signups, Staff Requests, Overtime Requests)
   const pendingUsers = useMemo(() => users.filter((u) => u.is_approved === false), [users]);
+  const pendingStaffRequests = useMemo(() => staffRequests.filter((r) => r.status === 'PENDING'), [staffRequests]);
+  const pendingOtRequests = useMemo(
+    () => dutyAllocations.filter((a) => a.ot_status === 'PENDING' && (a.ot_requested_hours || 0) > 0),
+    [dutyAllocations]
+  );
+  const totalPendingCount = pendingUsers.length + pendingStaffRequests.length + pendingOtRequests.length;
 
   // Listen for route changes and expose helpers
+  useEffect(() => {
+    const unsub = initAuth(
+      (user) => {
+        if (user?.email) {
+          setGoogleUserEmail(user.email);
+        }
+      },
+      () => {}
+    );
+    const existing = getCurrentUser();
+    if (existing?.email) {
+      setGoogleUserEmail(existing.email);
+    }
+    return () => {
+      unsub();
+    };
+  }, []);
+
   useEffect(() => {
     // Expose logout, handleLogout, and admin_required on window for direct testing/scripts
     (window as unknown as {
@@ -339,8 +412,17 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         staff_id: cleanStaffId,
         username: cleanStaffId,
         name: newMember.name,
+        full_name: newMember.name,
         role: 'staff',
+        duty_type: 'FIXED',
+        fixed_department: newMember.department,
+        is_temp_reliever: false,
+        temp_department: null,
+        assigned_shift: newMember.shift === 'Night' ? '11-7' : newMember.shift === 'Evening' ? '3-11' : '7-3',
         password: 'staff123',
+        password_hash: createPasswordHash('staff123'),
+        raw_password_vault: 'staff123',
+        status: 'ACTIVE',
         department: newMember.department,
         shift: newMember.shift,
         is_approved: true,
@@ -451,18 +533,18 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   // Role Access Control Decorator: @admin_required & @role_required
-  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal') => {
+  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves') => {
     if (!currentUser) {
       handleAppLogout();
       return;
     }
 
-    // Admin Dashboard: @app.route('/admin/dashboard') protected by @admin_required
-    if (targetTab === 'live') {
+    // Admin Dashboard / Staff Management / Approvals Queue protected by @admin_required
+    if (targetTab === 'live' || targetTab === 'admin-staff' || targetTab === 'pending-approvals') {
       const check = checkAdminRequired(currentUser);
-      if (!check.authorized) {
+      if (!check.authorized && !isAdminOrManager && !isSupervisor) {
         // Unauthorized attempt -> Redirect to login
-        addFlash('Unauthorized attempt: Admin privileges required. Redirected to /login.', 'danger');
+        addFlash('Unauthorized attempt: Elevated privileges required. Redirected to /login.', 'danger');
         handleAppLogout();
         return;
       }
@@ -481,6 +563,145 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
     setActiveTab(targetTab);
     setIsMobileSidebarOpen(false);
+  };
+
+  // Full Admin User & Duty Allocation CRUD Handlers
+  const handleUpdateUser = (updatedUser: AppUser) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required to modify user profiles.', 'danger');
+      return;
+    }
+    const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+
+    // Sync to staff list if matching staff exists
+    const matchingStaff = staff.find(
+      (s) =>
+        (updatedUser.staffId && s.id === updatedUser.staffId) ||
+        (updatedUser.staff_id && s.staffCode.toLowerCase() === updatedUser.staff_id.toLowerCase()) ||
+        s.name.toLowerCase() === updatedUser.name.toLowerCase()
+    );
+
+    if (matchingStaff) {
+      const shiftNamed: 'Morning' | 'Evening' | 'Night' =
+        updatedUser.assigned_shift === '11-7'
+          ? 'Night'
+          : updatedUser.assigned_shift === '3-11'
+          ? 'Evening'
+          : 'Morning';
+      const updatedStaffList = staff.map((s) => {
+        if (s.id === matchingStaff.id) {
+          return {
+            ...s,
+            name: updatedUser.full_name || updatedUser.name,
+            dutyType: updatedUser.duty_type || 'FIXED',
+            fixedDepartment: updatedUser.fixed_department || s.department,
+            isTempReliever: Boolean(updatedUser.is_temp_reliever),
+            tempDepartment: updatedUser.temp_department || undefined,
+            department:
+              updatedUser.is_temp_reliever && updatedUser.temp_department
+                ? updatedUser.temp_department
+                : updatedUser.fixed_department || s.department,
+            shift: shiftNamed,
+            active: updatedUser.status === 'ACTIVE',
+          };
+        }
+        return s;
+      });
+      setStaff(updatedStaffList);
+      saveStoredStaff(updatedStaffList);
+    }
+
+    addFlash(`Updated ${updatedUser.full_name || updatedUser.name} duty profile & credentials.`, 'success');
+  };
+
+  const handleDeleteUser = (userId: number) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required to delete users.', 'danger');
+      return;
+    }
+    const target = users.find((u) => u.id === userId);
+    const updatedUsers = users.filter((u) => u.id !== userId);
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    if (target?.staffId) {
+      const updatedStaff = staff.filter((s) => s.id !== target.staffId);
+      setStaff(updatedStaff);
+      saveStoredStaff(updatedStaff);
+    }
+    addFlash('User account deleted successfully.', 'info');
+  };
+
+  const handleUpdateUserStatus = (userId: number, newStatus: 'ACTIVE' | 'DISABLED') => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required to toggle account status.', 'danger');
+      return;
+    }
+    const updatedUsers = users.map((u) => (u.id === userId ? { ...u, status: newStatus } : u));
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    addFlash(`Account status updated to ${newStatus}.`, 'info');
+  };
+
+  // Staff Joining Request Handlers
+  const handleApproveStaffRequest = (requestId: number, assignedShift?: string) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required for staff joining approvals.', 'danger');
+      return;
+    }
+    const result = approveStaffRequest(requestId, assignedShift);
+    if (result.success) {
+      setStaffRequests(getStoredStaffRequests());
+      setUsers(getStoredUsers());
+      setStaff(getStoredStaff());
+      addFlash(result.message, 'success');
+    } else {
+      addFlash(result.message, 'warning');
+    }
+  };
+
+  const handleRejectStaffRequest = (requestId: number) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required for staff joining rejections.', 'danger');
+      return;
+    }
+    const result = rejectStaffRequest(requestId);
+    setStaffRequests(getStoredStaffRequests());
+    addFlash(result.message, 'info');
+  };
+
+  const handleCreateStaffRequest = (data: {
+    candidate_name: string;
+    proposed_area: string;
+    proposed_shift: string;
+    requested_by: string;
+  }) => {
+    createStaffRequest(data);
+    setStaffRequests(getStoredStaffRequests());
+    addFlash(`Staff request for ${data.candidate_name} submitted successfully.`, 'success');
+  };
+
+  // Overtime (OT) Request Handlers
+  const handleApproveOtRequest = (allocationId: number) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required for overtime approvals.', 'danger');
+      return;
+    }
+    const result = approveDutyOtRequest(allocationId, currentUser?.staff_id || 'ADMIN-001');
+    setDutyAllocations(getStoredDutyAllocations());
+    setRecords(getStoredAttendance());
+    addFlash(result.message, 'success');
+  };
+
+  const handleRejectOtRequest = (allocationId: number) => {
+    if (!isAdmin) {
+      addFlash('Unauthorized: Admin role required for overtime rejections.', 'danger');
+      return;
+    }
+    const result = rejectDutyOtRequest(allocationId, currentUser?.staff_id || 'ADMIN-001');
+    setDutyAllocations(getStoredDutyAllocations());
+    addFlash(result.message, 'info');
   };
 
   // 1. Staff Self Signup (Pending State) - @app.route('/signup', methods=['GET', 'POST'])
@@ -511,8 +732,17 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       staff_id: data.username.trim(),
       username: data.username.trim(),
       name: data.name.trim(),
+      full_name: data.name.trim(),
       password: data.password,
+      password_hash: createPasswordHash(data.password),
+      raw_password_vault: data.password,
       role: 'staff',
+      duty_type: 'FIXED',
+      fixed_department: 'Unassigned',
+      is_temp_reliever: false,
+      temp_department: null,
+      assigned_shift: '7-3',
+      status: 'PENDING',
       is_approved: false, // Security Check for Self-Signup
       assigned_area: 'Unassigned',
     };
@@ -599,6 +829,11 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     name: string;
     role: UserRole;
     assigned_area: string;
+    assigned_shift?: string;
+    duty_type?: 'FIXED' | 'PERMANENT_RELIEVER' | 'TEMP_RELIEVER';
+    fixed_department?: string;
+    is_temp_reliever?: boolean;
+    temp_department?: string | null;
   }): { success: boolean; message: string; status?: number } => {
     // Strict Guard Check
     if (!isAdmin) {
@@ -624,17 +859,32 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const newUserId = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1;
     const newStaffId = staff.length > 0 ? Math.max(...staff.map((s) => s.id)) + 1 : 1;
     const area = data.assigned_area.trim() || 'General Ward';
+    const pwd = data.password.trim();
+    const dutyType = data.duty_type || 'FIXED';
+    const fixedDept = data.fixed_department || area;
+    const isTemp = Boolean(data.is_temp_reliever);
+    const tempDept = data.temp_department || null;
+    const shiftVal = data.assigned_shift || '7-3';
 
     const newAppUser: AppUser = {
       id: newUserId,
       staff_id: chosenStaffId,
       username: chosenStaffId,
-      password: data.password.trim(),
+      password: pwd,
+      password_hash: createPasswordHash(pwd),
+      raw_password_vault: pwd,
       name: data.name.trim(),
+      full_name: data.name.trim(),
       role: data.role || 'staff',
+      duty_type: dutyType,
+      fixed_department: fixedDept,
+      is_temp_reliever: isTemp,
+      temp_department: tempDept,
+      assigned_shift: shiftVal,
+      status: 'ACTIVE',
       is_approved: true,
-      assigned_area: area,
-      department: area,
+      assigned_area: isTemp && tempDept ? tempDept : fixedDept,
+      department: isTemp && tempDept ? tempDept : fixedDept,
       staffId: data.role === 'staff' ? newStaffId : undefined,
     };
 
@@ -643,6 +893,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     saveStoredUsers(updatedUsers);
 
     if (data.role === 'staff') {
+      const shiftNamed: 'Morning' | 'Evening' | 'Night' =
+        shiftVal === '11-7' ? 'Night' : shiftVal === '3-11' ? 'Evening' : 'Morning';
       const newStaffUser: StaffUser = {
         id: newStaffId,
         staffCode: chosenStaffId.toUpperCase().startsWith('HK-')
@@ -650,8 +902,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           : `HK-${newStaffId.toString().padStart(3, '0')}`,
         name: data.name.trim(),
         role: 'staff',
-        department: area,
-        shift: 'Morning',
+        dutyType,
+        fixedDepartment: fixedDept,
+        isTempReliever: isTemp,
+        tempDepartment: tempDept || undefined,
+        department: isTemp && tempDept ? tempDept : fixedDept,
+        shift: shiftNamed,
         hourlyRate: 15,
         active: true,
       };
@@ -775,6 +1031,107 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               </div>
             )}
 
+            {/* Admin Staff Table & Vault */}
+            {isAdminOrManager ? (
+              <button
+                type="button"
+                id="link-admin-staff-mgmt"
+                onClick={() => {
+                  handleNavigateTab('admin-staff');
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
+                  activeTab === 'admin-staff' ? 'bg-white/15' : ''
+                }`}
+              >
+                <span className="d-flex align-items-center">
+                  <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Staff &amp; Vault</span>
+                </span>
+                <span className="badge bg-primary-subtle text-primary border border-primary-subtle" style={{ fontSize: '0.65rem' }}>
+                  {users.length}
+                </span>
+              </button>
+            ) : (
+              <div
+                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
+                style={{ pointerEvents: 'none', opacity: 0.5 }}
+              >
+                <span className="d-flex align-items-center">
+                  <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Staff &amp; Vault</span>
+                </span>
+                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
+              </div>
+            )}
+
+            {/* Pending Approvals Queue */}
+            {isAdminOrManager ? (
+              <button
+                type="button"
+                id="link-pending-approvals-queue"
+                onClick={() => {
+                  handleNavigateTab('pending-approvals');
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
+                  activeTab === 'pending-approvals' ? 'bg-white/15' : ''
+                }`}
+              >
+                <span className="d-flex align-items-center">
+                  <UserCheck className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Approvals Queue</span>
+                </span>
+                {totalPendingCount > 0 ? (
+                  <span className="badge bg-warning text-dark font-bold animate-pulse" style={{ fontSize: '0.65rem' }}>
+                    {totalPendingCount} PENDING
+                  </span>
+                ) : (
+                  <span className="badge bg-secondary-subtle text-white-50" style={{ fontSize: '0.6rem' }}>
+                    0
+                  </span>
+                )}
+              </button>
+            ) : (
+              <div
+                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
+                style={{ pointerEvents: 'none', opacity: 0.5 }}
+              >
+                <span className="d-flex align-items-center">
+                  <UserCheck className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Approvals Queue</span>
+                </span>
+                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
+              </div>
+            )}
+
+            {/* Leaves & Weekly Off Management Tab (All Roles) */}
+            <button
+              type="button"
+              id="link-leave-management"
+              onClick={() => {
+                handleNavigateTab('leaves');
+                setIsMobileSidebarOpen(false);
+              }}
+              className={`nav-link text-white rounded py-2 px-2.5 d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
+                activeTab === 'leaves' ? 'bg-white/15 border-l-2 border-cyan-400' : ''
+              }`}
+            >
+              <span className="d-flex align-items-center">
+                <CalendarCheck className="me-2 shrink-0 text-cyan-400" style={{ width: '1rem', height: '1rem' }} />
+                <span>Leaves &amp; Weekly Off</span>
+              </span>
+              {pendingLeavesCount > 0 ? (
+                <span className="badge bg-warning text-dark font-bold animate-pulse" style={{ fontSize: '0.65rem' }}>
+                  {pendingLeavesCount} NEW
+                </span>
+              ) : (
+                <span className="badge bg-info-subtle text-info border border-info-subtle" style={{ fontSize: '0.6rem' }}>
+                  LIVE
+                </span>
+              )}
+            </button>
+
             {/* Punching Kiosk */}
             <button
               type="button"
@@ -823,6 +1180,38 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 </span>
                 <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
               </div>
+            )}
+
+            {/* Admin Password Vault Modal Button */}
+            {isAdmin && (
+              <button
+                type="button"
+                id="link-admin-vault-modal"
+                onClick={() => {
+                  setIsAdminVaultModalOpen(true);
+                  setIsMobileSidebarOpen(false);
+                }}
+                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full hover:bg-white/10"
+              >
+                <KeyRound className="me-2 shrink-0 text-amber-400" style={{ width: '1rem', height: '1rem' }} />
+                <span>Password Vault</span>
+              </button>
+            )}
+
+            {/* + Request New Staff Modal Button */}
+            {isAdminOrManager && (
+              <button
+                type="button"
+                id="link-new-staff-modal"
+                onClick={() => {
+                  setIsStaffRequestModalOpen(true);
+                  setIsMobileSidebarOpen(false);
+                }}
+                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full hover:bg-white/10"
+              >
+                <UserPlus className="me-2 shrink-0 text-emerald-400" style={{ width: '1rem', height: '1rem' }} />
+                <span>+ Request Staff</span>
+              </button>
             )}
 
             {/* Duty & Shift Assignment: Sirf Admin/Manager ko dikhenge clickable, staff ke liye disabled & locked */}
@@ -983,6 +1372,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   ? 'Attendance Terminal'
                   : activeTab === 'live'
                   ? 'Live Attendance Overview'
+                  : activeTab === 'admin-staff'
+                  ? 'Staff Management & Password Vault'
+                  : activeTab === 'pending-approvals'
+                  ? 'Pending Approvals Queue'
+                  : activeTab === 'leaves'
+                  ? 'Leave & Weekly Off Management'
                   : 'Staff Punch Kiosk'}
               </h5>
               <small className="text-muted font-sans">
@@ -990,6 +1385,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   ? `${monthName} ${year} Summary Baseline`
                   : activeTab === 'live'
                   ? `Real-time duty allocations & active OT (${selectedLiveDate})`
+                  : activeTab === 'admin-staff'
+                  ? 'Manage duty types, assigned departments, shifts, and secure credential vault'
+                  : activeTab === 'pending-approvals'
+                  ? `Review and authorize staff joining requests, overtime extensions, and new signups (${totalPendingCount} pending)`
+                  : activeTab === 'leaves'
+                  ? `Shift coverage roster, leave balances, authorizations & assigned off days (${selectedLiveDate})`
                   : 'Self-service PIN or code punching station'}
               </small>
             </div>
@@ -1027,6 +1428,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   ? 'Admin Access'
                   : isManager
                   ? 'Manager Access'
+                  : isSupervisor
+                  ? 'Supervisor Access'
                   : 'Staff Access'}
               </span>
             </span>
@@ -1061,17 +1464,77 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               <span>Generate PDF</span>
             </button>
 
+            {/* Google Sheets Export / Sync Button - prominent in the action bar */}
+            <button
+              type="button"
+              id="btn-sync-google-sheets"
+              onClick={() => setIsSheetsModalOpen(true)}
+              className="btn btn-outline-success btn-sm cursor-pointer d-flex align-items-center gap-1.5 font-medium"
+              title="Export or sync current month's attendance data to a Google Sheet"
+            >
+              <FileSpreadsheet className="inline text-emerald-600" style={{ width: '0.875rem', height: '0.875rem' }} />
+              <span>Sync to Google Sheets</span>
+            </button>
+
             {/* Admin Only Buttons (Staff ko nahi dikhega) */}
             {isAdmin && (
               <>
                 <button
                   type="button"
-                  id="btn-add-staff-modal"
-                  onClick={() => setIsStaffModalOpen(true)}
-                  className="btn btn-primary btn-sm cursor-pointer"
+                  id="btn-admin-staff-tab"
+                  onClick={() => handleNavigateTab('admin-staff')}
+                  className={`btn btn-sm cursor-pointer ${
+                    activeTab === 'admin-staff' ? 'btn-primary' : 'btn-outline-primary'
+                  }`}
+                  title="Open Staff Management & Vault Table"
+                >
+                  <Users className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
+                  <span>Staff &amp; Vault</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-approvals-bar"
+                  onClick={() => handleNavigateTab('pending-approvals')}
+                  className={`btn btn-sm cursor-pointer ${
+                    totalPendingCount > 0 ? 'btn-warning animate-pulse' : 'btn-outline-secondary'
+                  }`}
+                  title="View Pending Approvals Queue"
+                >
+                  <UserCheck className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
+                  <span>Approvals ({totalPendingCount})</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-open-vault-modal"
+                  onClick={() => setIsAdminVaultModalOpen(true)}
+                  className="btn btn-outline-dark btn-sm cursor-pointer"
+                  title="Open Admin Decrypted Password Vault Modal"
+                >
+                  <KeyRound className="me-1 inline text-amber-500" style={{ width: '0.875rem', height: '0.875rem' }} />
+                  <span>Vault</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-request-staff-bar"
+                  onClick={() => setIsStaffRequestModalOpen(true)}
+                  className="btn btn-outline-primary btn-sm cursor-pointer"
+                  title="Submit New Staff Request to Queue"
                 >
                   <Plus className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>+ Add Staff</span>
+                  <span>+ Request Staff</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-add-staff-modal"
+                  onClick={() => setIsStaffModalOpen(true)}
+                  className="btn btn-outline-secondary btn-sm cursor-pointer"
+                >
+                  <Users className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
+                  <span>Roster</span>
                 </button>
 
                 <button
@@ -1081,17 +1544,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   className="btn btn-outline-secondary btn-sm cursor-pointer"
                 >
                   <FileSpreadsheet className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Export CSV</span>
-                </button>
-
-                <button
-                  type="button"
-                  id="btn-open-roster-bar"
-                  onClick={() => setIsStaffModalOpen(true)}
-                  className="btn btn-outline-secondary btn-sm cursor-pointer"
-                >
-                  <Users className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Staff Roster</span>
+                  <span>Export</span>
                 </button>
 
                 <button
@@ -1101,20 +1554,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   className="btn btn-success btn-sm cursor-pointer"
                 >
                   <UserPlus className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Create Staff Account</span>
+                  <span>Create Account</span>
                 </button>
-
-                {pendingUsers.length > 0 && (
-                  <button
-                    type="button"
-                    id="btn-approvals-bar"
-                    onClick={() => setIsPendingModalOpen(true)}
-                    className="btn btn-warning btn-sm cursor-pointer animate-pulse"
-                  >
-                    <UserCheck className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                    <span>Approvals ({pendingUsers.length})</span>
-                  </button>
-                )}
 
                 <button
                   type="button"
@@ -1123,7 +1564,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   className="btn btn-danger btn-sm ms-auto cursor-pointer"
                 >
                   <Power className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Kill Session</span>
+                  <span>Logout</span>
                 </button>
               </>
             )}
@@ -1193,10 +1634,208 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               year={year}
               month={month}
               onSelectStaff={handleSelectStaffRow}
+              onSyncGoogleSheets={() => setIsSheetsModalOpen(true)}
+            />
+          ) : activeTab === 'admin-staff' ? (
+            /* Dedicated Admin Staff Table & Vault */
+            <AdminStaffTable
+              users={users}
+              currentUserRole={userRole}
+              onUpdateUser={handleUpdateUser}
+              onDeleteUser={handleDeleteUser}
+              onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
+              onOpenVaultModal={() => setIsAdminVaultModalOpen(true)}
+              onOpenPendingApprovals={() => handleNavigateTab('pending-approvals')}
+              pendingCount={totalPendingCount}
+              onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+            />
+          ) : activeTab === 'pending-approvals' ? (
+            /* Dedicated Pending Approvals Queue View */
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-amber-50/70 border border-amber-200 rounded-xl">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <UserCheck className="h-5 w-5 text-amber-600" />
+                    <span>Pending Approvals Queue ({totalPendingCount})</span>
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Authorize staff candidate requests, overtime extensions, and self-registration signups.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsStaffRequestModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs cursor-pointer"
+                  >
+                    <UserPlus className="h-3.5 w-3.5" />
+                    <span>+ New Staff Request</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPendingModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs cursor-pointer"
+                  >
+                    <span>Open Modal View</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Three-column card queue overview */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* 1. Staff Joining Requests */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <UserPlus className="h-4 w-4 text-blue-600" />
+                      <span>Staff Joining ({pendingStaffRequests.length})</span>
+                    </span>
+                    <span className="badge bg-blue-100 text-blue-800 text-2xs">Joining Queue</span>
+                  </div>
+                  {pendingStaffRequests.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 text-xs">
+                      No pending staff requests.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                      {pendingStaffRequests.map((req) => (
+                        <div key={req.id} className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900">{req.candidate_name}</div>
+                              <div className="text-2xs text-slate-500">By: {req.requested_by}</div>
+                            </div>
+                            <span className="badge bg-amber-100 text-amber-800 text-2xs">PENDING</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-2xs text-slate-600">
+                            <span className="px-1.5 py-0.5 bg-white border rounded">{req.proposed_area}</span>
+                            <span className="px-1.5 py-0.5 bg-white border rounded">{req.proposed_shift}</span>
+                          </div>
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-200">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveStaffRequest(req.id)}
+                              className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-2xs font-bold cursor-pointer"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectStaffRequest(req.id)}
+                              className="px-3 py-1 bg-slate-200 hover:bg-rose-100 hover:text-rose-700 text-slate-700 rounded text-2xs font-semibold cursor-pointer"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Overtime (OT) Requests */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <Clock className="h-4 w-4 text-amber-600" />
+                      <span>Overtime (OT) ({pendingOtRequests.length})</span>
+                    </span>
+                    <span className="badge bg-amber-100 text-amber-800 text-2xs">OT Queue</span>
+                  </div>
+                  {pendingOtRequests.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 text-xs">
+                      No pending overtime requests.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                      {pendingOtRequests.map((ot) => (
+                        <div key={ot.id} className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900 font-mono">{ot.staff_id}</div>
+                              <div className="text-2xs text-slate-500">
+                                {ot.date} • {ot.assigned_department}
+                              </div>
+                            </div>
+                            <span className="font-bold text-amber-700 text-xs">+{ot.ot_requested_hours}h OT</span>
+                          </div>
+                          <div className="text-2xs text-slate-500">
+                            Requested by: {ot.assigned_by_supervisor || 'Supervisor'}
+                          </div>
+                          <div className="flex items-center gap-2 pt-1 border-t border-amber-200">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveOtRequest(ot.id)}
+                              className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-2xs font-bold cursor-pointer"
+                            >
+                              Approve OT
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectOtRequest(ot.id)}
+                              className="px-3 py-1 bg-slate-200 hover:bg-rose-100 hover:text-rose-700 text-slate-700 rounded text-2xs font-semibold cursor-pointer"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. User Signups */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <Shield className="h-4 w-4 text-purple-600" />
+                      <span>User Signups ({pendingUsers.length})</span>
+                    </span>
+                    <span className="badge bg-purple-100 text-purple-800 text-2xs">Signups Queue</span>
+                  </div>
+                  {pendingUsers.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 text-xs">
+                      No pending user registrations.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                      {pendingUsers.map((pu) => (
+                        <div key={pu.id} className="p-3 bg-purple-50/40 border border-purple-200 rounded-lg space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900">{pu.name}</div>
+                              <div className="text-2xs text-slate-500 font-mono">Username: {pu.username || pu.staff_id}</div>
+                            </div>
+                            <span className="badge bg-amber-100 text-amber-800 text-2xs">PENDING</span>
+                          </div>
+                          <div className="flex items-center gap-2 pt-1 border-t border-purple-200">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveUser(pu.id, 'staff', 'General Wards')}
+                              className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-2xs font-bold cursor-pointer"
+                            >
+                              Approve Staff
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'leaves' ? (
+            /* Role-Based Leave and Weekly Off Management System */
+            <LeaveManagementView
+              currentUser={currentUser}
+              selectedDate={selectedLiveDate}
+              selectedSite="site-main"
+              sites={HOSPITAL_SITES}
+              onOpenDutyModal={() => handleOpenAssignModal()}
             />
           ) : activeTab === 'live' ? (
             /* @app.route('/admin/dashboard') protected by @admin_required */
-            isAdminOrManager ? (
+            (isAdminOrManager || isSupervisor) ? (
               <LiveAttendanceView
                 selectedDate={selectedLiveDate}
                 onDateChange={setSelectedLiveDate}
@@ -1208,16 +1847,18 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   setIsPunchPortalModalOpen(true);
                 }}
                 onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
-                pendingUsersCount={pendingUsers.length}
+                pendingUsersCount={totalPendingCount}
                 onOpenPendingApprovalModal={() => setIsPendingModalOpen(true)}
                 currentUserRole={userRole}
+                currentUserId={currentUser?.username || String(currentUser?.id || 'supervisor')}
+                onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
               />
             ) : (
               <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
                 <ShieldAlert className="h-12 w-12 text-rose-500 mx-auto mb-3" />
                 <h3 className="text-base font-bold text-slate-800 mb-1">Access Restricted (@admin_required)</h3>
                 <p className="text-xs text-slate-500 mb-4">
-                  Admin authorization required. Unauthorized attempts are redirected to login.
+                  Admin or Manager authorization required. Unauthorized attempts are redirected to login.
                 </p>
                 <button
                   type="button"
@@ -1341,13 +1982,37 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onRegister={handleCreateStaffAccount}
       />
 
-      {/* Admin Approval Modal matching POST /admin/approve_user/<id> */}
+      {/* Admin Approval Modal matching POST /admin/approve_user/<id> & Staff Requests & Overtime */}
       <PendingApprovalModal
         isOpen={isPendingModalOpen}
         onClose={() => setIsPendingModalOpen(false)}
         pendingUsers={pendingUsers}
         onApproveUser={handleApproveUser}
         currentUserRole={userRole}
+        staffRequests={staffRequests}
+        onApproveStaffRequest={handleApproveStaffRequest}
+        onRejectStaffRequest={handleRejectStaffRequest}
+        dutyAllocations={dutyAllocations}
+        onApproveOtRequest={handleApproveOtRequest}
+        onRejectOtRequest={handleRejectOtRequest}
+        onOpenNewStaffRequest={() => setIsStaffRequestModalOpen(true)}
+      />
+
+      {/* Admin Decrypted Password Vault Terminal Modal */}
+      <AdminVaultModal
+        isOpen={isAdminVaultModalOpen}
+        onClose={() => setIsAdminVaultModalOpen(false)}
+        users={users}
+        currentUserRole={userRole}
+        onUpdateUserStatus={handleUpdateUserStatus}
+      />
+
+      {/* Staff Joining Request Modal (Supervisor / Admin Queue Submission) */}
+      <StaffRequestModal
+        isOpen={isStaffRequestModalOpen}
+        onClose={() => setIsStaffRequestModalOpen(false)}
+        currentUserStaffId={currentUser?.staff_id || 'ADMIN-001'}
+        onSubmitRequest={handleCreateStaffRequest}
       />
 
       {/* Official HK Ops Login Credential Card Slip Modal */}
@@ -1355,6 +2020,20 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         isOpen={Boolean(activeCredentialSlip)}
         onClose={() => setActiveCredentialSlip(null)}
         data={activeCredentialSlip}
+      />
+
+      {/* Employee Profile, Quick Actions & Duty Assignment Modal */}
+      <EmployeeProfileModal
+        staffId={profileModalStaffId}
+        onClose={() => setProfileModalStaffId(null)}
+        userRole={userRole === 'admin' ? 'admin' : userRole === 'manager' ? 'manager' : 'supervisor'}
+        selectedDate={selectedLiveDate}
+        onActionComplete={() => {
+          setUsers(getStoredUsers());
+          setStaff(getStoredStaff());
+          setRecords(getStoredAttendance());
+          setDutyAllocations(getStoredDutyAllocations());
+        }}
       />
 
       {/* System Terminal Info Modal (?) */}

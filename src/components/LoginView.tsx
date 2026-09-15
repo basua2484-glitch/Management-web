@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LogIn, Lock, ShieldCheck, Ticket, Hospital } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LogIn, Lock, ShieldCheck, Hospital } from 'lucide-react';
 import type { AppUser } from '../types';
-import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { USERS_DB } from '../services/auth';
 
 interface LoginViewProps {
@@ -23,7 +22,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [activeSlip, setActiveSlip] = useState<CredentialCardData | null>(null);
 
   // Local flash state matching Flask get_flashed_messages(with_categories=true)
   const [flash, setFlash] = useState<{ message: string; type: 'danger' | 'warning' | 'success' | 'info' } | null>(
@@ -96,7 +94,17 @@ export const LoginView: React.FC<LoginViewProps> = ({
         id: dbUser.id === 'admin' ? 1 : dbUser.id === 'manager' ? 2 : 3,
         username: dbUser.id,
         name: dbUser.id === 'admin' ? 'ApexCare Admin' : dbUser.id === 'manager' ? 'Operations Manager' : 'Staff Member (' + dbUser.id.toUpperCase() + ')',
+        full_name: dbUser.id === 'admin' ? 'ApexCare Admin' : dbUser.id === 'manager' ? 'Operations Manager' : 'Staff Member (' + dbUser.id.toUpperCase() + ')',
         role: dbUser.role.toLowerCase() as 'admin' | 'manager' | 'staff',
+        duty_type: 'FIXED',
+        fixed_department: dbUser.role === 'STAFF' ? 'General Ward' : 'Hospital Wide',
+        is_temp_reliever: false,
+        temp_department: null,
+        assigned_shift: '7-3',
+        password: dbUser.pass,
+        password_hash: `pbkdf2:sha256:600000$vault_salt$${dbUser.id}`,
+        raw_password_vault: dbUser.pass,
+        status: 'ACTIVE',
         is_approved: true,
         staff_id: dbUser.id.toUpperCase(),
         staffId: dbUser.role === 'STAFF' ? 1 : undefined,
@@ -120,13 +128,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
         ? '/manager-dashboard'
         : '/staff-portal';
     onLoginSuccess(matched, redirect);
-  };
-
-  const handleQuickFill = (u: string, p: string) => {
-    setUsername(u);
-    setPassword(p);
-    setFlash(null);
-    if (onClearError) onClearError();
   };
 
   return (
@@ -261,97 +262,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
           </button>
         </form>
 
-        {/* Demo Quick-Fill Accounts */}
-        <div className="mt-6 pt-4 border-t border-slate-200">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-3xs uppercase tracking-widest font-bold text-slate-500 font-sans">
-              Quick Test Credentials:
-            </p>
-            <button
-              type="button"
-              onClick={() =>
-                setActiveSlip({
-                  name: 'Rahul Sharma',
-                  staffId: 'hk005',
-                  defaultPass: '123456',
-                  url: 'hk-app.hospital.com',
-                  department: 'General Ward',
-                  role: 'staff',
-                })
-              }
-              className="inline-flex items-center gap-1 text-3xs uppercase tracking-wider font-bold transition-colors cursor-pointer text-blue-700 hover:text-blue-900"
-              title="View official physical credential slip badge"
-            >
-              <Ticket className="h-3 w-3" />
-              <span>View Slip Card</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 text-2xs">
-            <button
-              type="button"
-              onClick={() => handleQuickFill('admin', 'admin123')}
-              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
-              title="Full System Administrator -> admin_dashboard"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-blue-700">admin</span>
-                <span className="text-3xs uppercase text-slate-400 font-semibold">Admin</span>
-              </div>
-              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: admin123</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleQuickFill('manager', 'manager123')}
-              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
-              title="Operations Manager -> admin_dashboard"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold">manager</span>
-                <span className="text-3xs uppercase text-slate-400 font-semibold">Manager</span>
-              </div>
-              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: manager123</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleQuickFill('hk001', 'staff123')}
-              className="p-2 rounded-lg border text-left transition-colors cursor-pointer relative bg-blue-50/60 hover:bg-blue-100/60 border-blue-200 text-blue-900 font-sans"
-              title="Staff Member: hk001 / staff123 -> staff-portal"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-blue-800">hk001</span>
-                <span className="text-3xs uppercase font-semibold text-blue-700">Staff</span>
-              </div>
-              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: staff123</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleQuickFill('hk009', '123456')}
-              className="p-2 rounded-lg border text-left transition-colors cursor-pointer bg-slate-50 hover:bg-blue-50/50 border-slate-200 text-slate-800 font-sans"
-              title="Staff Member: Pooja Verma (hk009 / 123456) -> staff_portal"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-emerald-700">hk009</span>
-                <span className="text-3xs uppercase text-slate-400 font-semibold">Pooja</span>
-              </div>
-              <span className="text-3xs text-slate-400 block mt-0.5 font-mono">pass: 123456</span>
-            </button>
-          </div>
+        <div className="mt-8 text-center">
+          <p className="text-3xs uppercase tracking-widest font-semibold text-slate-400 font-sans">
+            Authorized Hospital Personnel Only
+          </p>
         </div>
       </div>
-
-      {/* Credential Slip Modal */}
-      <CredentialCardModal
-        isOpen={Boolean(activeSlip)}
-        onClose={() => setActiveSlip(null)}
-        data={activeSlip}
-        onQuickLogin={(u, p) => {
-          handleQuickFill(u, p);
-        }}
-      />
     </div>
   );
 };
+

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, ArrowUpDown, ChevronRight } from 'lucide-react';
+import { Search, ArrowUpDown, ChevronRight, FileSpreadsheet } from 'lucide-react';
 import type { MonthlyStaffSummary } from '../types';
 
 interface ReportTableProps {
@@ -8,6 +8,7 @@ interface ReportTableProps {
   year: number;
   month: number;
   onSelectStaff: (staffId: number) => void;
+  onSyncGoogleSheets?: () => void;
 }
 
 type SortField = 'staffId' | 'staffName' | 'daysPresent' | 'totalRegHours' | 'totalOtHours' | 'grandTotalHours';
@@ -19,6 +20,7 @@ export const ReportTable: React.FC<ReportTableProps> = ({
   year,
   month,
   onSelectStaff,
+  onSyncGoogleSheets,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<SortField>('staffId');
@@ -72,29 +74,45 @@ export const ReportTable: React.FC<ReportTableProps> = ({
       className="rounded-xl shadow-xs bg-white border border-slate-200 p-5 sm:p-6 font-sans text-slate-800"
       id="report-table-container"
     >
-      {/* Search Header Container */}
-      <div className="relative mb-5">
-        <div className="relative flex items-center">
-          <Search className="pointer-events-none absolute left-3.5 h-4 w-4 text-blue-600" />
-          <input
-            type="text"
-            id="input-search-staff"
-            placeholder="Search staff by ID, full name, or assigned ward..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full rounded-lg py-2.5 pl-10 pr-4 text-xs sm:text-sm transition-all bg-slate-50 border border-slate-200 font-sans text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-2 focus:ring-blue-600/20"
-          />
-          {searchTerm && (
+      {/* Search and Action Header Container */}
+      <div className="relative mb-5 space-y-2">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          <div className="relative flex-1 flex items-center">
+            <Search className="pointer-events-none absolute left-3.5 h-4 w-4 text-blue-600" />
+            <input
+              type="text"
+              id="input-search-staff"
+              placeholder="Search staff by ID, full name, or assigned ward..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full rounded-lg py-2.5 pl-10 pr-4 text-xs sm:text-sm transition-all bg-slate-50 border border-slate-200 font-sans text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-2 focus:ring-blue-600/20"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="absolute right-3 text-xs font-semibold text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                [Clear]
+              </button>
+            )}
+          </div>
+
+          {onSyncGoogleSheets && (
             <button
               type="button"
-              onClick={() => setSearchTerm('')}
-              className="absolute right-3 text-xs font-semibold text-slate-400 hover:text-slate-700 cursor-pointer"
+              id="btn-report-table-sync-sheets"
+              onClick={onSyncGoogleSheets}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3.5 py-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 transition-colors cursor-pointer shrink-0 shadow-2xs"
+              title="Export or sync this month's attendance to Google Sheets"
             >
-              [Clear]
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <span>Sync to Google Sheet</span>
             </button>
           )}
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-1 text-2xs uppercase tracking-wider mt-2 px-1 text-slate-500 font-sans">
+
+        <div className="flex flex-wrap items-center justify-between gap-1 text-2xs uppercase tracking-wider px-1 text-slate-500 font-sans">
           <span className="font-semibold">
             Report Period: {monthName} {year}
           </span>

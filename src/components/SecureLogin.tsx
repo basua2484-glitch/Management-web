@@ -9,10 +9,33 @@ interface SecureLoginProps {
 }
 
 export default function SecureLogin({ onLogin }: SecureLoginProps) {
+  const [transform, setTransform] = useState(
+    'perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)'
+  );
   const [staffId, setStaffId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const card = e.currentTarget.getBoundingClientRect();
+    const cardX = e.clientX - card.left - card.width / 2;
+    const cardY = e.clientY - card.top - card.height / 2;
+
+    // 4D-like dynamic depth rotation calculation
+    const rotateX = (-cardY / card.height) * 20;
+    const rotateY = (cardX / card.width) * 20;
+
+    setTransform(
+      `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`
+    );
+  };
+
+  const handleMouseLeave = () => {
+    setTransform(
+      'perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)'
+    );
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,18 +54,21 @@ export default function SecureLogin({ onLogin }: SecureLoginProps) {
 
   return (
     <div
-      className="login-card w-full max-w-md bg-[#161618] border border-white/10 rounded-2xl p-6 sm:p-8 shadow-2xl relative overflow-hidden text-slate-100 font-sans"
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      style={{ transform, transition: 'transform 0.15s ease-out' }}
+      className="login-card w-full max-w-md bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 sm:p-8 shadow-[0_0_50px_rgba(59,130,246,0.3)] relative overflow-hidden text-slate-100 font-sans transition-all duration-300"
       id="secure-login-card"
     >
-      {/* Top Accent Line */}
-      <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-600 via-teal-500 to-emerald-500" />
+      {/* Holographic Top Bar */}
+      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl animate-pulse" />
 
       <div className="text-center mb-6">
-        <h2 className="text-2xl font-black tracking-tight text-white">
+        <h2 className="text-2xl font-extrabold tracking-wider text-white drop-shadow-[0_2px_10px_rgba(255,255,255,0.2)]">
           ApexCare Hospital Operations
         </h2>
-        <h3 className="text-sm font-medium text-slate-400 mt-1">
-          Housekeeping Portal
+        <h3 className="text-xs uppercase tracking-widest text-blue-400 mt-2 font-mono">
+          Housekeeping Portal 4D Security
         </h3>
       </div>
 

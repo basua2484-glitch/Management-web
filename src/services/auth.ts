@@ -196,7 +196,7 @@ export const USERS_DB = [
     aliases: ["admin", "admin001", "admin-001"],
     pass: "admin123",
     role: "ADMIN",
-    redirect: "/admin-dashboard",
+    redirect: "/admin/dashboard",
     name: "ApexCare Admin",
   },
   {
@@ -205,14 +205,30 @@ export const USERS_DB = [
     pass: "manager123",
     role: "MANAGER",
     redirect: "/manager-dashboard",
-    name: "Operations Manager",
+    name: "Operations Manager Priya",
+  },
+  {
+    id: "supervisor",
+    aliases: ["supervisor", "sup001", "sup-001", "rakesh"],
+    pass: "super123",
+    role: "SUPERVISOR",
+    redirect: "/supervisor/dashboard",
+    name: "Supervisor Rakesh Verma",
+  },
+  {
+    id: "hk012",
+    aliases: ["hk012", "hk-012", "mohit"],
+    pass: "staff123",
+    role: "STAFF",
+    redirect: "/staff/dashboard",
+    name: "Mohit Rawat",
   },
   {
     id: "hk001",
     aliases: ["hk001", "hk-001", "ramesh"],
     pass: "staff123",
     role: "STAFF",
-    redirect: "/staff-portal",
+    redirect: "/staff/dashboard",
     name: "Ramesh Sharma",
   },
   {
@@ -220,7 +236,7 @@ export const USERS_DB = [
     aliases: ["hk002", "hk-002", "sunita"],
     pass: "staff123",
     role: "STAFF",
-    redirect: "/staff-portal",
+    redirect: "/staff/dashboard",
     name: "Sunita Devi",
   },
   {
@@ -228,7 +244,7 @@ export const USERS_DB = [
     aliases: ["hk003", "hk-003", "amit"],
     pass: "staff123",
     role: "STAFF",
-    redirect: "/staff-portal",
+    redirect: "/staff/dashboard",
     name: "Amit Patel",
   },
 ];
@@ -280,13 +296,22 @@ export const handleLogin = async (
         saveStoredCurrentUser(matched);
       } else {
         saveStoredCurrentUser({
-          id: mockUser.id === 'admin' ? 100 : mockUser.id === 'manager' ? 101 : 1,
+          id: mockUser.id === 'admin' ? 100 : mockUser.id === 'manager' ? 101 : mockUser.id === 'supervisor' ? 102 : 1,
           username: mockUser.id,
           name: mockUser.name,
+          full_name: mockUser.name,
           role: mockUser.role.toLowerCase() as any,
+          duty_type: 'FIXED',
+          fixed_department: mockUser.role === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+          is_temp_reliever: false,
+          temp_department: null,
+          status: 'ACTIVE',
           is_approved: true,
           staff_id: mockUser.id.toUpperCase(),
           assigned_area: mockUser.role === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+          assigned_shift: '7-3',
+          raw_password_vault: mockUser.pass,
+          password_hash: `pbkdf2:sha256:600000$vault_salt$${mockUser.id}`,
         });
       }
 

@@ -168,9 +168,9 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                     onChange={(e) => setShift(e.target.value as any)}
                     className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
                   >
-                    <option value="Morning">Morning (08:00 - 16:30)</option>
-                    <option value="Evening">Evening (14:00 - 22:30)</option>
-                    <option value="Night">Night (22:00 - 06:30)</option>
+                    <option value="Morning">Morning (07:00 - 15:00)</option>
+                    <option value="Evening">Evening (15:00 - 23:00)</option>
+                    <option value="Night">Night (23:00 - 07:00)</option>
                   </select>
                 </div>
 

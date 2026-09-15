@@ -31,3 +31,8 @@ export const logout = async (): Promise<void> => {
   return jsLogout();
 };
 
+export const getCurrentUser = (): User | null => {
+  return auth?.currentUser || null;
+};
+
+

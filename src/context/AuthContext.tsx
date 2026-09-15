@@ -8,7 +8,7 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 interface AuthContextType {
   user: AppUser | null;
   token: string | null;
-  role: 'ADMIN' | 'MANAGER' | 'STAFF' | null;
+  role: 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (
@@ -56,7 +56,7 @@ function getStoredToken(): string | null {
   }
 }
 
-function getStoredRole(): 'ADMIN' | 'MANAGER' | 'STAFF' | null {
+function getStoredRole(): 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' | null {
   try {
     let rawRole: string | null = null;
     if (typeof localStorage !== 'undefined') {
@@ -67,8 +67,8 @@ function getStoredRole(): 'ADMIN' | 'MANAGER' | 'STAFF' | null {
     }
     if (rawRole) {
       const upper = rawRole.toUpperCase();
-      if (upper === 'ADMIN' || upper === 'MANAGER' || upper === 'STAFF') {
-        return upper;
+      if (upper === 'ADMIN' || upper === 'MANAGER' || upper === 'SUPERVISOR' || upper === 'STAFF') {
+        return upper as 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF';
       }
     }
     return null;
@@ -90,7 +90,7 @@ function getStoredUserId(): string | null {
 }
 
 function resolveUserProfile(
-  roleUpper: 'ADMIN' | 'MANAGER' | 'STAFF',
+  roleUpper: 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF',
   storedUserId: string | null
 ): AppUser {
   let userProfile: AppUser | null = null;
@@ -132,22 +132,61 @@ function resolveUserProfile(
   if (!userProfile) {
     const fallbackId =
       storedUserId ||
-      (roleUpper === 'ADMIN' ? 'admin' : roleUpper === 'MANAGER' ? 'manager' : 'hk001');
+      (roleUpper === 'ADMIN'
+        ? 'admin'
+        : roleUpper === 'MANAGER'
+        ? 'manager'
+        : roleUpper === 'SUPERVISOR'
+        ? 'supervisor'
+        : 'hk001');
+
+    const fallbackName =
+      fallbackId === 'admin'
+        ? 'ApexCare Admin'
+        : fallbackId === 'manager'
+        ? 'Operations Manager'
+        : fallbackId === 'supervisor'
+        ? 'Supervisor Rakesh Verma'
+        : `Staff Member (${fallbackId.toUpperCase()})`;
 
     userProfile = {
-      id: fallbackId === 'admin' ? 100 : fallbackId === 'manager' ? 101 : 1,
+      id: fallbackId === 'admin' ? 100 : fallbackId === 'manager' ? 101 : fallbackId === 'supervisor' ? 102 : 1,
       username: fallbackId,
-      name:
-        fallbackId === 'admin'
-          ? 'ApexCare Admin'
-          : fallbackId === 'manager'
-          ? 'Operations Manager'
-          : `Staff Member (${fallbackId.toUpperCase()})`,
+      name: fallbackName,
+      full_name: fallbackName,
       role: roleUpper.toLowerCase() as any,
+      duty_type: 'FIXED',
+      fixed_department: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+      is_temp_reliever: false,
+      temp_department: null,
+      assigned_shift: '7-3',
+      password_hash: `pbkdf2:sha256:600000$vault_salt$${fallbackId}`,
+      raw_password_vault: fallbackId === 'admin' ? 'admin123' : fallbackId === 'manager' ? 'manager123' : fallbackId === 'supervisor' ? 'super123' : 'staff123',
+      status: 'ACTIVE',
       is_approved: true,
       staff_id: fallbackId.toUpperCase(),
       assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+      siteId: 'site-main',
+      supervisorId: roleUpper === 'STAFF' ? '102' : undefined,
+      weeklyOffDay: 'Sunday',
+      leaveBalance: { casual: 12, sick: 7, paid: 15 },
+      leaveRequests: [],
     };
+  }
+
+  // Schema normalization: Ensure leaveBalance, weeklyOffDay, siteId, leaveRequests exist
+  if (userProfile) {
+    if (!userProfile.siteId) userProfile.siteId = 'site-main';
+    if (!userProfile.weeklyOffDay) userProfile.weeklyOffDay = 'Sunday';
+    if (!userProfile.leaveBalance) {
+      userProfile.leaveBalance = { casual: 12, sick: 7, paid: 15 };
+    }
+    if (!userProfile.leaveRequests) {
+      userProfile.leaveRequests = [];
+    }
+    if (userProfile.role === 'staff' && !userProfile.supervisorId) {
+      userProfile.supervisorId = '102';
+    }
   }
 
   // Ensure current user is saved in storage for components that inspect it
@@ -161,7 +200,7 @@ function resolveUserProfile(
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Synchronous initial check for persistent storage - instant boot, no refresh lag
   const [token, setToken] = useState<string | null>(() => getStoredToken());
-  const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'STAFF' | null>(() => getStoredRole());
+  const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' | null>(() => getStoredRole());
   const [user, setUser] = useState<AppUser | null>(() => {
     const t = getStoredToken();
     const r = getStoredRole();
@@ -222,12 +261,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   `FB_${firebaseUser.uid}`;
                 const currentRole = getStoredRole();
                 const emailLower = (firebaseUser.email || '').toLowerCase();
-                let resolvedRole: 'ADMIN' | 'MANAGER' | 'STAFF' = currentRole || 'STAFF';
+                let resolvedRole: 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' = currentRole || 'STAFF';
 
                 if (emailLower.includes('admin')) {
                   resolvedRole = 'ADMIN';
                 } else if (emailLower.includes('manager')) {
                   resolvedRole = 'MANAGER';
+                } else if (emailLower.includes('supervisor')) {
+                  resolvedRole = 'SUPERVISOR';
                 }
 
                 const storedUserId = getStoredUserId() || firebaseUser.uid;
@@ -311,10 +352,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const destination =
           targetRedirect ||
           (storedRole === 'ADMIN'
-            ? '/admin-dashboard'
+            ? '/admin/dashboard'
             : storedRole === 'MANAGER'
             ? '/manager-dashboard'
-            : '/staff-portal');
+            : storedRole === 'SUPERVISOR'
+            ? '/supervisor/dashboard'
+            : '/staff/dashboard');
 
         navigate(destination, { replace: true });
       }

@@ -1,8 +1,8 @@
 import React from 'react';
-import { DashboardPage } from '../components/DashboardPage';
+import StaffDashboard from './StaffDashboard';
 
 const StaffPortal: React.FC = () => {
-  return <DashboardPage defaultTab="portal" />;
+  return <StaffDashboard />;
 };
 
 export default StaffPortal;

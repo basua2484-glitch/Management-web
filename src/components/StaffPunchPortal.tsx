@@ -19,8 +19,11 @@ import {
   calculateDailyAttendance,
   getSessionDurationInMinutes,
   getStaffSummary,
+  autoCloseActiveSessions,
   formatTimeTo12hStr,
   updateUI,
+  process_shift_attendance,
+  SHIFTS,
 } from '../utils/attendanceCalculator';
 
 interface StaffPunchPortalProps {
@@ -272,10 +275,10 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
     const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
     
-    // Existing completed sessions
-    const existingClosedSessions = activeSessions.filter((s) => Boolean(s.punch_out));
+    // Fix multi-session loop bug: Auto-close any active unclosed sessions before opening a new one
+    const autoClosedSessions = autoCloseActiveSessions(activeSessions, timestamp.toISOString(), 'Auto-closed on new punch-in');
     const newSession: AttendanceSession = {
-      id: `sess_${recordId}_${existingClosedSessions.length + 1}`,
+      id: `sess_${recordId}_${autoClosedSessions.length + 1}_${Date.now()}`,
       staff_id: activeStaff.id,
       date: selectedDate,
       punch_in: timestamp.toISOString(),
@@ -283,7 +286,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       notes: assignedArea,
     };
 
-    const allSessions = [...existingClosedSessions, newSession];
+    const allSessions = [...autoClosedSessions, newSession];
     const summary = getStaffSummary(allSessions);
 
     // Update Attendance State
@@ -351,10 +354,20 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       });
     }
 
+    // Shift Attendance processing (Standard 8h Baseline & Night shift handling)
+    const effectiveIn = allSessions[0]?.punch_in ? new Date(allSessions[0].punch_in) : punchOutTimestamp;
+    const shiftResult = process_shift_attendance(
+      effectiveIn,
+      punchOutTimestamp,
+      (activeStaff.shift || 'MORNING').toUpperCase(),
+      selectedDate
+    );
+
     // Dynamic Total Calculation (NO HARDCODED 8.0h / 1.5h) matching get_staff_summary
     const summary = getStaffSummary(allSessions);
-    const regHours = summary.regular_hours;
-    const overtimeHours = summary.overtime_hours;
+    const regHours = allSessions.length <= 1 ? shiftResult.regular_hours : summary.regular_hours;
+    const overtimeHours = allSessions.length <= 1 ? shiftResult.overtime_hours : summary.overtime_hours;
+    const targetCalendarDate = shiftResult.calendar_date || selectedDate;
 
     // Formatting values (2 decimal places)
     const regFormatted = regHours.toFixed(2);
@@ -364,11 +377,11 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     const minutes = punchOutTimestamp.getMinutes().toString().padStart(2, '0');
     const time24h = `${hours}:${minutes}`;
 
-    // Update Attendance Record
+    // Update Attendance Record (Assigned to Calendar Base Date)
     const updatedRecord: AttendanceRecord = {
-      id: recordId,
+      id: `att_${activeStaff.id}_${targetCalendarDate}`,
       userId: activeStaff.id,
-      date: selectedDate,
+      date: targetCalendarDate,
       punchIn: todayRecord?.punchIn || getCurrent24hTime(),
       punchOut: time24h,
       punchInTimestamp: todayRecord?.punchInTimestamp || punchOutTimestamp.toISOString(),

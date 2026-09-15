@@ -4,7 +4,8 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
-import StaffPortal from './pages/StaffPortal';
+import SupervisorDashboard from './pages/SupervisorDashboard';
+import StaffDashboard from './pages/StaffDashboard';
 import ProtectedRoute from './components/ProtectedRoute';
 import { UnauthorizedPage } from './components/UnauthorizedPage';
 import { AuthLoadingScreen } from './components/AuthLoadingScreen';
@@ -30,10 +31,12 @@ const RootRedirect: React.FC = () => {
   if (isAuthenticated && role) {
     const dest =
       role === 'ADMIN'
-        ? '/admin-dashboard'
+        ? '/admin/dashboard'
         : role === 'MANAGER'
         ? '/manager-dashboard'
-        : '/staff-portal';
+        : role === 'SUPERVISOR'
+        ? '/supervisor/dashboard'
+        : '/staff/dashboard';
     return <Navigate to={dest} replace />;
   }
 
@@ -49,16 +52,20 @@ function App() {
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
 
-          {/* Dynamic Secured Routes */}
+          {/* 1. Admin Dashboard Route */}
           <Route 
-            path="/admin-dashboard" 
+            path="/admin/dashboard" 
             element={
               <ProtectedRoute allowedRoles={['ADMIN']}>
                 <AdminDashboard />
               </ProtectedRoute>
             } 
           />
+          <Route path="/admin-dashboard" element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="/dashboard" element={<Navigate to="/admin/dashboard" replace />} />
 
+          {/* Manager Dashboard Route */}
           <Route 
             path="/manager-dashboard" 
             element={
@@ -68,25 +75,33 @@ function App() {
             } 
           />
 
+          {/* 2. Supervisor Dashboard Route with On-Duty Check */}
           <Route 
-            path="/staff-portal" 
+            path="/supervisor/dashboard" 
             element={
-              <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'STAFF']}>
-                <StaffPortal />
+              <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'SUPERVISOR']}>
+                <SupervisorDashboard />
               </ProtectedRoute>
             } 
           />
+          <Route path="/supervisor-dashboard" element={<Navigate to="/supervisor/dashboard" replace />} />
+
+          {/* 3. Staff Dashboard Route */}
+          <Route 
+            path="/staff/dashboard" 
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'SUPERVISOR', 'STAFF']}>
+                <StaffDashboard />
+              </ProtectedRoute>
+            } 
+          />
+          <Route path="/staff-portal" element={<Navigate to="/staff/dashboard" replace />} />
 
           {/* Access Denied (Case B Redirect) */}
           <Route path="/unauthorized" element={<UnauthorizedPage />} />
 
           {/* Session Clear & Logout Route */}
           <Route path="/logout" element={<LogoutRoute />} />
-
-          {/* Legacy & Shortcut Routes */}
-          <Route path="/dashboard" element={<Navigate to="/admin-dashboard" replace />} />
-          <Route path="/admin" element={<Navigate to="/admin-dashboard" replace />} />
-          <Route path="/admin/dashboard" element={<Navigate to="/admin-dashboard" replace />} />
 
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/login" replace />} />

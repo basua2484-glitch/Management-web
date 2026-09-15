@@ -81,6 +81,15 @@ const DB = {
         redirect: '/manager-dashboard',
       },
       {
+        id: 'supervisor',
+        aliases: ['supervisor', 'sup001', 'sup-001', 'rakesh'],
+        role: 'SUPERVISOR',
+        plainPass: 'super123',
+        passwordHash: '$2b$10$4eXapasHkkAa6cf6fCDkfeAef.UJYOAqjEXH/S5zAZHtuPYt6eRhO',
+        name: 'Supervisor Rakesh Verma',
+        redirect: '/supervisor-dashboard',
+      },
+      {
         id: 'hk001',
         aliases: ['hk001', 'hk-001', 'ramesh'],
         role: 'STAFF',
