@@ -1,5 +1,9 @@
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
+try:
+    from .geofence import verify_hospital_geofence, calculate_distance_meters, HOSPITAL_LAT, HOSPITAL_LNG, MAX_ALLOWED_RADIUS_METERS
+except ImportError:
+    from geofence import verify_hospital_geofence, calculate_distance_meters, HOSPITAL_LAT, HOSPITAL_LNG, MAX_ALLOWED_RADIUS_METERS
 
 db = SQLAlchemy()
 
@@ -86,6 +90,14 @@ class AttendanceRecord(db.Model):
     ot_hours = db.Column(db.Float, default=0.0, nullable=False)  # Hours beyond 8.0 hrs
     ot_status = db.Column(db.String(20), default='NONE', nullable=False)  # 'NONE', 'PENDING', 'APPROVED', 'REJECTED'
 
+    # Geofence location audit fields (Hospital Center: 19.0760, 72.8777; Max 100m)
+    punch_in_lat = db.Column(db.Float, nullable=True)
+    punch_in_lng = db.Column(db.Float, nullable=True)
+    punch_in_distance_meters = db.Column(db.Float, nullable=True)
+    punch_out_lat = db.Column(db.Float, nullable=True)
+    punch_out_lng = db.Column(db.Float, nullable=True)
+    punch_out_distance_meters = db.Column(db.Float, nullable=True)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -98,6 +110,12 @@ class AttendanceRecord(db.Model):
             'regular_hours': self.regular_hours,
             'ot_hours': self.ot_hours,
             'ot_status': self.ot_status,
+            'punch_in_lat': self.punch_in_lat,
+            'punch_in_lng': self.punch_in_lng,
+            'punch_in_distance_meters': self.punch_in_distance_meters,
+            'punch_out_lat': self.punch_out_lat,
+            'punch_out_lng': self.punch_out_lng,
+            'punch_out_distance_meters': self.punch_out_distance_meters,
         }
 
 

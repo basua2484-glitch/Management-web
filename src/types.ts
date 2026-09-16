@@ -339,6 +339,14 @@ export interface AttendanceSession {
   punch_in: string; // ISO timestamp or HH:mm
   punch_out: string | null; // ISO timestamp or HH:mm
   notes?: string;
+
+  // GPS Geofence audit verification fields
+  punch_in_lat?: number | null;
+  punch_in_lng?: number | null;
+  punch_in_distance_meters?: number | null;
+  punch_out_lat?: number | null;
+  punch_out_lng?: number | null;
+  punch_out_distance_meters?: number | null;
 }
 
 export interface StaffSummarySession {
@@ -416,6 +424,14 @@ export interface AttendanceRecord {
   sessions?: AttendanceSession[]; // Multiple punch sessions per day
   status: 'Present' | 'Absent' | 'Half Day' | 'On Leave' | 'Weekly Off' | 'Duty Completed';
   notes?: string;
+
+  // GPS Geofence audit verification fields (Haversine against 19.0760, 72.8777)
+  punchInLat?: number | null;
+  punchInLng?: number | null;
+  punchInDistanceMeters?: number | null;
+  punchOutLat?: number | null;
+  punchOutLng?: number | null;
+  punchOutDistanceMeters?: number | null;
 }
 
 export interface MonthlyStaffSummary {

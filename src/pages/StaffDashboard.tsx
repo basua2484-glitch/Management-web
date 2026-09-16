@@ -24,6 +24,7 @@ import {
   Flame,
   ShieldAlert,
   X,
+  RotateCw,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -41,6 +42,17 @@ import {
 } from '../data/mockHousekeepingData';
 import type { AppUser, AttendanceRecord, StaffDashboardView, DutyAllocation, EmergencyRecallAlert, ShiftName } from '../types';
 import { formatTimeTo12hStr, calculateDailyAttendance, autoCloseActiveSessions, SHIFTS } from '../utils/attendanceCalculator';
+import { GeofenceStatusCard } from '../components/GeofenceStatusCard';
+import { GeofenceRejectionModal } from '../components/GeofenceRejectionModal';
+import { GpsHardwareAlertModal } from '../components/GpsHardwareAlertModal';
+import {
+  HOSPITAL_LAT,
+  HOSPITAL_LNG,
+  verifyHospitalGeofence,
+  requestLocationOnPunch,
+  GPS_OFF_ALERT_MESSAGE,
+  type GeofenceVerificationResult,
+} from '../utils/geofence';
 
 export const StaffDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -56,6 +68,22 @@ export const StaffDashboard: React.FC = () => {
   const [showEmergencyExitModal, setShowEmergencyExitModal] = useState(false);
   const [emergencyExitReason, setEmergencyExitReason] = useState('Immediate Personal / Medical Emergency');
   const [isSubmittingExit, setIsSubmittingExit] = useState(false);
+
+  // Geofence Rejection Popup Modal State
+  const [rejectionModalState, setRejectionModalState] = useState<{
+    isOpen: boolean;
+    result: GeofenceVerificationResult | null;
+    punchType: 'IN' | 'OUT';
+  }>({
+    isOpen: false,
+    result: null,
+    punchType: 'IN',
+  });
+
+  // GPS Sensor & Hardware State
+  const [isLocating, setIsLocating] = useState(false);
+  const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
+  const [gpsModalPunchType, setGpsModalPunchType] = useState<'IN' | 'OUT'>('IN');
 
   // Determine current staff user
   const effectiveStaffId = useMemo(() => {
@@ -156,6 +184,9 @@ export const StaffDashboard: React.FC = () => {
     null
   );
 
+  // GPS Geofence Verification state
+  const [geofenceResult, setGeofenceResult] = useState<GeofenceVerificationResult | null>(null);
+
   // OT Request form state
   const [otHours, setOtHours] = useState<number>(1.5);
   const [otReason, setOtReason] = useState<string>('Emergency Ward Sanitization Spill');
@@ -199,11 +230,61 @@ export const StaffDashboard: React.FC = () => {
     return () => clearInterval(timer);
   }, [staffDashboard?.shiftStatus, todayRecord?.punchIn, todayRecord?.punchInTimestamp]);
 
-  // Handle Punch In
-  const handlePunchIn = () => {
+  // Handle Punch In (Triggered STRICTLY on button click)
+  const handlePunchIn = async () => {
+    setIsLocating(true);
+    let punchLocationResult;
+    try {
+      // Explicitly triggers navigator.geolocation only upon click with 5-second timeout
+      punchLocationResult = await requestLocationOnPunch('IN');
+    } catch (err: any) {
+      console.warn('GPS location request on punch in error:', err);
+    } finally {
+      setIsLocating(false);
+    }
+
+    // If device GPS is turned OFF, immediately display clear alert
+    if (punchLocationResult?.isGpsOff) {
+      setGpsModalPunchType('IN');
+      setIsGpsModalOpen(true);
+      setFeedback({
+        type: 'warning',
+        text: GPS_OFF_ALERT_MESSAGE,
+      });
+      try {
+        window.alert(GPS_OFF_ALERT_MESSAGE);
+      } catch {}
+      return;
+    }
+
+    // Hospital GPS Geofence Security Boundary Verification (100.0m limit)
+    const activeGeofence: GeofenceVerificationResult = punchLocationResult
+      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+
+    setGeofenceResult(activeGeofence);
+
+    if (activeGeofence && !activeGeofence.allowed) {
+      setRejectionModalState({
+        isOpen: true,
+        result: activeGeofence,
+        punchType: 'IN',
+      });
+      setFeedback({
+        type: 'error',
+        text: 'Punch Failed: You are Outside Hospital Boundary',
+      });
+      return;
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     const numericId = parseInt(activeStaffCode.replace(/\D/g, ''), 10) || 1;
+    const userLat = activeGeofence?.userCoords.lat ?? HOSPITAL_LAT;
+    const userLng = activeGeofence?.userCoords.lng ?? HOSPITAL_LNG;
+    const distM = activeGeofence?.distanceMeters ?? 0.0;
+    const gpsNote = `[GPS: ${distM.toFixed(1)}m]`;
+    const wardWithGps = `${staffDashboard?.currentDepartment || 'Assigned Ward'} ${gpsNote}`;
 
     const existingIndex = records.findIndex(
       (r) =>
@@ -222,7 +303,10 @@ export const StaffDashboard: React.FC = () => {
         date: selectedDate,
         punch_in: now.toISOString(),
         punch_out: null,
-        notes: staffDashboard?.currentDepartment || 'Assigned Ward',
+        notes: wardWithGps,
+        punch_in_lat: userLat,
+        punch_in_lng: userLng,
+        punch_in_distance_meters: distM,
       });
 
       const updated: AttendanceRecord = {
@@ -231,6 +315,9 @@ export const StaffDashboard: React.FC = () => {
         punchInTimestamp: prev.punchInTimestamp || now.toISOString(),
         punchOut: null,
         punchOutTimestamp: null,
+        punchInLat: userLat,
+        punchInLng: userLng,
+        punchInDistanceMeters: distM,
         status: 'Present',
         sessions: nextSessions,
       };
@@ -246,10 +333,13 @@ export const StaffDashboard: React.FC = () => {
         punchInTimestamp: now.toISOString(),
         punchOut: null,
         punchOutTimestamp: null,
+        punchInLat: userLat,
+        punchInLng: userLng,
+        punchInDistanceMeters: distM,
         regularHours: 0,
         otHours: 0,
         status: 'Present',
-        notes: staffDashboard?.currentDepartment || 'Assigned Ward',
+        notes: wardWithGps,
         sessions: [
           {
             id: `sess_${Date.now()}`,
@@ -257,7 +347,10 @@ export const StaffDashboard: React.FC = () => {
             date: selectedDate,
             punch_in: now.toISOString(),
             punch_out: null,
-            notes: staffDashboard?.currentDepartment || 'Assigned Ward',
+            notes: wardWithGps,
+            punch_in_lat: userLat,
+            punch_in_lng: userLng,
+            punch_in_distance_meters: distM,
           },
         ],
       };
@@ -270,15 +363,63 @@ export const StaffDashboard: React.FC = () => {
 
     setFeedback({
       type: 'success',
-      text: `Punched in successfully at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}! Have a safe shift.`,
+      text: `Punched in successfully at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })} (${distM.toFixed(1)}m from center)! Have a safe shift.`,
     });
   };
 
-  // Handle Punch Out
-  const handlePunchOut = () => {
+  // Handle Punch Out (Triggered STRICTLY on button click)
+  const handlePunchOut = async () => {
+    setIsLocating(true);
+    let punchLocationResult;
+    try {
+      // Explicitly triggers navigator.geolocation only upon click with 5-second timeout
+      punchLocationResult = await requestLocationOnPunch('OUT');
+    } catch (err: any) {
+      console.warn('GPS location request on punch out error:', err);
+    } finally {
+      setIsLocating(false);
+    }
+
+    // If device GPS is turned OFF, immediately display clear alert
+    if (punchLocationResult?.isGpsOff) {
+      setGpsModalPunchType('OUT');
+      setIsGpsModalOpen(true);
+      setFeedback({
+        type: 'warning',
+        text: GPS_OFF_ALERT_MESSAGE,
+      });
+      try {
+        window.alert(GPS_OFF_ALERT_MESSAGE);
+      } catch {}
+      return;
+    }
+
+    // Hospital GPS Geofence Security Boundary Verification (100.0m limit)
+    const activeGeofence: GeofenceVerificationResult = punchLocationResult
+      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+
+    setGeofenceResult(activeGeofence);
+
+    if (activeGeofence && !activeGeofence.allowed) {
+      setRejectionModalState({
+        isOpen: true,
+        result: activeGeofence,
+        punchType: 'OUT',
+      });
+      setFeedback({
+        type: 'error',
+        text: 'Punch Failed: You are Outside Hospital Boundary',
+      });
+      return;
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     const numericId = parseInt(activeStaffCode.replace(/\D/g, ''), 10) || 1;
+    const userLat = activeGeofence?.userCoords.lat ?? HOSPITAL_LAT;
+    const userLng = activeGeofence?.userCoords.lng ?? HOSPITAL_LNG;
+    const distM = activeGeofence?.distanceMeters ?? 0.0;
 
     const existingIndex = records.findIndex(
       (r) =>
@@ -291,7 +432,13 @@ export const StaffDashboard: React.FC = () => {
     const prev = records[existingIndex];
     const nextSessions = (prev.sessions || []).map((s) => {
       if (!s.punch_out) {
-        return { ...s, punch_out: now.toISOString() };
+        return {
+          ...s,
+          punch_out: now.toISOString(),
+          punch_out_lat: userLat,
+          punch_out_lng: userLng,
+          punch_out_distance_meters: distM,
+        };
       }
       return s;
     });
@@ -304,6 +451,9 @@ export const StaffDashboard: React.FC = () => {
       ...prev,
       punchOut: timeStr,
       punchOutTimestamp: now.toISOString(),
+      punchOutLat: userLat,
+      punchOutLng: userLng,
+      punchOutDistanceMeters: distM,
       regularHours: calculated.regular_hours,
       otHours: calculated.overtime_hours,
       status: 'Present',
@@ -319,7 +469,7 @@ export const StaffDashboard: React.FC = () => {
 
     setFeedback({
       type: 'success',
-      text: `Punched out at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}. Total Regular: ${calculated.regular_hours}h, OT: ${calculated.overtime_hours}h.`,
+      text: `Punched out at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })} (${distM.toFixed(1)}m from center). Total Regular: ${calculated.regular_hours}h, OT: ${calculated.overtime_hours}h.`,
     });
   };
 
@@ -659,6 +809,12 @@ export const StaffDashboard: React.FC = () => {
           </div>
         </section>
 
+        {/* Hospital GPS Geofence Verification & Boundary Guard */}
+        <GeofenceStatusCard
+          onStatusChange={setGeofenceResult}
+          className="mb-5 shadow-xs"
+        />
+
         {/* 3-Column Quick Metrics: Regular Hours, Overtime, and Active Session Timer */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {/* Daily Regular Hours */}
@@ -716,10 +872,29 @@ export const StaffDashboard: React.FC = () => {
                   type="button"
                   id="btn-staff-punch-in"
                   onClick={handlePunchIn}
-                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                  disabled={isLocating}
+                  className={`w-full py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-60 ${
+                    geofenceResult && !geofenceResult.allowed
+                      ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
                 >
-                  <LogIn className="h-4 w-4" />
-                  <span>PUNCH IN</span>
+                  {isLocating ? (
+                    <>
+                      <RotateCw className="h-4 w-4 animate-spin" />
+                      <span>Acquiring GPS Location...</span>
+                    </>
+                  ) : geofenceResult && !geofenceResult.allowed ? (
+                    <>
+                      <ShieldAlert className="h-4 w-4" />
+                      <span>PUNCH IN (OUTSIDE 100M GEOFENCE)</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="h-4 w-4" />
+                      <span>PUNCH IN</span>
+                    </>
+                  )}
                 </button>
               ) : (
                 <div className="flex items-center gap-2 w-full">
@@ -727,10 +902,20 @@ export const StaffDashboard: React.FC = () => {
                     type="button"
                     id="btn-staff-punch-out"
                     onClick={handlePunchOut}
-                    className="flex-1 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    disabled={isLocating}
+                    className="flex-1 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
                   >
-                    <LogOut className="h-4 w-4" />
-                    <span>PUNCH OUT</span>
+                    {isLocating ? (
+                      <>
+                        <RotateCw className="h-4 w-4 animate-spin" />
+                        <span>Acquiring GPS...</span>
+                      </>
+                    ) : (
+                      <>
+                        <LogOut className="h-4 w-4" />
+                        <span>PUNCH OUT</span>
+                      </>
+                    )}
                   </button>
                   <button
                     type="button"
@@ -1099,6 +1284,36 @@ export const StaffDashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Hospital GPS Geofence Rejection Popup Modal */}
+      <GeofenceRejectionModal
+        isOpen={rejectionModalState.isOpen}
+        result={rejectionModalState.result}
+        punchType={rejectionModalState.punchType}
+        onClose={() => setRejectionModalState((prev) => ({ ...prev, isOpen: false }))}
+        onLocationCorrected={() => {
+          setRejectionModalState((prev) => ({ ...prev, isOpen: false }));
+          setFeedback({
+            type: 'success',
+            text: 'Location reset to inside hospital boundary. You can now punch in/out.',
+          });
+        }}
+      />
+
+      {/* GPS Hardware OFF Alert Modal */}
+      <GpsHardwareAlertModal
+        isOpen={isGpsModalOpen}
+        punchType={gpsModalPunchType}
+        onClose={() => setIsGpsModalOpen(false)}
+        onRetry={() => {
+          setIsGpsModalOpen(false);
+          if (gpsModalPunchType === 'IN') {
+            handlePunchIn();
+          } else {
+            handlePunchOut();
+          }
+        }}
+      />
     </div>
   );
 };

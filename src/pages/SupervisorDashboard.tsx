@@ -53,6 +53,18 @@ import {
 import type { AppUser, AttendanceRecord, DutyAllocation, StaffUser, EmergencyRecallAlert } from '../types';
 import { DutyAssignmentModal } from '../components/DutyAssignmentModal';
 import { EmployeeProfileModal } from '../components/EmployeeProfileModal';
+import { GeofenceRejectionModal } from '../components/GeofenceRejectionModal';
+import { GpsHardwareAlertModal } from '../components/GpsHardwareAlertModal';
+import {
+  verifyHospitalGeofence,
+  requestLocationOnPunch,
+  getStoredGeofenceConfig,
+  GEOFENCE_PRESETS,
+  HOSPITAL_LAT,
+  HOSPITAL_LNG,
+  GPS_OFF_ALERT_MESSAGE,
+  type GeofenceVerificationResult,
+} from '../utils/geofence';
 import { formatTimeTo12hStr, SHIFTS } from '../utils/attendanceCalculator';
 
 export const SupervisorDashboard: React.FC = () => {
@@ -73,6 +85,19 @@ export const SupervisorDashboard: React.FC = () => {
   const [dutyState, setDutyState] = useState<SupervisorDutyState>(() =>
     getSupervisorDutyState(effectiveSupervisorId, selectedDate)
   );
+  const [isLocatingDuty, setIsLocatingDuty] = useState(false);
+  const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
+
+  // Geofence Rejection Popup Modal State
+  const [rejectionModalState, setRejectionModalState] = useState<{
+    isOpen: boolean;
+    result: GeofenceVerificationResult | null;
+    punchType: 'IN' | 'OUT';
+  }>({
+    isOpen: false,
+    result: null,
+    punchType: 'IN',
+  });
 
   // Search & Filter state for Live Staff
   const [searchTerm, setSearchTerm] = useState('');
@@ -136,8 +161,63 @@ export const SupervisorDashboard: React.FC = () => {
   }, [effectiveSupervisorId]);
 
   // Handle Supervisor Duty Punch In / Punch Out
-  const handleToggleSupervisorDuty = () => {
+  const handleToggleSupervisorDuty = async () => {
     const nextAction = dutyState.isPunchedIn ? 'OUT' : 'IN';
+    setIsLocatingDuty(true);
+    let punchLocationResult;
+    try {
+      // Explicitly triggers navigator.geolocation only upon click with 5-second timeout
+      punchLocationResult = await requestLocationOnPunch(nextAction);
+    } catch (err: any) {
+      console.warn('Supervisor location check error:', err);
+      if (err?.isGpsOff || err?.code === 2 || err?.code === 3 || err?.message === GPS_OFF_ALERT_MESSAGE) {
+        punchLocationResult = {
+          allowed: false,
+          userCoords: { lat: 0, lng: 0 },
+          distanceMeters: 999999,
+          maxRadiusMeters: 100,
+          isGps: false,
+          isGpsOff: true,
+          gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
+          reason: GPS_OFF_ALERT_MESSAGE,
+          source: 'DEVICE_GPS' as const,
+        };
+      }
+    } finally {
+      setIsLocatingDuty(false);
+    }
+
+    // 3. If device GPS is turned OFF, immediately display clear alert
+    if (punchLocationResult?.isGpsOff) {
+      const alertMsg = GPS_OFF_ALERT_MESSAGE;
+      setIsGpsModalOpen(true);
+      setFeedback({
+        type: 'warning',
+        text: alertMsg,
+      });
+      try {
+        window.alert(alertMsg);
+      } catch {}
+      return;
+    }
+
+    const verification: GeofenceVerificationResult = punchLocationResult
+      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+      : verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+
+    if (!verification.allowed) {
+      setRejectionModalState({
+        isOpen: true,
+        result: verification,
+        punchType: nextAction,
+      });
+      setFeedback({
+        type: 'warning',
+        text: `Punch Failed: You are Outside Hospital Boundary (${verification.distanceMeters.toFixed(1)}m away)`,
+      });
+      return;
+    }
+
     const next = setSupervisorDutyPunch(
       effectiveSupervisorId,
       nextAction,
@@ -149,7 +229,7 @@ export const SupervisorDashboard: React.FC = () => {
     setFeedback({
       type: next.isPunchedIn ? 'success' : 'warning',
       text: next.isPunchedIn
-        ? `Supervisor Punched In for duty at ${next.punchInTime}. Live operational tools & OT approvals are active.`
+        ? `Supervisor Punched In for duty at ${next.punchInTime} (${verification.distanceMeters.toFixed(1)}m from center). Live operational tools & OT approvals are active.`
         : `Supervisor Punched Out at ${next.punchOutTime}. System switched to Read-Only Past History mode.`,
     });
   };
@@ -564,13 +644,21 @@ export const SupervisorDashboard: React.FC = () => {
                 type="button"
                 id="btn-supervisor-duty-punch"
                 onClick={handleToggleSupervisorDuty}
+                disabled={isLocatingDuty}
                 className={`w-full md:w-auto px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer ${
-                  dutyState.isPunchedIn
+                  isLocatingDuty
+                    ? 'opacity-70 cursor-wait bg-slate-700 text-white'
+                    : dutyState.isPunchedIn
                     ? 'bg-rose-600 hover:bg-rose-700 text-white'
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                 }`}
               >
-                {dutyState.isPunchedIn ? (
+                {isLocatingDuty ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>Verifying Location & GPS...</span>
+                  </>
+                ) : dutyState.isPunchedIn ? (
                   <>
                     <LogOut className="h-4 w-4" />
                     <span>Punch Out of Shift (Go Off-Duty)</span>
@@ -1067,10 +1155,22 @@ export const SupervisorDashboard: React.FC = () => {
                 type="button"
                 id="btn-shift-gating-punch-in"
                 onClick={handleToggleSupervisorDuty}
-                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-2 transition cursor-pointer shadow-sm shrink-0"
+                disabled={isLocatingDuty}
+                className={`px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-2 transition cursor-pointer shadow-sm shrink-0 ${
+                  isLocatingDuty ? 'opacity-70 cursor-wait' : ''
+                }`}
               >
-                <LogIn className="h-4 w-4" />
-                <span>Punch In for Shift</span>
+                {isLocatingDuty ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>Verifying GPS...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="h-4 w-4" />
+                    <span>Punch In for Shift</span>
+                  </>
+                )}
               </button>
             </div>
 
@@ -1489,6 +1589,29 @@ export const SupervisorDashboard: React.FC = () => {
           setRecords(getStoredAttendance());
           setDutyAllocations(getStoredDutyAllocations());
         }}
+      />
+
+      {/* Geofence Rejection Popup Modal */}
+      <GeofenceRejectionModal
+        isOpen={rejectionModalState.isOpen}
+        result={rejectionModalState.result}
+        punchType={rejectionModalState.punchType}
+        onClose={() => setRejectionModalState((prev) => ({ ...prev, isOpen: false }))}
+        onLocationCorrected={() => {
+          setRejectionModalState((prev) => ({ ...prev, isOpen: false }));
+          setFeedback({
+            type: 'success',
+            text: 'Location verified within 100m boundary. You may now punch duty.',
+          });
+        }}
+      />
+
+      {/* GPS Hardware OFF Alert Popup Modal */}
+      <GpsHardwareAlertModal
+        isOpen={isGpsModalOpen}
+        punchType={dutyState.isPunchedIn ? 'OUT' : 'IN'}
+        onClose={() => setIsGpsModalOpen(false)}
+        onRetry={handleToggleSupervisorDuty}
       />
     </div>
   );

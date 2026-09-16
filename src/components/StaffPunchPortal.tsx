@@ -13,6 +13,11 @@ import {
   ShieldAlert,
   Layers,
   History,
+  RotateCw,
+  Navigation,
+  Smartphone,
+  X,
+  RefreshCw,
 } from 'lucide-react';
 import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession, StaffSummaryResponse } from '../types';
 import {
@@ -25,6 +30,17 @@ import {
   process_shift_attendance,
   SHIFTS,
 } from '../utils/attendanceCalculator';
+import { GeofenceStatusCard } from './GeofenceStatusCard';
+import { GeofenceRejectionModal } from './GeofenceRejectionModal';
+import { GpsHardwareAlertModal } from './GpsHardwareAlertModal';
+import {
+  HOSPITAL_LAT,
+  HOSPITAL_LNG,
+  verifyHospitalGeofence,
+  requestLocationOnPunch,
+  GPS_OFF_ALERT_MESSAGE,
+  type GeofenceVerificationResult,
+} from '../utils/geofence';
 
 interface StaffPunchPortalProps {
   staff: StaffUser[];
@@ -170,6 +186,19 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   // Global/State Variables for exact real-time punch timestamp tracking
   const punchInTimestampRef = useRef<Date | null>(null);
   const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+  const [geofenceResult, setGeofenceResult] = useState<GeofenceVerificationResult | null>(null);
+  const [isLocating, setIsLocating] = useState<boolean>(false);
+  const [gpsHardwareOffAlert, setGpsHardwareOffAlert] = useState<string | null>(null);
+  const [isGpsModalOpen, setIsGpsModalOpen] = useState<boolean>(false);
+  const [rejectionModalState, setRejectionModalState] = useState<{
+    isOpen: boolean;
+    result: GeofenceVerificationResult | null;
+    punchType: 'IN' | 'OUT';
+  }>({
+    isOpen: false,
+    result: null,
+    punchType: 'IN',
+  });
   const [punchInTimestamp, setPunchInTimestamp] = useState<Date | null>(() => {
     if (todayRecord?.punchInTimestamp) {
       return new Date(todayRecord.punchInTimestamp);
@@ -227,7 +256,10 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     action: 'IN' | 'OUT',
     timestamp: Date,
     reg: string | number = 0,
-    ot: string | number = 0
+    ot: string | number = 0,
+    lat?: number,
+    lng?: number,
+    distanceMeters?: number
   ) => {
     try {
       fetch('/api/attendance/punch', {
@@ -238,6 +270,9 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           timestamp: timestamp.toISOString(),
           regular_hours: parseFloat(String(reg)),
           overtime_hours: parseFloat(String(ot)),
+          lat,
+          lng,
+          distance_meters: distanceMeters,
         }),
       })
         .then((response) => {
@@ -258,7 +293,63 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   };
 
   // 1. PUNCH IN FUNCTION
-  const handlePunchIn = () => {
+  const handlePunchIn = async () => {
+    setIsLocating(true);
+    setGpsHardwareOffAlert(null);
+    let punchLocationResult;
+    try {
+      // Explicitly triggers navigator.geolocation only upon Punch In button click with 5-second timeout
+      punchLocationResult = await requestLocationOnPunch('IN');
+    } catch (err: any) {
+      console.warn('Location capture error on punch in:', err);
+      if (err?.isGpsOff || err?.code === 2 || err?.code === 3 || err?.message === GPS_OFF_ALERT_MESSAGE) {
+        punchLocationResult = {
+          allowed: false,
+          userCoords: { lat: 0, lng: 0 },
+          distanceMeters: 999999,
+          maxRadiusMeters: 100,
+          isGps: false,
+          isGpsOff: true,
+          gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
+          reason: GPS_OFF_ALERT_MESSAGE,
+          source: 'DEVICE_GPS' as const,
+        };
+      }
+    } finally {
+      setIsLocating(false);
+    }
+
+    // 3. If device GPS is turned OFF, immediately display clear alert
+    if (punchLocationResult?.isGpsOff) {
+      const alertMsg = GPS_OFF_ALERT_MESSAGE;
+      setGpsHardwareOffAlert(alertMsg);
+      setIsGpsModalOpen(true);
+      setFeedbackMessage({ type: 'warning', text: alertMsg });
+      if (onFlash) onFlash(alertMsg, 'danger');
+      try {
+        window.alert(alertMsg);
+      } catch {}
+      return;
+    }
+
+    const activeGeofence: GeofenceVerificationResult = punchLocationResult
+      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+
+    setGeofenceResult(activeGeofence);
+
+    if (!activeGeofence.allowed) {
+      setRejectionModalState({
+        isOpen: true,
+        result: activeGeofence,
+        punchType: 'IN',
+      });
+      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters.toFixed(1)}m away)`;
+      setFeedbackMessage({ type: 'warning', text: blockMsg });
+      if (onFlash) onFlash(blockMsg, 'danger');
+      return;
+    }
+
     const timestamp = new Date(); // Captures exact real-time Punch In
     punchInTimestampRef.current = timestamp;
     setPunchInTimestamp(timestamp);
@@ -277,13 +368,21 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     
     // Fix multi-session loop bug: Auto-close any active unclosed sessions before opening a new one
     const autoClosedSessions = autoCloseActiveSessions(activeSessions, timestamp.toISOString(), 'Auto-closed on new punch-in');
+    const userLat = activeGeofence?.userCoords.lat ?? HOSPITAL_LAT;
+    const userLng = activeGeofence?.userCoords.lng ?? HOSPITAL_LNG;
+    const distM = activeGeofence?.distanceMeters ?? 0.0;
+    const sessionGpsNote = `[GPS: ${distM.toFixed(1)}m]`;
+
     const newSession: AttendanceSession = {
       id: `sess_${recordId}_${autoClosedSessions.length + 1}_${Date.now()}`,
       staff_id: activeStaff.id,
       date: selectedDate,
       punch_in: timestamp.toISOString(),
       punch_out: null,
-      notes: assignedArea,
+      notes: `${assignedArea} ${sessionGpsNote}`,
+      punch_in_lat: userLat,
+      punch_in_lng: userLng,
+      punch_in_distance_meters: distM,
     };
 
     const allSessions = [...autoClosedSessions, newSession];
@@ -303,24 +402,86 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       sessions: allSessions,
       status: 'Present',
       notes: todayRecord?.notes || assignedArea,
+      punchInLat: userLat,
+      punchInLng: userLng,
+      punchInDistanceMeters: distM,
     };
     onSaveRecord(updatedRecord);
 
     // Backend API Call
-    syncPunchWithBackend('IN', timestamp, summary.regular_hours, summary.overtime_hours);
+    syncPunchWithBackend('IN', timestamp, summary.regular_hours, summary.overtime_hours, userLat, userLng, distM);
 
     const sessionNum = allSessions.length;
     const sessionLabel = sessionNum > 1 ? ` (Session #${sessionNum})` : '';
-    const msg = `Punch In successful (${formattedTime})${sessionLabel}! Duty active.`;
+    const msg = `Punch In successful (${formattedTime})${sessionLabel}! Duty active (${distM.toFixed(1)}m from center).`;
     if (onFlash) onFlash(msg, 'success');
     setFeedbackMessage({ type: 'success', text: msg });
     setTimeout(() => setFeedbackMessage(null), 4500);
   };
 
   // 2. PUNCH OUT & REAL-TIME HOURS CALCULATION
-  const handlePunchOut = () => {
+  const handlePunchOut = async () => {
+    setIsLocating(true);
+    setGpsHardwareOffAlert(null);
+    let punchLocationResult;
+    try {
+      // Explicitly triggers navigator.geolocation only upon Punch Out button click with 5-second timeout
+      punchLocationResult = await requestLocationOnPunch('OUT');
+    } catch (err: any) {
+      console.warn('Location capture error on punch out:', err);
+      if (err?.isGpsOff || err?.code === 2 || err?.code === 3 || err?.message === GPS_OFF_ALERT_MESSAGE) {
+        punchLocationResult = {
+          allowed: false,
+          userCoords: { lat: 0, lng: 0 },
+          distanceMeters: 999999,
+          maxRadiusMeters: 100,
+          isGps: false,
+          isGpsOff: true,
+          gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
+          reason: GPS_OFF_ALERT_MESSAGE,
+          source: 'DEVICE_GPS' as const,
+        };
+      }
+    } finally {
+      setIsLocating(false);
+    }
+
+    // 3. If device GPS is turned OFF, immediately display clear alert
+    if (punchLocationResult?.isGpsOff) {
+      const alertMsg = GPS_OFF_ALERT_MESSAGE;
+      setGpsHardwareOffAlert(alertMsg);
+      setIsGpsModalOpen(true);
+      setFeedbackMessage({ type: 'warning', text: alertMsg });
+      if (onFlash) onFlash(alertMsg, 'danger');
+      try {
+        window.alert(alertMsg);
+      } catch {}
+      return;
+    }
+
+    const activeGeofence: GeofenceVerificationResult = punchLocationResult
+      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+
+    setGeofenceResult(activeGeofence);
+
+    if (!activeGeofence.allowed) {
+      setRejectionModalState({
+        isOpen: true,
+        result: activeGeofence,
+        punchType: 'OUT',
+      });
+      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters.toFixed(1)}m away)`;
+      setFeedbackMessage({ type: 'warning', text: blockMsg });
+      if (onFlash) onFlash(blockMsg, 'danger');
+      return;
+    }
+
     const punchOutTimestamp = new Date(); // Captures exact Punch Out
     const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
+    const userLat = activeGeofence?.userCoords.lat ?? HOSPITAL_LAT;
+    const userLng = activeGeofence?.userCoords.lng ?? HOSPITAL_LNG;
+    const distM = activeGeofence?.distanceMeters ?? 0.0;
 
     let allSessions = [...activeSessions];
     const openIdx = allSessions.findIndex((s) => !s.punch_out);
@@ -329,6 +490,9 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       allSessions[openIdx] = {
         ...allSessions[openIdx],
         punch_out: punchOutTimestamp.toISOString(),
+        punch_out_lat: userLat,
+        punch_out_lng: userLng,
+        punch_out_distance_meters: distM,
       };
     } else {
       const effectiveInTimestamp =
@@ -351,6 +515,9 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
         punch_in: effectiveInTimestamp.toISOString(),
         punch_out: punchOutTimestamp.toISOString(),
         notes: assignedArea,
+        punch_out_lat: userLat,
+        punch_out_lng: userLng,
+        punch_out_distance_meters: distM,
       });
     }
 
@@ -391,11 +558,17 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       sessions: allSessions,
       status: 'Duty Completed',
       notes: todayRecord?.notes || assignedArea,
+      punchInLat: todayRecord?.punchInLat ?? userLat,
+      punchInLng: todayRecord?.punchInLng ?? userLng,
+      punchInDistanceMeters: todayRecord?.punchInDistanceMeters ?? distM,
+      punchOutLat: userLat,
+      punchOutLng: userLng,
+      punchOutDistanceMeters: distM,
     };
     onSaveRecord(updatedRecord);
 
     // Backend Sync
-    syncPunchWithBackend('OUT', punchOutTimestamp, regFormatted, otFormatted);
+    syncPunchWithBackend('OUT', punchOutTimestamp, regFormatted, otFormatted, userLat, userLng, distM);
 
     const sessionCountText = allSessions.length > 1 ? ` (Session #${allSessions.length})` : '';
     const totalDurationText = summary.total_hours !== undefined ? ` • Total: ${summary.total_hours.toFixed(2)}h` : '';
@@ -612,6 +785,67 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           </div>
         )}
 
+        {/* GPS Hardware OFF Immediate Alert */}
+        {gpsHardwareOffAlert && (
+          <div
+            role="alert"
+            id="gps-hardware-off-alert-banner"
+            className="mb-3 p-3.5 rounded-xl bg-amber-50 border-2 border-amber-500 text-amber-950 shadow-xs"
+          >
+            <div className="flex items-start gap-2.5">
+              <div className="h-9 w-9 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
+                <Smartphone className="h-5 w-5 animate-pulse" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-2xs font-black text-amber-950 uppercase tracking-wider">
+                    GPS Turned OFF
+                  </span>
+                  <button
+                    type="button"
+                    id="btn-dismiss-gps-off-alert"
+                    onClick={() => setGpsHardwareOffAlert(null)}
+                    className="text-amber-700 hover:text-amber-950 p-1 rounded-md cursor-pointer"
+                    aria-label="Dismiss alert"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p className="text-xs sm:text-sm font-bold text-amber-900 mt-1 leading-snug">
+                  {gpsHardwareOffAlert}
+                </p>
+                <div className="mt-2 text-3xs sm:text-2xs text-amber-800 bg-amber-100/70 p-2 rounded-lg border border-amber-200/80 space-y-0.5">
+                  <p>
+                    &bull; <strong>Android:</strong> Swipe down Quick Settings &rarr; Tap <strong>Location</strong> icon to turn <strong>ON</strong>.
+                  </p>
+                  <p>
+                    &bull; <strong>iPhone:</strong> Go to <strong>Settings</strong> &rarr; <strong>Privacy &amp; Security</strong> &rarr; <strong>Location Services</strong> &rarr; Turn <strong>ON</strong>.
+                  </p>
+                </div>
+                <div className="mt-2.5 flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="btn-gps-retry-punch"
+                    onClick={handlePunchIn}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white text-xs font-bold rounded-lg shadow-2xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <RotateCw className="h-3 w-3" />
+                    <span>I have turned ON GPS &mdash; Retry</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* GPS Geofence Verification Status Card */}
+        <div className="mb-3">
+          <GeofenceStatusCard
+            compact
+            onStatusChange={(res) => setGeofenceResult(res)}
+          />
+        </div>
+
         {/* 1. Top Summary Cards (regularHoursCard & otHoursCard) */}
         <div className="row g-2 mb-3 grid grid-cols-2 gap-2.5">
           <div className="col card bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-2xs">
@@ -676,10 +910,22 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
                 type="button"
                 id="punchOutBtn"
                 onClick={handlePunchOut}
-                className="btn btn-danger w-100 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                disabled={isLocating}
+                className={`btn btn-danger w-100 w-full bg-[#dc3545] hover:bg-[#bb2d3b] active:bg-[#b02a37] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                  isLocating ? 'opacity-70 cursor-wait' : ''
+                }`}
               >
-                <LogOut className="h-5 w-5 stroke-[2.5] me-1 inline" />
-                <span>PUNCH OUT</span>
+                {isLocating ? (
+                  <>
+                    <RotateCw className="h-5 w-5 animate-spin me-1 inline" />
+                    <span>VERIFYING GPS LOCATION...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogOut className="h-5 w-5 stroke-[2.5] me-1 inline" />
+                    <span>PUNCH OUT</span>
+                  </>
+                )}
               </button>
 
               {/* 3. Status Subtitle */}
@@ -761,9 +1007,12 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
               <button
                 type="button"
                 onClick={handlePunchIn}
-                className="mt-2.5 text-xs text-indigo-600 hover:text-indigo-800 font-semibold hover:underline block mx-auto cursor-pointer"
+                disabled={isLocating}
+                className={`mt-2.5 text-xs text-indigo-600 hover:text-indigo-800 font-semibold hover:underline block mx-auto cursor-pointer ${
+                  isLocating ? 'opacity-50 cursor-wait' : ''
+                }`}
               >
-                + Punch In for Next Session
+                {isLocating ? 'Acquiring GPS & Punching In...' : '+ Punch In for Next Session'}
               </button>
 
               {/* FIX: Reset link is only shown to ADMIN, NOT to STAFF */}
@@ -808,10 +1057,30 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
                 type="button"
                 id="punchInBtn"
                 onClick={handlePunchIn}
-                className="btn btn-success w-100 w-full bg-[#198754] hover:bg-[#157347] active:bg-[#146c43] text-white font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                disabled={isLocating}
+                className={`btn w-100 w-full font-bold py-2.5 px-4 rounded-lg text-base shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                  isLocating ? 'opacity-80 cursor-wait bg-[#198754] text-white' :
+                  geofenceResult && !geofenceResult.allowed
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                    : 'btn-success bg-[#198754] hover:bg-[#157347] active:bg-[#146c43] text-white'
+                }`}
               >
-                <LogIn className="h-5 w-5 stroke-[2.5] me-1 inline" />
-                <span>PUNCH IN</span>
+                {isLocating ? (
+                  <>
+                    <RotateCw className="h-5 w-5 animate-spin me-1 inline" />
+                    <span>VERIFYING GPS LOCATION...</span>
+                  </>
+                ) : geofenceResult && !geofenceResult.allowed ? (
+                  <>
+                    <ShieldAlert className="h-5 w-5 me-1 inline" />
+                    <span>PUNCH IN (OUTSIDE 100M GEOFENCE)</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="h-5 w-5 stroke-[2.5] me-1 inline" />
+                    <span>PUNCH IN</span>
+                  </>
+                )}
               </button>
 
               {/* 3. Status Subtitle */}
@@ -833,6 +1102,28 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
           Housekeeping Attendance Engine &bull; Real-time punch tracking &amp; OT calculation
         </p>
       </div>
+
+      {/* Hospital GPS Geofence Rejection Popup Modal */}
+      <GeofenceRejectionModal
+        isOpen={rejectionModalState.isOpen}
+        result={rejectionModalState.result}
+        punchType={rejectionModalState.punchType}
+        onClose={() => setRejectionModalState((prev) => ({ ...prev, isOpen: false }))}
+        onLocationCorrected={() => {
+          setRejectionModalState((prev) => ({ ...prev, isOpen: false }));
+          const successMsg = 'Location verified within 100m boundary. You may now punch.';
+          setFeedbackMessage({ type: 'success', text: successMsg });
+          if (onFlash) onFlash(successMsg, 'success');
+        }}
+      />
+
+      {/* Hospital GPS Hardware OFF Alert Popup Modal */}
+      <GpsHardwareAlertModal
+        isOpen={isGpsModalOpen}
+        punchType="IN"
+        onClose={() => setIsGpsModalOpen(false)}
+        onRetry={handlePunchIn}
+      />
     </div>
   );
 };
