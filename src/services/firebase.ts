@@ -1,6 +1,7 @@
 import type { User } from 'firebase/auth';
 import {
   auth,
+  db,
   app,
   provider,
   firebaseConfig,
@@ -10,7 +11,7 @@ import {
   logout as jsLogout,
 } from '../firebase';
 
-export { auth, app, provider, firebaseConfig };
+export { auth, db, app, provider, firebaseConfig };
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,

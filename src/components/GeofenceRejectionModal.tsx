@@ -1,12 +1,16 @@
 import React from 'react';
-import { ShieldAlert, MapPin, X, RefreshCw, Compass, AlertOctagon, Navigation } from 'lucide-react';
+import {
+  ShieldAlert,
+  AlertOctagon,
+  X,
+  MapPin,
+  RefreshCw,
+} from 'lucide-react';
 import {
   HOSPITAL_LAT,
   HOSPITAL_LNG,
   MAX_ALLOWED_RADIUS_METERS,
   HOSPITAL_NAME,
-  GEOFENCE_PRESETS,
-  saveStoredGeofenceConfig,
   type GeofenceVerificationResult,
 } from '../utils/geofence';
 
@@ -26,18 +30,6 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
   onLocationCorrected,
 }) => {
   if (!isOpen || !result) return null;
-
-  const handleSelectInsidePreset = (presetId: string = 'main_entrance') => {
-    saveStoredGeofenceConfig({
-      mode: 'SIMULATED',
-      simulatedPresetId: presetId,
-    });
-    window.dispatchEvent(new CustomEvent('geofence-preset-changed', { detail: { presetId } }));
-    if (onLocationCorrected) {
-      onLocationCorrected();
-    }
-    onClose();
-  };
 
   return (
     <div
@@ -97,7 +89,7 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
               </p>
               <p className="text-rose-800 leading-relaxed">
                 Hospital labor regulations require all staff to be physically located within the{' '}
-                <strong>{MAX_ALLOWED_RADIUS_METERS}m</strong> perimeter of the hospital center. Your current device coordinates exceed this limit.
+                <strong>{MAX_ALLOWED_RADIUS_METERS}m</strong> perimeter of the hospital center. Your live browser GPS coordinates exceed this limit.
               </p>
             </div>
           </div>
@@ -110,29 +102,31 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-700">Calculated Distance (Haversine):</span>
-              <span className="text-sm font-black font-mono text-rose-600 bg-rose-100 px-2 py-0.5 rounded border border-rose-300">
-                {result.distanceMeters.toFixed(2)} meters away
+              <span className="text-xs text-slate-600">Calculated Distance from Center:</span>
+              <span className="font-mono text-sm font-extrabold text-rose-600">
+                {result.distanceMeters > 900000 ? 'Signal Undetermined' : `${result.distanceMeters.toFixed(1)} meters`}
               </span>
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-700">Max Permitted Perimeter:</span>
-              <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
-                {MAX_ALLOWED_RADIUS_METERS.toFixed(1)} meters boundary
+              <span className="text-xs text-slate-600">Maximum Allowed Radius:</span>
+              <span className="font-mono text-xs font-bold text-slate-700">
+                {MAX_ALLOWED_RADIUS_METERS} meters
               </span>
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-700">Excess Distance:</span>
-              <span className="text-xs font-mono font-bold text-rose-700">
-                +{(result.distanceMeters - MAX_ALLOWED_RADIUS_METERS).toFixed(1)}m outside boundary
+              <span className="text-xs text-slate-600">Violation Margin:</span>
+              <span className="font-mono text-xs font-extrabold text-rose-700">
+                {result.distanceMeters > 900000
+                  ? 'Signal Undetermined'
+                  : `+${(result.distanceMeters - MAX_ALLOWED_RADIUS_METERS).toFixed(1)} meters out of bounds`}
               </span>
             </div>
 
             <div className="pt-2 border-t border-slate-200 text-2xs font-mono text-slate-600 space-y-1">
               <div className="flex items-center justify-between">
-                <span>Detected Location:</span>
+                <span>Detected Coordinates:</span>
                 <span>
                   {result.userCoords.lat.toFixed(5)}° N, {result.userCoords.lng.toFixed(5)}° E
                 </span>
@@ -146,32 +140,13 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
             </div>
           </div>
 
-          {/* Quick Demo Switcher for Evaluation */}
-          <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-3">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#1E3A8A] mb-1.5">
-              <Compass className="h-4 w-4" />
-              <span>Simulate On-Premises Location (for Evaluation):</span>
-            </div>
-            <p className="text-2xs text-slate-600 mb-2.5">
-              Testing from an off-site computer or emulator? Switch to an authorized inside-campus coordinate preset:
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                id="btn-geofence-test-main-gate"
-                onClick={() => handleSelectInsidePreset('main_entrance')}
-                className="px-2.5 py-1.5 bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
-              >
-                <span>Main Entrance (~18m)</span>
-              </button>
-              <button
-                type="button"
-                id="btn-geofence-test-hub"
-                onClick={() => handleSelectInsidePreset('housekeeping_hub')}
-                className="px-2.5 py-1.5 bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
-              >
-                <span>Housekeeping Hub (~45m)</span>
-              </button>
+          <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
+            <MapPin className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Next Steps for Staff:</p>
+              <p className="text-2xs text-amber-800 mt-0.5">
+                Please proceed inside the hospital building (within 100 meters of the central entrance) and ensure high-accuracy device location is enabled.
+              </p>
             </div>
           </div>
         </div>
@@ -186,15 +161,20 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
           >
             Acknowledge &amp; Dismiss
           </button>
-          <button
-            type="button"
-            id="btn-retry-geofence"
-            onClick={() => handleSelectInsidePreset('hospital_center')}
-            className="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
-          >
-            <Navigation className="h-3.5 w-3.5" />
-            <span>Set Hospital Center &amp; Retry</span>
-          </button>
+          {onLocationCorrected && (
+            <button
+              type="button"
+              id="btn-retry-live-gps"
+              onClick={() => {
+                onClose();
+                onLocationCorrected();
+              }}
+              className="w-full sm:w-auto px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span>Retry Real GPS Scan</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

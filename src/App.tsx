@@ -62,6 +62,7 @@ function App() {
             } 
           />
           <Route path="/admin-dashboard" element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="/admin-geofence" element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="/dashboard" element={<Navigate to="/admin/dashboard" replace />} />
 

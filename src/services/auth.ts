@@ -1,5 +1,6 @@
 import { getStoredUsers, saveStoredCurrentUser } from '../data/mockHousekeepingData';
 import { logout as firebaseLogout } from './firebase';
+import { getApiEndpoint } from './apiConfig';
 
 export interface LogoutResult {
   success: boolean;
@@ -18,7 +19,7 @@ export interface LogoutResult {
 export async function performLogout(): Promise<LogoutResult> {
   // 1. Server session destroy & cookie header clearance via /api/logout endpoint
   try {
-    await fetch('/api/logout', {
+    await fetch(getApiEndpoint('/api/logout'), {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -178,7 +179,7 @@ export function handleLogout(navigate?: (to: string, options?: { replace?: boole
 
   // Trigger server logout
   try {
-    fetch('/api/logout', { method: 'POST' }).catch(() => {});
+    fetch(getApiEndpoint('/api/logout'), { method: 'POST' }).catch(() => {});
   } catch {}
 
   // Redirect to Login cleanly
@@ -326,7 +327,7 @@ export const handleLogin = async (
 
       // Fire server endpoint asynchronously in background
       try {
-        fetch('/api/login', {
+        fetch(getApiEndpoint('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ staffId: cleanId, password: cleanPass }),
@@ -386,7 +387,7 @@ export const handleLogin = async (
 
   // 3. Fallback: Server-side /api/login endpoint with bcrypt & signed JWT (for custom remote users)
   try {
-    const res = await fetch('/api/login', {
+    const res = await fetch(getApiEndpoint('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ staffId: cleanId, password: cleanPass }),

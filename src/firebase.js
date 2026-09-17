@@ -8,6 +8,7 @@ import {
   GoogleAuthProvider,
   signOut
 } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 import defaultConfig from '../firebase-applet-config.json';
 
 // Standard environment variable support with fallback to preserve existing credentials intact
@@ -23,10 +24,12 @@ const firebaseConfig = {
 // Initialize Firebase App safely
 let app = null;
 let authInstance = null;
+let firestoreDb = null;
 
 try {
   app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
   authInstance = getAuth(app);
+  firestoreDb = getFirestore(app);
 
   // Set persistence to browserLocalPersistence to guarantee session persistence across reloads
   if (authInstance && typeof window !== 'undefined') {
@@ -39,6 +42,7 @@ try {
 }
 
 export const auth = authInstance;
+export const db = firestoreDb;
 export { app, firebaseConfig };
 
 // Google Auth Provider with Google Sheets Scope for Workspace Sync

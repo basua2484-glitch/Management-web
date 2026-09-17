@@ -707,10 +707,20 @@ export function getStoredAttendance(): AttendanceRecord[] {
   } catch (e) {
     console.error('Failed to parse attendance from local storage', e);
   }
-  // Generate default seed for August and September 2026
-  const aug = generateSeedAttendance(2026, 8);
-  const sep = generateSeedAttendance(2026, 9);
-  return [...aug, ...sep];
+  // Production clean start: no artificial seed attendance records
+  return [];
+}
+
+/**
+ * Clear all sample/mock attendance logs from local persistence
+ */
+export function clearSampleAttendanceLogs(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_ATTENDANCE, JSON.stringify([]));
+    window.dispatchEvent(new CustomEvent('attendance-updated'));
+  } catch (e) {
+    console.error('Failed to clear sample attendance logs', e);
+  }
 }
 
 export function saveStoredAttendance(records: AttendanceRecord[]): void {

@@ -33,14 +33,22 @@ import {
 import { GeofenceStatusCard } from './GeofenceStatusCard';
 import { GeofenceRejectionModal } from './GeofenceRejectionModal';
 import { GpsHardwareAlertModal } from './GpsHardwareAlertModal';
+import { getApiEndpoint } from '../services/apiConfig';
 import {
   HOSPITAL_LAT,
   HOSPITAL_LNG,
   verifyHospitalGeofence,
   requestLocationOnPunch,
+  getStoredGeofenceConfig,
   GPS_OFF_ALERT_MESSAGE,
   type GeofenceVerificationResult,
 } from '../utils/geofence';
+import {
+  recordLivePunchInToDb,
+  recordLivePunchOutToDb,
+  fetchLiveGeofenceSettings,
+  subscribeToGeofenceSettings,
+} from '../services/firestoreService';
 
 interface StaffPunchPortalProps {
   staff: StaffUser[];
@@ -251,6 +259,15 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     updateUI(staffSummary);
   }, [staffSummary.regular_hours, staffSummary.overtime_hours, staffSummary.is_duty_active, staffSummary.sessions.length]);
 
+  // Synchronize dynamic Admin-configured geofence settings from database
+  useEffect(() => {
+    fetchLiveGeofenceSettings();
+    const unsub = subscribeToGeofenceSettings(() => {
+      // triggers dynamic config refresh
+    });
+    return () => unsub();
+  }, []);
+
   // 3. BACKEND API SYNC
   const syncPunchWithBackend = (
     action: 'IN' | 'OUT',
@@ -262,7 +279,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     distanceMeters?: number
   ) => {
     try {
-      fetch('/api/attendance/punch', {
+      fetch(getApiEndpoint('/api/attendance/punch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -299,15 +316,16 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     let punchLocationResult;
     try {
       // Explicitly triggers navigator.geolocation only upon Punch In button click with 5-second timeout
-      punchLocationResult = await requestLocationOnPunch('IN');
+      punchLocationResult = await requestLocationOnPunch('IN', activeStaff.department);
     } catch (err: any) {
       console.warn('Location capture error on punch in:', err);
       if (err?.isGpsOff || err?.code === 2 || err?.code === 3 || err?.message === GPS_OFF_ALERT_MESSAGE) {
+        const liveCfg = getStoredGeofenceConfig();
         punchLocationResult = {
           allowed: false,
           userCoords: { lat: 0, lng: 0 },
           distanceMeters: 999999,
-          maxRadiusMeters: 100,
+          maxRadiusMeters: liveCfg.maxAllowedRadiusMeters,
           isGps: false,
           isGpsOff: true,
           gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
@@ -332,23 +350,48 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       return;
     }
 
-    const activeGeofence: GeofenceVerificationResult = punchLocationResult
-      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
-      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+    const currentGeofenceConfig = getStoredGeofenceConfig();
 
-    setGeofenceResult(activeGeofence);
+    if (!punchLocationResult || !punchLocationResult.isGps || !punchLocationResult.allowed) {
+      const activeGeofence: GeofenceVerificationResult = punchLocationResult
+        ? verifyHospitalGeofence(
+            punchLocationResult.userCoords.lat,
+            punchLocationResult.userCoords.lng,
+            activeStaff.department,
+            currentGeofenceConfig
+          )
+        : {
+            allowed: false,
+            distanceMeters: 999999,
+            maxAllowedRadius: currentGeofenceConfig.maxAllowedRadiusMeters,
+            maxRadiusMeters: currentGeofenceConfig.maxAllowedRadiusMeters,
+            hospitalCoords: { lat: currentGeofenceConfig.hospitalLat, lng: currentGeofenceConfig.hospitalLng },
+            userCoords: { lat: 0, lng: 0 },
+            status: 'OUTSIDE_GEOFENCE' as const,
+            message: 'Real GPS lock required. Live coordinates could not be verified.',
+            reason: `GPS lock required within ${currentGeofenceConfig.maxAllowedRadiusMeters}m perimeter.`,
+          };
 
-    if (!activeGeofence.allowed) {
+      setGeofenceResult(activeGeofence);
       setRejectionModalState({
         isOpen: true,
         result: activeGeofence,
         punchType: 'IN',
       });
-      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters.toFixed(1)}m away)`;
+      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters < 900000 ? activeGeofence.distanceMeters.toFixed(1) + 'm away' : 'GPS lock required'})`;
       setFeedbackMessage({ type: 'warning', text: blockMsg });
       if (onFlash) onFlash(blockMsg, 'danger');
       return;
     }
+
+    const activeGeofence: GeofenceVerificationResult = verifyHospitalGeofence(
+      punchLocationResult.userCoords.lat,
+      punchLocationResult.userCoords.lng,
+      activeStaff.department,
+      currentGeofenceConfig
+    );
+
+    setGeofenceResult(activeGeofence);
 
     const timestamp = new Date(); // Captures exact real-time Punch In
     punchInTimestampRef.current = timestamp;
@@ -407,6 +450,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       punchInDistanceMeters: distM,
     };
     onSaveRecord(updatedRecord);
+    recordLivePunchInToDb(updatedRecord);
 
     // Backend API Call
     syncPunchWithBackend('IN', timestamp, summary.regular_hours, summary.overtime_hours, userLat, userLng, distM);
@@ -426,15 +470,16 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     let punchLocationResult;
     try {
       // Explicitly triggers navigator.geolocation only upon Punch Out button click with 5-second timeout
-      punchLocationResult = await requestLocationOnPunch('OUT');
+      punchLocationResult = await requestLocationOnPunch('OUT', activeStaff.department);
     } catch (err: any) {
       console.warn('Location capture error on punch out:', err);
       if (err?.isGpsOff || err?.code === 2 || err?.code === 3 || err?.message === GPS_OFF_ALERT_MESSAGE) {
+        const liveCfg = getStoredGeofenceConfig();
         punchLocationResult = {
           allowed: false,
           userCoords: { lat: 0, lng: 0 },
           distanceMeters: 999999,
-          maxRadiusMeters: 100,
+          maxRadiusMeters: liveCfg.maxAllowedRadiusMeters,
           isGps: false,
           isGpsOff: true,
           gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
@@ -459,23 +504,48 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       return;
     }
 
-    const activeGeofence: GeofenceVerificationResult = punchLocationResult
-      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
-      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+    const currentGeofenceConfig = getStoredGeofenceConfig();
 
-    setGeofenceResult(activeGeofence);
+    if (!punchLocationResult || !punchLocationResult.isGps || !punchLocationResult.allowed) {
+      const activeGeofence: GeofenceVerificationResult = punchLocationResult
+        ? verifyHospitalGeofence(
+            punchLocationResult.userCoords.lat,
+            punchLocationResult.userCoords.lng,
+            activeStaff.department,
+            currentGeofenceConfig
+          )
+        : {
+            allowed: false,
+            distanceMeters: 999999,
+            maxAllowedRadius: currentGeofenceConfig.maxAllowedRadiusMeters,
+            maxRadiusMeters: currentGeofenceConfig.maxAllowedRadiusMeters,
+            hospitalCoords: { lat: currentGeofenceConfig.hospitalLat, lng: currentGeofenceConfig.hospitalLng },
+            userCoords: { lat: 0, lng: 0 },
+            status: 'OUTSIDE_GEOFENCE' as const,
+            message: 'Real GPS lock required. Live coordinates could not be verified.',
+            reason: `GPS lock required within ${currentGeofenceConfig.maxAllowedRadiusMeters}m perimeter.`,
+          };
 
-    if (!activeGeofence.allowed) {
+      setGeofenceResult(activeGeofence);
       setRejectionModalState({
         isOpen: true,
         result: activeGeofence,
         punchType: 'OUT',
       });
-      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters.toFixed(1)}m away)`;
+      const blockMsg = `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters < 900000 ? activeGeofence.distanceMeters.toFixed(1) + 'm away' : 'GPS lock required'})`;
       setFeedbackMessage({ type: 'warning', text: blockMsg });
       if (onFlash) onFlash(blockMsg, 'danger');
       return;
     }
+
+    const activeGeofence: GeofenceVerificationResult = verifyHospitalGeofence(
+      punchLocationResult.userCoords.lat,
+      punchLocationResult.userCoords.lng,
+      activeStaff.department,
+      currentGeofenceConfig
+    );
+
+    setGeofenceResult(activeGeofence);
 
     const punchOutTimestamp = new Date(); // Captures exact Punch Out
     const recordId = todayRecord ? todayRecord.id : `att_${activeStaff.id}_${selectedDate}`;
@@ -566,6 +636,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
       punchOutDistanceMeters: distM,
     };
     onSaveRecord(updatedRecord);
+    recordLivePunchOutToDb(updatedRecord);
 
     // Backend Sync
     syncPunchWithBackend('OUT', punchOutTimestamp, regFormatted, otFormatted, userLat, userLng, distM);
@@ -713,11 +784,11 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
         </div>
       )}
 
-      {/* Supervisor Staff Selector Dropdown (Shown ONLY for admin or manager testing) */}
+      {/* Supervisor Staff Selector Dropdown (Active in Authorized Kiosk Mode) */}
       {!isStaffLoggedIn && (
         <div className="w-full max-w-[420px] mb-3">
           <div className="flex items-center justify-between text-2xs text-slate-500 font-semibold mb-1 px-1">
-            <span>Supervisor Kiosk Selector (Admin Mode):</span>
+            <span>Hospital Kiosk Staff Selection (Authorized Terminal):</span>
             <span className="text-slate-400">Total: {staff.length} staff</span>
           </div>
           <div className="relative">
@@ -1111,7 +1182,8 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
         onClose={() => setRejectionModalState((prev) => ({ ...prev, isOpen: false }))}
         onLocationCorrected={() => {
           setRejectionModalState((prev) => ({ ...prev, isOpen: false }));
-          const successMsg = 'Location verified within 100m boundary. You may now punch.';
+          const activeLimit = getStoredGeofenceConfig().maxAllowedRadiusMeters;
+          const successMsg = `Location verified within ${activeLimit}m boundary. You may now punch.`;
           setFeedbackMessage({ type: 'success', text: successMsg });
           if (onFlash) onFlash(successMsg, 'success');
         }}

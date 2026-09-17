@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // System Settings (Global Config & Master Admin Status)
+    match /system_settings/{settingId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Hospital Staff and Admin User Accounts
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Staff Roster
+    match /staff_roster/{staffId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Duty & Shift Allocations
+    match /duty_allocations/{allocId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Real-Time Attendance & Geofence Punch Records
+    match /attendance_records/{recordId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Security & Punch Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

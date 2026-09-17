@@ -58,11 +58,10 @@ import { GpsHardwareAlertModal } from '../components/GpsHardwareAlertModal';
 import {
   verifyHospitalGeofence,
   requestLocationOnPunch,
-  getStoredGeofenceConfig,
-  GEOFENCE_PRESETS,
   HOSPITAL_LAT,
   HOSPITAL_LNG,
   GPS_OFF_ALERT_MESSAGE,
+  getStoredGeofenceConfig,
   type GeofenceVerificationResult,
 } from '../utils/geofence';
 import { formatTimeTo12hStr, SHIFTS } from '../utils/attendanceCalculator';
@@ -201,11 +200,24 @@ export const SupervisorDashboard: React.FC = () => {
       return;
     }
 
-    const verification: GeofenceVerificationResult = punchLocationResult
-      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
-      : verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+    if (!punchLocationResult || !punchLocationResult.isGps || !punchLocationResult.allowed) {
+      const verification: GeofenceVerificationResult = punchLocationResult
+        ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
+        : (() => {
+            const activeGeofence = getStoredGeofenceConfig();
+            return {
+              allowed: false,
+              distanceMeters: 999999,
+              maxAllowedRadius: activeGeofence.maxAllowedRadiusMeters,
+              maxRadiusMeters: activeGeofence.maxAllowedRadiusMeters,
+              hospitalCoords: { lat: activeGeofence.hospitalLat, lng: activeGeofence.hospitalLng },
+              userCoords: { lat: 0, lng: 0 },
+              status: 'OUTSIDE_GEOFENCE' as const,
+              message: 'Real GPS lock required. Live coordinates could not be verified.',
+              reason: `GPS lock required within ${activeGeofence.maxAllowedRadiusMeters}m perimeter.`,
+            };
+          })();
 
-    if (!verification.allowed) {
       setRejectionModalState({
         isOpen: true,
         result: verification,
@@ -213,10 +225,15 @@ export const SupervisorDashboard: React.FC = () => {
       });
       setFeedback({
         type: 'warning',
-        text: `Punch Failed: You are Outside Hospital Boundary (${verification.distanceMeters.toFixed(1)}m away)`,
+        text: `Punch Failed: You are Outside Hospital Boundary (${verification.distanceMeters < 900000 ? verification.distanceMeters.toFixed(1) + 'm away' : 'Real GPS signal required'})`,
       });
       return;
     }
+
+    const verification: GeofenceVerificationResult = verifyHospitalGeofence(
+      punchLocationResult.userCoords.lat,
+      punchLocationResult.userCoords.lng
+    );
 
     const next = setSupervisorDutyPunch(
       effectiveSupervisorId,
@@ -1599,9 +1616,10 @@ export const SupervisorDashboard: React.FC = () => {
         onClose={() => setRejectionModalState((prev) => ({ ...prev, isOpen: false }))}
         onLocationCorrected={() => {
           setRejectionModalState((prev) => ({ ...prev, isOpen: false }));
+          const activeLimit = getStoredGeofenceConfig().maxAllowedRadiusMeters;
           setFeedback({
             type: 'success',
-            text: 'Location verified within 100m boundary. You may now punch duty.',
+            text: `Location verified within ${activeLimit}m boundary. You may now punch duty.`,
           });
         }}
       />

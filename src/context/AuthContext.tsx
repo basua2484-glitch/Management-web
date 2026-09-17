@@ -4,6 +4,7 @@ import { getStoredUsers, getStoredCurrentUser, saveStoredCurrentUser } from '../
 import { handleLogin as authServiceLogin, handleLogout as authServiceLogout } from '../services/auth';
 import { auth } from '../firebase';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
+import { getApiEndpoint } from '../services/apiConfig';
 
 interface AuthContextType {
   user: AppUser | null;
@@ -384,7 +385,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // 3. Clear serverless session
       try {
-        fetch('/api/logout', { method: 'POST' }).catch(() => {});
+        fetch(getApiEndpoint('/api/logout'), { method: 'POST' }).catch(() => {});
       } catch {}
 
       // 4. Immediately clear React AuthContext state

@@ -569,3 +569,25 @@ export function toDutyAllocation(record: AttendanceRecord, supervisorId?: string
   };
 }
 
+export interface WardZoneGeofence {
+  id: string;
+  name: string;
+  radiusMeters: number;
+  customLat?: number;
+  customLng?: number;
+  enabled: boolean;
+  description?: string;
+}
+
+export interface GeofenceConfig {
+  hospitalName: string;
+  hospitalLat: number;
+  hospitalLng: number;
+  maxAllowedRadiusMeters: number;
+  requireHighAccuracyGps: boolean;
+  gpsTimeoutSeconds: number;
+  zones: WardZoneGeofence[];
+  updatedAt?: string;
+  updatedBy?: string;
+}
+

@@ -198,7 +198,7 @@ function attendanceApiPlugin(): Plugin {
 
         // GET /api/get_staff_summary/<staff_id>
         if (req.url?.startsWith('/api/get_staff_summary') && (req.method === 'GET' || req.method === 'POST')) {
-          const urlObj = new URL(req.url, 'http://localhost:3000');
+          const urlObj = new URL(req.url || '/', 'http://api.local');
           const pathSegments = urlObj.pathname.split('/').filter(Boolean);
           const staffId = pathSegments[2] || '1';
 

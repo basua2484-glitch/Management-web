@@ -50,9 +50,15 @@ import {
   HOSPITAL_LNG,
   verifyHospitalGeofence,
   requestLocationOnPunch,
+  getStoredGeofenceConfig,
   GPS_OFF_ALERT_MESSAGE,
   type GeofenceVerificationResult,
 } from '../utils/geofence';
+import {
+  recordLivePunchInToDb,
+  recordLivePunchOutToDb,
+  fetchLiveGeofenceSettings,
+} from '../services/firestoreService';
 
 export const StaffDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -102,8 +108,9 @@ export const StaffDashboard: React.FC = () => {
     }
   }, [authUser]);
 
-  // Refresh records and allocations on custom events
+  // Refresh records and allocations on custom events and fetch live geofence
   useEffect(() => {
+    fetchLiveGeofenceSettings();
     const handleStorageUpdate = () => {
       setRecords(getStoredAttendance());
       setDutyAllocations(getStoredDutyAllocations());
@@ -236,7 +243,7 @@ export const StaffDashboard: React.FC = () => {
     let punchLocationResult;
     try {
       // Explicitly triggers navigator.geolocation only upon click with 5-second timeout
-      punchLocationResult = await requestLocationOnPunch('IN');
+      punchLocationResult = await requestLocationOnPunch('IN', staffDashboard?.currentDepartment);
     } catch (err: any) {
       console.warn('GPS location request on punch in error:', err);
     } finally {
@@ -257,14 +264,29 @@ export const StaffDashboard: React.FC = () => {
       return;
     }
 
-    // Hospital GPS Geofence Security Boundary Verification (100.0m limit)
-    const activeGeofence: GeofenceVerificationResult = punchLocationResult
-      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
-      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+    const currentGeofenceConfig = getStoredGeofenceConfig();
 
-    setGeofenceResult(activeGeofence);
+    if (!punchLocationResult || !punchLocationResult.isGps || !punchLocationResult.allowed) {
+      const activeGeofence: GeofenceVerificationResult = punchLocationResult
+        ? verifyHospitalGeofence(
+            punchLocationResult.userCoords.lat,
+            punchLocationResult.userCoords.lng,
+            staffDashboard?.currentDepartment,
+            currentGeofenceConfig
+          )
+        : {
+            allowed: false,
+            distanceMeters: 999999,
+            maxAllowedRadius: currentGeofenceConfig.maxAllowedRadiusMeters,
+            maxRadiusMeters: currentGeofenceConfig.maxAllowedRadiusMeters,
+            hospitalCoords: { lat: currentGeofenceConfig.hospitalLat, lng: currentGeofenceConfig.hospitalLng },
+            userCoords: { lat: 0, lng: 0 },
+            status: 'OUTSIDE_GEOFENCE' as const,
+            message: 'Real GPS lock required. Live coordinates could not be verified.',
+            reason: `GPS lock required within ${currentGeofenceConfig.maxAllowedRadiusMeters}m perimeter.`,
+          };
 
-    if (activeGeofence && !activeGeofence.allowed) {
+      setGeofenceResult(activeGeofence);
       setRejectionModalState({
         isOpen: true,
         result: activeGeofence,
@@ -272,10 +294,19 @@ export const StaffDashboard: React.FC = () => {
       });
       setFeedback({
         type: 'error',
-        text: 'Punch Failed: You are Outside Hospital Boundary',
+        text: `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters < 900000 ? activeGeofence.distanceMeters.toFixed(1) + 'm away' : 'GPS lock required'})`,
       });
       return;
     }
+
+    const activeGeofence: GeofenceVerificationResult = verifyHospitalGeofence(
+      punchLocationResult.userCoords.lat,
+      punchLocationResult.userCoords.lng,
+      staffDashboard?.currentDepartment,
+      currentGeofenceConfig
+    );
+
+    setGeofenceResult(activeGeofence);
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -359,6 +390,10 @@ export const StaffDashboard: React.FC = () => {
 
     saveStoredAttendance(nextRecords);
     setRecords(nextRecords);
+    const recToSync = nextRecords[existingIndex >= 0 ? existingIndex : 0];
+    if (recToSync) {
+      recordLivePunchInToDb(recToSync);
+    }
     window.dispatchEvent(new CustomEvent('attendance-updated'));
 
     setFeedback({
@@ -373,7 +408,7 @@ export const StaffDashboard: React.FC = () => {
     let punchLocationResult;
     try {
       // Explicitly triggers navigator.geolocation only upon click with 5-second timeout
-      punchLocationResult = await requestLocationOnPunch('OUT');
+      punchLocationResult = await requestLocationOnPunch('OUT', staffDashboard?.currentDepartment);
     } catch (err: any) {
       console.warn('GPS location request on punch out error:', err);
     } finally {
@@ -394,14 +429,29 @@ export const StaffDashboard: React.FC = () => {
       return;
     }
 
-    // Hospital GPS Geofence Security Boundary Verification (100.0m limit)
-    const activeGeofence: GeofenceVerificationResult = punchLocationResult
-      ? verifyHospitalGeofence(punchLocationResult.userCoords.lat, punchLocationResult.userCoords.lng)
-      : geofenceResult || verifyHospitalGeofence(HOSPITAL_LAT, HOSPITAL_LNG);
+    const currentGeofenceConfig = getStoredGeofenceConfig();
 
-    setGeofenceResult(activeGeofence);
+    if (!punchLocationResult || !punchLocationResult.isGps || !punchLocationResult.allowed) {
+      const activeGeofence: GeofenceVerificationResult = punchLocationResult
+        ? verifyHospitalGeofence(
+            punchLocationResult.userCoords.lat,
+            punchLocationResult.userCoords.lng,
+            staffDashboard?.currentDepartment,
+            currentGeofenceConfig
+          )
+        : {
+            allowed: false,
+            distanceMeters: 999999,
+            maxAllowedRadius: currentGeofenceConfig.maxAllowedRadiusMeters,
+            maxRadiusMeters: currentGeofenceConfig.maxAllowedRadiusMeters,
+            hospitalCoords: { lat: currentGeofenceConfig.hospitalLat, lng: currentGeofenceConfig.hospitalLng },
+            userCoords: { lat: 0, lng: 0 },
+            status: 'OUTSIDE_GEOFENCE' as const,
+            message: 'Real GPS lock required. Live coordinates could not be verified.',
+            reason: `GPS lock required within ${currentGeofenceConfig.maxAllowedRadiusMeters}m perimeter.`,
+          };
 
-    if (activeGeofence && !activeGeofence.allowed) {
+      setGeofenceResult(activeGeofence);
       setRejectionModalState({
         isOpen: true,
         result: activeGeofence,
@@ -409,10 +459,19 @@ export const StaffDashboard: React.FC = () => {
       });
       setFeedback({
         type: 'error',
-        text: 'Punch Failed: You are Outside Hospital Boundary',
+        text: `Punch Failed: You are Outside Hospital Boundary (${activeGeofence.distanceMeters < 900000 ? activeGeofence.distanceMeters.toFixed(1) + 'm away' : 'GPS lock required'})`,
       });
       return;
     }
+
+    const activeGeofence: GeofenceVerificationResult = verifyHospitalGeofence(
+      punchLocationResult.userCoords.lat,
+      punchLocationResult.userCoords.lng,
+      staffDashboard?.currentDepartment,
+      currentGeofenceConfig
+    );
+
+    setGeofenceResult(activeGeofence);
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -465,6 +524,7 @@ export const StaffDashboard: React.FC = () => {
 
     saveStoredAttendance(nextRecords);
     setRecords(nextRecords);
+    recordLivePunchOutToDb(updated);
     window.dispatchEvent(new CustomEvent('attendance-updated'));
 
     setFeedback({
@@ -582,7 +642,7 @@ export const StaffDashboard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Staff Switcher for Admin/Supervisor Testing */}
+            {/* Staff Profile Switcher for Authorized Admin/Supervisor */}
             {canSwitchStaff && (
               <div className="flex items-center gap-1.5 bg-blue-900/60 border border-blue-700/60 rounded-lg px-2.5 py-1 text-xs">
                 <User className="h-3.5 w-3.5 text-blue-300" />

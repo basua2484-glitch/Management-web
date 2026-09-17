@@ -1,15 +1,110 @@
 /**
- * Hospital GPS Geofencing Utility
+ * Hospital GPS Geofencing Security Utility - Production Real-Time Engine
  * 
- * Center Point: Mumbai Hospital (19.0760° N, 72.8777° E)
+ * Center Point: ApexCare Hospital Mumbai (Lat: 19.0760° N, Lng: 72.8777° E)
  * Allowed Boundary Radius: 100.0 Meters
- * Formula: Haversine distance algorithm on Earth Sphere (R = 6,371,000 meters)
+ * Formula: Haversine great-circle distance algorithm on Earth Sphere (R = 6,371,000 meters)
+ * Enforcement: Strictly locked to live browser coordinates against actual hospital parameters.
  */
 
-export const HOSPITAL_LAT = 19.0760; // Example: Mumbai Hospital Latitude
-export const HOSPITAL_LNG = 72.8777; // Example: Mumbai Hospital Longitude
-export const MAX_ALLOWED_RADIUS_METERS = 100.0; // 100 Meters Boundary
-export const HOSPITAL_NAME = 'ApexCare Hospital (Mumbai)';
+import type { GeofenceConfig, WardZoneGeofence } from '../types';
+
+export const DEFAULT_HOSPITAL_LAT = 19.0760; // Production Hospital Latitude
+export const DEFAULT_HOSPITAL_LNG = 72.8777; // Production Hospital Longitude
+export const DEFAULT_MAX_ALLOWED_RADIUS_METERS = 100.0; // Strict 100 Meters Boundary
+export const DEFAULT_HOSPITAL_NAME = 'ApexCare Hospital (Mumbai)';
+
+export const DEFAULT_WARD_ZONES: WardZoneGeofence[] = [
+  {
+    id: 'zone-icu',
+    name: 'ICU & Operation Theatres',
+    radiusMeters: 50,
+    enabled: true,
+    description: 'High-security sterile critical care zone (Tight 50m perimeter)',
+  },
+  {
+    id: 'zone-emergency',
+    name: 'Emergency & Trauma Center',
+    radiusMeters: 60,
+    enabled: true,
+    description: 'Rapid ambulance entry and triage bays (60m perimeter)',
+  },
+  {
+    id: 'zone-general-wards',
+    name: 'General Inpatient Wards (1st - 5th Floor)',
+    radiusMeters: 100,
+    enabled: true,
+    description: 'Standard inpatient housekeeping coverage (100m perimeter)',
+  },
+  {
+    id: 'zone-opd',
+    name: 'OPD & Diagnostic Center',
+    radiusMeters: 120,
+    enabled: true,
+    description: 'Outpatient consultation & pathology wing (120m perimeter)',
+  },
+  {
+    id: 'zone-admin',
+    name: 'Administrative & Services Block',
+    radiusMeters: 150,
+    enabled: true,
+    description: 'Administrative offices, cafeteria & central store (150m perimeter)',
+  },
+];
+
+export const DEFAULT_GEOFENCE_CONFIG: GeofenceConfig = {
+  hospitalName: DEFAULT_HOSPITAL_NAME,
+  hospitalLat: DEFAULT_HOSPITAL_LAT,
+  hospitalLng: DEFAULT_HOSPITAL_LNG,
+  maxAllowedRadiusMeters: DEFAULT_MAX_ALLOWED_RADIUS_METERS,
+  requireHighAccuracyGps: true,
+  gpsTimeoutSeconds: 5,
+  zones: DEFAULT_WARD_ZONES,
+  updatedAt: new Date().toISOString(),
+  updatedBy: 'System Default',
+};
+
+// Backward-compatible static constants referencing defaults
+export const HOSPITAL_LAT = DEFAULT_HOSPITAL_LAT;
+export const HOSPITAL_LNG = DEFAULT_HOSPITAL_LNG;
+export const MAX_ALLOWED_RADIUS_METERS = DEFAULT_MAX_ALLOWED_RADIUS_METERS;
+export const HOSPITAL_NAME = DEFAULT_HOSPITAL_NAME;
+
+/**
+ * Synchronous getter for current active Geofence Configuration
+ */
+export function getStoredGeofenceConfig(): GeofenceConfig {
+  if (typeof window === 'undefined') return DEFAULT_GEOFENCE_CONFIG;
+  try {
+    const raw = localStorage.getItem('apexcare_geofence_config');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.hospitalLat === 'number' && typeof parsed.hospitalLng === 'number') {
+        return {
+          ...DEFAULT_GEOFENCE_CONFIG,
+          ...parsed,
+          zones: Array.isArray(parsed.zones) && parsed.zones.length > 0 ? parsed.zones : DEFAULT_WARD_ZONES,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading stored geofence config:', err);
+  }
+  return DEFAULT_GEOFENCE_CONFIG;
+}
+
+/**
+ * Synchronous saver for Geofence Configuration with notification event
+ */
+export function saveStoredGeofenceConfig(config: GeofenceConfig): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem('apexcare_geofence_config', JSON.stringify(config));
+    window.dispatchEvent(new CustomEvent('geofence-config-updated', { detail: config }));
+  } catch (err) {
+    console.warn('Error saving stored geofence config:', err);
+  }
+}
 
 /**
  * Calculate great-circle distance between two points in meters using Haversine formula
@@ -37,24 +132,16 @@ export function calculateDistanceMeters(
 }
 
 /**
- * Verify user coordinate against hospital geofence
- * Returns [boolean, number] matching:
- * def verify_hospital_geofence(user_lat, user_lng):
- *     distance = calculate_distance_meters(HOSPITAL_LAT, HOSPITAL_LNG, user_lat, user_lng)
- *     if distance <= MAX_ALLOWED_RADIUS_METERS:
- *         return True, round(distance, 2)
- *     return False, round(distance, 2)
+ * Verify user coordinate against dynamic hospital geofence
+ * Returns [boolean, number] tuple
  */
 export function verifyHospitalGeofenceTuple(
   userLat: number,
-  userLng: number
+  userLng: number,
+  wardOrDept?: string
 ): [boolean, number] {
-  const distance = calculateDistanceMeters(HOSPITAL_LAT, HOSPITAL_LNG, userLat, userLng);
-  const roundedDistance = Math.round(distance * 100) / 100;
-  if (roundedDistance <= MAX_ALLOWED_RADIUS_METERS) {
-    return [true, roundedDistance];
-  }
-  return [false, roundedDistance];
+  const result = verifyHospitalGeofence(userLat, userLng, wardOrDept);
+  return [result.allowed, result.distanceMeters];
 }
 
 export interface GeofenceVerificationResult {
@@ -67,25 +154,65 @@ export interface GeofenceVerificationResult {
   message: string;
   maxRadiusMeters?: number;
   reason?: string;
+  matchedZoneName?: string;
 }
 
+/**
+ * Dynamically verify coordinate against Admin-configured hospital center and radius tolerances
+ */
 export function verifyHospitalGeofence(
   userLat: number,
-  userLng: number
+  userLng: number,
+  wardOrDept?: string,
+  configOverride?: GeofenceConfig
 ): GeofenceVerificationResult {
-  const [allowed, distanceMeters] = verifyHospitalGeofenceTuple(userLat, userLng);
+  const config = configOverride || getStoredGeofenceConfig();
+
+  let activeRadius = Number(config.maxAllowedRadiusMeters) || DEFAULT_MAX_ALLOWED_RADIUS_METERS;
+  let centerLat = Number(config.hospitalLat) || DEFAULT_HOSPITAL_LAT;
+  let centerLng = Number(config.hospitalLng) || DEFAULT_HOSPITAL_LNG;
+  let matchedZone: WardZoneGeofence | undefined;
+
+  // Custom boundary radius per specific Ward / Zone if configured & matched
+  if (wardOrDept && Array.isArray(config.zones) && config.zones.length > 0) {
+    const cleanQuery = wardOrDept.trim().toLowerCase();
+    matchedZone = config.zones.find(
+      (z) =>
+        z.enabled &&
+        (z.name.toLowerCase().includes(cleanQuery) ||
+          cleanQuery.includes(z.name.toLowerCase()) ||
+          z.id.toLowerCase() === cleanQuery)
+    );
+    if (matchedZone) {
+      activeRadius = matchedZone.radiusMeters;
+      if (typeof matchedZone.customLat === 'number' && typeof matchedZone.customLng === 'number') {
+        centerLat = matchedZone.customLat;
+        centerLng = matchedZone.customLng;
+      }
+    }
+  }
+
+  const distance = calculateDistanceMeters(centerLat, centerLng, userLat, userLng);
+  const roundedDistance = Math.round(distance * 100) / 100;
+  const allowed = roundedDistance <= activeRadius;
+
+  const zonePrefix = matchedZone ? `[Zone: ${matchedZone.name}] ` : '';
+
   return {
     allowed,
-    distanceMeters,
-    maxAllowedRadius: MAX_ALLOWED_RADIUS_METERS,
-    maxRadiusMeters: MAX_ALLOWED_RADIUS_METERS,
-    hospitalCoords: { lat: HOSPITAL_LAT, lng: HOSPITAL_LNG },
+    distanceMeters: roundedDistance,
+    maxAllowedRadius: activeRadius,
+    maxRadiusMeters: activeRadius,
+    hospitalCoords: { lat: centerLat, lng: centerLng },
     userCoords: { lat: userLat, lng: userLng },
     status: allowed ? 'INSIDE_GEOFENCE' : 'OUTSIDE_GEOFENCE',
+    matchedZoneName: matchedZone?.name,
     message: allowed
-      ? `Within perimeter: ${distanceMeters.toFixed(1)}m from hospital center (Max ${MAX_ALLOWED_RADIUS_METERS}m).`
-      : `Geofence violation: You are ${distanceMeters.toFixed(1)}m away from hospital center (Max allowed: ${MAX_ALLOWED_RADIUS_METERS}m).`,
-    reason: allowed ? 'Within 100m geofence perimeter' : 'Outside 100m geofence perimeter',
+      ? `${zonePrefix}Within perimeter: ${roundedDistance.toFixed(1)}m from center (Allowed max ${activeRadius}m).`
+      : `${zonePrefix}Geofence violation: You are ${roundedDistance.toFixed(1)}m away from center (Allowed max ${activeRadius}m).`,
+    reason: allowed
+      ? `${zonePrefix}Within ${activeRadius}m perimeter`
+      : `${zonePrefix}Outside ${activeRadius}m perimeter (${roundedDistance.toFixed(1)}m away)`,
   };
 }
 
@@ -124,18 +251,15 @@ export class GpsHardwareError extends Error {
 }
 
 /**
- * Real device Geolocation capture promise
- * 1. Set a 5-second timeout on navigator.geolocation.getCurrentPosition
- * 2. Catch PositionError.POSITION_UNAVAILABLE and PositionError.TIMEOUT errors
- * 3. If device GPS is turned OFF, reject with clear alert:
- *    "Please turn ON your phone's GPS / Location toggle from settings to complete Punch In."
+ * Real device Geolocation capture promise with strict 5-second timeout
+ * Catch PositionError.POSITION_UNAVAILABLE and PositionError.TIMEOUT errors
  */
 export function getDeviceCoordinates(timeoutMs = 5000): Promise<{ latitude: number; longitude: number; accuracy: number }> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || !navigator || !navigator.geolocation) {
       reject(
         new GpsHardwareError(
-          'Geolocation is not supported by your browser or environment.',
+          'Geolocation is not supported by your browser.',
           0,
           'UNSUPPORTED',
           false
@@ -144,7 +268,6 @@ export function getDeviceCoordinates(timeoutMs = 5000): Promise<{ latitude: numb
       return;
     }
 
-    // 1. Set a 5-second timeout on navigator.geolocation.getCurrentPosition
     navigator.geolocation.getCurrentPosition(
       (position) => {
         resolve({
@@ -153,44 +276,11 @@ export function getDeviceCoordinates(timeoutMs = 5000): Promise<{ latitude: numb
           accuracy: position.coords.accuracy,
         });
       },
-      (error: GeolocationPositionError) => {
-        // 2. Catch PositionError.POSITION_UNAVAILABLE and PositionError.TIMEOUT errors
-        const isPositionUnavailable =
-          error.code === error.POSITION_UNAVAILABLE ||
-          error.code === PositionErrorCodes.POSITION_UNAVAILABLE ||
-          error.code === (window as any).PositionError?.POSITION_UNAVAILABLE ||
-          error.code === 2;
-
-        const isTimeout =
-          error.code === error.TIMEOUT ||
-          error.code === PositionErrorCodes.TIMEOUT ||
-          error.code === (window as any).PositionError?.TIMEOUT ||
-          error.code === 3;
-
-        const isPermissionDenied =
-          error.code === error.PERMISSION_DENIED ||
-          error.code === PositionErrorCodes.PERMISSION_DENIED ||
-          error.code === (window as any).PositionError?.PERMISSION_DENIED ||
-          error.code === 1;
-
-        // 3. If device GPS is turned OFF, immediately surface clear alert:
-        // "Please turn ON your phone's GPS / Location toggle from settings to complete Punch In."
-        if (isPositionUnavailable || isTimeout) {
+      (error) => {
+        if (error.code === PositionErrorCodes.PERMISSION_DENIED) {
           reject(
             new GpsHardwareError(
-              GPS_OFF_ALERT_MESSAGE,
-              error.code,
-              isPositionUnavailable ? 'POSITION_UNAVAILABLE' : 'TIMEOUT',
-              true // isGpsOff = true
-            )
-          );
-          return;
-        }
-
-        if (isPermissionDenied) {
-          reject(
-            new GpsHardwareError(
-              'Location access denied. Please grant location permissions in your browser or phone settings.',
+              'Location permission was denied. Please allow location access in your browser settings to verify hospital attendance.',
               error.code,
               'PERMISSION_DENIED',
               false
@@ -199,9 +289,33 @@ export function getDeviceCoordinates(timeoutMs = 5000): Promise<{ latitude: numb
           return;
         }
 
+        if (error.code === PositionErrorCodes.POSITION_UNAVAILABLE) {
+          reject(
+            new GpsHardwareError(
+              GPS_OFF_ALERT_MESSAGE,
+              error.code,
+              'POSITION_UNAVAILABLE',
+              true
+            )
+          );
+          return;
+        }
+
+        if (error.code === PositionErrorCodes.TIMEOUT) {
+          reject(
+            new GpsHardwareError(
+              GPS_OFF_ALERT_MESSAGE,
+              error.code,
+              'TIMEOUT',
+              true
+            )
+          );
+          return;
+        }
+
         reject(
           new GpsHardwareError(
-            error.message || 'Unable to retrieve location.',
+            error.message || 'Unable to retrieve real GPS location.',
             error.code || 0,
             'UNKNOWN',
             false
@@ -210,123 +324,11 @@ export function getDeviceCoordinates(timeoutMs = 5000): Promise<{ latitude: numb
       },
       {
         enableHighAccuracy: true,
-        timeout: timeoutMs, // Strictly 5000ms timeout
+        timeout: timeoutMs,
         maximumAge: 0,
       }
     );
   });
-}
-
-/**
- * Coordinate Presets for simulation/testing in browser & preview containers
- */
-export interface LocationPreset {
-  id: string;
-  name: string;
-  description: string;
-  lat: number;
-  lng: number;
-  expectedInside: boolean;
-}
-
-export const GEOFENCE_PRESETS: LocationPreset[] = [
-  {
-    id: 'hospital_center',
-    name: 'Hospital Center Point (Direct)',
-    description: 'Exact center of Mumbai hospital campus',
-    lat: 19.0760,
-    lng: 72.8777,
-    expectedInside: true,
-  },
-  {
-    id: 'main_entrance',
-    name: 'Main Hospital Entrance Gate (~18m)',
-    description: 'Front lobby & emergency drop-off',
-    lat: 19.07612,
-    lng: 72.87778,
-    expectedInside: true,
-  },
-  {
-    id: 'housekeeping_hub',
-    name: 'Housekeeping Base Hub (~45m)',
-    description: 'Ground floor linen store & locker area',
-    lat: 19.07632,
-    lng: 72.87795,
-    expectedInside: true,
-  },
-  {
-    id: 'perimeter_gate',
-    name: 'Perimeter Boundary Gate (~88m)',
-    description: 'Near the outer 100m security fence',
-    lat: 19.07662,
-    lng: 72.87815,
-    expectedInside: true,
-  },
-  {
-    id: 'outside_street',
-    name: 'Outside Street / Bus Stop (~220m)',
-    description: 'Outside 100m zone (Should BLOCK punch-in)',
-    lat: 19.07780,
-    lng: 72.87850,
-    expectedInside: false,
-  },
-  {
-    id: 'remote_residence',
-    name: 'Remote Off-Site Residence (~1.8km)',
-    description: 'Staff home / remote area (Should BLOCK punch-in)',
-    lat: 19.09000,
-    lng: 72.88500,
-    expectedInside: false,
-  },
-  {
-    id: 'gps_turned_off',
-    name: 'Hardware Check: Device GPS OFF',
-    description: 'Simulates PositionError.POSITION_UNAVAILABLE or TIMEOUT',
-    lat: 0,
-    lng: 0,
-    expectedInside: false,
-  },
-];
-
-const GEOFENCE_STORAGE_KEY = 'apexcare_geofence_mode';
-
-export interface StoredGeofenceConfig {
-  mode: 'DEVICE_GPS' | 'SIMULATED';
-  simulatedPresetId: string;
-  customLat?: number;
-  customLng?: number;
-}
-
-export function getStoredGeofenceConfig(): StoredGeofenceConfig {
-  try {
-    const raw = localStorage.getItem(GEOFENCE_STORAGE_KEY);
-    if (raw) {
-      return JSON.parse(raw);
-    }
-  } catch {}
-  return {
-    mode: 'SIMULATED',
-    simulatedPresetId: 'main_entrance', // Default inside hospital for smooth demo
-  };
-}
-
-export function saveStoredGeofenceConfig(cfg: StoredGeofenceConfig): void {
-  try {
-    localStorage.setItem(GEOFENCE_STORAGE_KEY, JSON.stringify(cfg));
-    window.dispatchEvent(new CustomEvent('geofence-config-updated', { detail: cfg }));
-  } catch {}
-}
-
-/**
- * Returns currently active coordinates from stored preset or custom coordinates
- */
-export function getCurrentGeofenceCoords(): { lat: number; lng: number } {
-  const cfg = getStoredGeofenceConfig();
-  if (cfg.customLat !== undefined && cfg.customLng !== undefined) {
-    return { lat: cfg.customLat, lng: cfg.customLng };
-  }
-  const preset = GEOFENCE_PRESETS.find((p) => p.id === cfg.simulatedPresetId) || GEOFENCE_PRESETS[1];
-  return { lat: preset.lat, lng: preset.lng };
 }
 
 export interface PunchLocationResult {
@@ -337,51 +339,32 @@ export interface PunchLocationResult {
   accuracy?: number;
   isGps: boolean;
   reason?: string;
-  source: 'DEVICE_GPS' | 'SIMULATED_PRESET' | 'FALLBACK';
+  source: 'DEVICE_GPS' | 'FALLBACK';
   isGpsOff?: boolean;
   gpsErrorCode?: number;
   gpsErrorMessage?: string;
+  matchedZoneName?: string;
 }
 
 /**
- * Explicit GPS location acquisition triggered strictly when the user clicks 'Punch In' or 'Punch Out'.
+ * Strict GPS location acquisition triggered ONLY when the user clicks 'Punch In' or 'Punch Out'.
  * Sets a 5-second timeout on navigator.geolocation.getCurrentPosition.
- * Catches PositionError.POSITION_UNAVAILABLE and PositionError.TIMEOUT errors.
- * If device GPS is turned OFF, surfaces alert: "Please turn ON your phone's GPS / Location toggle from settings to complete Punch In."
+ * Never falls back to mock coordinates or hospital center.
  */
-export async function requestLocationOnPunch(punchType: 'IN' | 'OUT' = 'IN'): Promise<PunchLocationResult> {
-  const cfg = getStoredGeofenceConfig();
+export async function requestLocationOnPunch(
+  punchType: 'IN' | 'OUT' = 'IN',
+  wardOrDept?: string
+): Promise<PunchLocationResult> {
+  const config = getStoredGeofenceConfig();
+  const alertMsg =
+    punchType === 'OUT'
+      ? "Please turn ON your phone's GPS / Location toggle from settings to complete Punch Out."
+      : "Please turn ON your phone's GPS / Location toggle from settings to complete Punch In.";
 
-  // Test simulation for hardware check
-  if (cfg.mode === 'SIMULATED' && cfg.simulatedPresetId === 'gps_turned_off') {
-    return {
-      allowed: false,
-      userCoords: { lat: 0, lng: 0 },
-      distanceMeters: 999999,
-      maxRadiusMeters: MAX_ALLOWED_RADIUS_METERS,
-      isGps: false,
-      isGpsOff: true,
-      gpsErrorCode: PositionErrorCodes.POSITION_UNAVAILABLE,
-      gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
-      reason: GPS_OFF_ALERT_MESSAGE,
-      source: 'DEVICE_GPS',
-    };
-  }
-
-  // If running in browser and geolocation is supported, request live coordinates on the button click
   if (typeof window !== 'undefined' && navigator && navigator.geolocation) {
     try {
-      // 1. 5-second timeout on navigator.geolocation.getCurrentPosition
-      const pos = await getDeviceCoordinates(5000);
-      const verification = verifyHospitalGeofence(pos.latitude, pos.longitude);
-
-      // Save verified coords so status cards and logs reflect real device position
-      saveStoredGeofenceConfig({
-        ...cfg,
-        mode: 'DEVICE_GPS',
-        customLat: pos.latitude,
-        customLng: pos.longitude,
-      });
+      const pos = await getDeviceCoordinates(config.gpsTimeoutSeconds * 1000 || 5000);
+      const verification = verifyHospitalGeofence(pos.latitude, pos.longitude, wardOrDept, config);
 
       // Notify any mounted Geofence cards about real coordinates
       window.dispatchEvent(
@@ -391,6 +374,7 @@ export async function requestLocationOnPunch(punchType: 'IN' | 'OUT' = 'IN'): Pr
             lng: pos.longitude,
             accuracy: pos.accuracy,
             source: 'DEVICE_GPS',
+            matchedZoneName: verification.matchedZoneName,
           },
         })
       );
@@ -399,63 +383,47 @@ export async function requestLocationOnPunch(punchType: 'IN' | 'OUT' = 'IN'): Pr
         allowed: verification.allowed,
         userCoords: { lat: pos.latitude, lng: pos.longitude },
         distanceMeters: verification.distanceMeters,
-        maxRadiusMeters: verification.maxRadiusMeters,
+        maxRadiusMeters: verification.maxRadiusMeters || config.maxAllowedRadiusMeters,
         accuracy: pos.accuracy,
         isGps: true,
         isGpsOff: false,
         reason: verification.reason,
+        matchedZoneName: verification.matchedZoneName,
         source: 'DEVICE_GPS',
       };
     } catch (err: any) {
-      console.warn('GPS location request on punch error / hardware check:', err);
+      console.warn('GPS location request on punch error:', err);
 
-      // 2. Catch PositionError.POSITION_UNAVAILABLE and PositionError.TIMEOUT
-      // 3. If device GPS is turned OFF, immediately flag isGpsOff and set the required alert
       const isUnavailableOrTimeout =
         err?.isGpsOff ||
         err?.code === PositionErrorCodes.POSITION_UNAVAILABLE ||
         err?.code === PositionErrorCodes.TIMEOUT ||
         err?.code === 2 ||
         err?.code === 3 ||
-        err?.message === GPS_OFF_ALERT_MESSAGE;
+        err?.message === GPS_OFF_ALERT_MESSAGE ||
+        err?.message?.includes('GPS / Location toggle');
 
       if (isUnavailableOrTimeout) {
         return {
           allowed: false,
           userCoords: { lat: 0, lng: 0 },
           distanceMeters: 999999,
-          maxRadiusMeters: MAX_ALLOWED_RADIUS_METERS,
+          maxRadiusMeters: config.maxAllowedRadiusMeters,
           isGps: false,
           isGpsOff: true,
           gpsErrorCode: err?.code || PositionErrorCodes.POSITION_UNAVAILABLE,
-          gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
-          reason: GPS_OFF_ALERT_MESSAGE,
+          gpsErrorMessage: alertMsg,
+          reason: alertMsg,
           source: 'DEVICE_GPS',
         };
       }
 
-      // If user specifically has an active simulated preset in demo controls (e.g. main entrance)
-      if (cfg.mode === 'SIMULATED') {
-        const current = getCurrentGeofenceCoords();
-        const verification = verifyHospitalGeofence(current.lat, current.lng);
-        return {
-          allowed: verification.allowed,
-          userCoords: current,
-          distanceMeters: verification.distanceMeters,
-          maxRadiusMeters: verification.maxRadiusMeters,
-          isGps: false,
-          isGpsOff: false,
-          reason: verification.reason,
-          source: 'SIMULATED_PRESET',
-        };
-      }
-
-      // Other errors (e.g. permission denied)
+      // Permission denied or other hardware failure
       return {
         allowed: false,
         userCoords: { lat: 0, lng: 0 },
         distanceMeters: 999999,
-        maxRadiusMeters: MAX_ALLOWED_RADIUS_METERS,
+        maxRadiusMeters: config.maxAllowedRadiusMeters,
         isGps: false,
         isGpsOff: false,
         gpsErrorCode: err?.code,
@@ -466,16 +434,16 @@ export async function requestLocationOnPunch(punchType: 'IN' | 'OUT' = 'IN'): Pr
     }
   }
 
-  // Fallback if browser does not support geolocation
+  // Geolocation not supported
   return {
     allowed: false,
     userCoords: { lat: 0, lng: 0 },
     distanceMeters: 999999,
-    maxRadiusMeters: MAX_ALLOWED_RADIUS_METERS,
+    maxRadiusMeters: config.maxAllowedRadiusMeters,
     isGps: false,
     isGpsOff: true,
-    gpsErrorMessage: GPS_OFF_ALERT_MESSAGE,
-    reason: GPS_OFF_ALERT_MESSAGE,
+    gpsErrorMessage: alertMsg,
+    reason: alertMsg,
     source: 'FALLBACK',
   };
 }
@@ -483,17 +451,19 @@ export async function requestLocationOnPunch(punchType: 'IN' | 'OUT' = 'IN'): Pr
 /**
  * Backward compatible alias for requestLocationOnPunch
  */
-export async function acquireAndVerifyPunchLocation(): Promise<GeofenceVerificationResult> {
-  const res = await requestLocationOnPunch();
+export async function acquireAndVerifyPunchLocation(wardOrDept?: string): Promise<GeofenceVerificationResult> {
+  const res = await requestLocationOnPunch('IN', wardOrDept);
+  const config = getStoredGeofenceConfig();
   return {
     allowed: res.allowed,
     distanceMeters: res.distanceMeters,
     maxAllowedRadius: res.maxRadiusMeters,
     maxRadiusMeters: res.maxRadiusMeters,
-    hospitalCoords: { lat: HOSPITAL_LAT, lng: HOSPITAL_LNG },
+    hospitalCoords: { lat: config.hospitalLat, lng: config.hospitalLng },
     userCoords: res.userCoords,
     status: res.allowed ? 'INSIDE_GEOFENCE' : 'OUTSIDE_GEOFENCE',
     message: res.reason || (res.allowed ? 'Within geofence' : 'Outside geofence'),
     reason: res.reason,
+    matchedZoneName: res.matchedZoneName,
   };
 }

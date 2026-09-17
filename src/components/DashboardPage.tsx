@@ -28,6 +28,7 @@ import {
   FileText,
   Hospital,
   Compass,
+  MapPin,
   History,
   KeyRound,
   Eye,
@@ -78,12 +79,13 @@ import { StaffRequestModal } from './StaffRequestModal';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { LeaveManagementView } from './LeaveManagementView';
 import { EmployeeProfileModal } from './EmployeeProfileModal';
+import { GeofenceSettingsPanel } from './GeofenceSettingsPanel';
 import { createPasswordHash } from '../services/vaultService';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export interface DashboardPageProps {
-  defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves';
+  defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence';
 }
 
 export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
@@ -145,8 +147,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     setFlashes((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'pending-approvals', 'leaves'
-  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves'>(() => {
+  // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'pending-approvals', 'leaves', 'geofence'
+  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence'>(() => {
     if (defaultTab) return defaultTab;
     const user = getStoredCurrentUser();
     if (user?.role === 'staff') return 'portal';
@@ -533,14 +535,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   // Role Access Control Decorator: @admin_required & @role_required
-  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves') => {
+  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence') => {
     if (!currentUser) {
       handleAppLogout();
       return;
     }
 
-    // Admin Dashboard / Staff Management / Approvals Queue protected by @admin_required
-    if (targetTab === 'live' || targetTab === 'admin-staff' || targetTab === 'pending-approvals') {
+    // Admin Dashboard / Staff Management / Approvals Queue / Geofence Settings protected by @admin_required
+    if (targetTab === 'live' || targetTab === 'admin-staff' || targetTab === 'pending-approvals' || targetTab === 'geofence') {
       const check = checkAdminRequired(currentUser);
       if (!check.authorized && !isAdminOrManager && !isSupervisor) {
         // Unauthorized attempt -> Redirect to login
@@ -549,7 +551,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         return;
       }
       if (typeof window !== 'undefined' && window.history) {
-        window.history.pushState({}, '', '/admin-dashboard');
+        window.history.pushState({}, '', targetTab === 'geofence' ? '/admin-geofence' : '/admin-dashboard');
       }
     } else if (targetTab === 'monthly') {
       if (!isAdminOrManager) {
@@ -1182,6 +1184,40 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               </div>
             )}
 
+            {/* Admin Dynamic Geofence Configuration & GPS Settings Panel */}
+            {isAdminOrManager ? (
+              <button
+                type="button"
+                id="link-geofence-settings"
+                onClick={() => {
+                  handleNavigateTab('geofence');
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
+                  activeTab === 'geofence' ? 'bg-white/15 border-l-2 border-amber-400 font-bold' : ''
+                }`}
+              >
+                <span className="d-flex align-items-center">
+                  <MapPin className="me-2 shrink-0 text-amber-400" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Geofence &amp; GPS</span>
+                </span>
+                <span className="badge bg-amber-500/20 text-amber-300 border border-amber-500/40" style={{ fontSize: '0.62rem' }}>
+                  PERIMETER
+                </span>
+              </button>
+            ) : (
+              <div
+                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
+                style={{ pointerEvents: 'none', opacity: 0.5 }}
+              >
+                <span className="d-flex align-items-center">
+                  <MapPin className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
+                  <span>Geofence &amp; GPS</span>
+                </span>
+                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
+              </div>
+            )}
+
             {/* Admin Password Vault Modal Button */}
             {isAdmin && (
               <button
@@ -1378,6 +1414,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   ? 'Pending Approvals Queue'
                   : activeTab === 'leaves'
                   ? 'Leave & Weekly Off Management'
+                  : activeTab === 'geofence'
+                  ? 'Hospital Geofence & GPS Configuration'
                   : 'Staff Punch Kiosk'}
               </h5>
               <small className="text-muted font-sans">
@@ -1391,6 +1429,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   ? `Review and authorize staff joining requests, overtime extensions, and new signups (${totalPendingCount} pending)`
                   : activeTab === 'leaves'
                   ? `Shift coverage roster, leave balances, authorizations & assigned off days (${selectedLiveDate})`
+                  : activeTab === 'geofence'
+                  ? 'Admin dynamic coordinates, Haversine perimeter radius tolerances, and ward boundaries'
                   : 'Self-service PIN or code punching station'}
               </small>
             </div>
@@ -1833,6 +1873,29 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               sites={HOSPITAL_SITES}
               onOpenDutyModal={() => handleOpenAssignModal()}
             />
+          ) : activeTab === 'geofence' ? (
+            /* Admin Dynamic Geofence Configuration & GPS Settings Panel */
+            isAdminOrManager ? (
+              <GeofenceSettingsPanel
+                currentUsername={currentUser?.name || currentUser?.username || 'Admin'}
+                onSavedNotification={(msg) => addFlash(msg, 'success')}
+              />
+            ) : (
+              <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
+                <ShieldAlert className="h-12 w-12 text-rose-500 mx-auto mb-3" />
+                <h3 className="text-base font-bold text-slate-800 mb-1">Access Restricted (@admin_required)</h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Admin or Manager authorization required to modify hospital geofence coordinates and boundary tolerances.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleAppLogout}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold"
+                >
+                  Return to Login
+                </button>
+              </div>
+            )
           ) : activeTab === 'live' ? (
             /* @app.route('/admin/dashboard') protected by @admin_required */
             (isAdminOrManager || isSupervisor) ? (

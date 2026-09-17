@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "users": {
+      "title": "users",
+      "description": "Hospital user accounts for Admin, Manager, Supervisor, Staff",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staff_id": { "type": "string" },
+        "username": { "type": "string" },
+        "full_name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "department": { "type": "string" },
+        "assigned_shift": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["staff_id", "role"]
+    },
+    "staff_roster": {
+      "title": "staff_roster",
+      "description": "Hospital staff directory and employee profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staffCode": { "type": "string" },
+        "name": { "type": "string" },
+        "department": { "type": "string" },
+        "designation": { "type": "string" },
+        "shift": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["staffCode", "name", "department"]
+    },
+    "duty_allocations": {
+      "title": "duty_allocations",
+      "description": "Daily duty and shift allocations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staff_id": { "type": "string" },
+        "staff_name": { "type": "string" },
+        "department": { "type": "string" },
+        "shift": { "type": "string" },
+        "date": { "type": "string" },
+        "room_number": { "type": "string" },
+        "supervisor_id": { "type": "string" },
+        "ot_status": { "type": "string" }
+      },
+      "required": ["staff_id", "date", "shift"]
+    },
+    "attendance_records": {
+      "title": "attendance_records",
+      "description": "Live Punch In / Punch Out audit logs with real GPS coordinates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "staff_id": { "type": "string" },
+        "staff_name": { "type": "string" },
+        "date": { "type": "string" },
+        "punch_in": { "type": "string" },
+        "punch_out": { "type": "string" },
+        "punch_in_lat": { "type": "number" },
+        "punch_in_lng": { "type": "number" },
+        "punch_in_distance": { "type": "number" },
+        "punch_out_lat": { "type": "number" },
+        "punch_out_lng": { "type": "number" },
+        "punch_out_distance": { "type": "number" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["staff_id", "date"]
+    },
+    "system_settings": {
+      "title": "system_settings",
+      "description": "Global hospital operations and security settings",
+      "type": "object",
+      "properties": {
+        "master_admin_registered": { "type": "boolean" },
+        "hospital_name": { "type": "string" },
+        "geofence_lat": { "type": "number" },
+        "geofence_lng": { "type": "number" },
+        "geofence_radius_meters": { "type": "number" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["master_admin_registered"]
+    }
+  }
+}
