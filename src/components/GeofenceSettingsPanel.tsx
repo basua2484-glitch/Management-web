@@ -688,16 +688,39 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
                 <Radio className="h-5 w-5 text-emerald-600" />
                 <h3 className="text-sm font-bold text-slate-900">Perimeter Verification Tester</h3>
               </div>
-              <span className="text-3xs font-bold px-2 py-0.5 bg-slate-100 text-slate-600 rounded">
-                Live Device Test
+              <span className="text-3xs font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded">
+                Dynamic Limit: {activeTesterRadius}m
               </span>
             </div>
 
             <p className="text-xs text-slate-600 mb-3 leading-relaxed">
-              Test your device's current GPS position right now against the configured hospital center
-              ({Number(config.hospitalLat).toFixed(4)}°, {Number(config.hospitalLng).toFixed(4)}°) and radius tolerance
-              ({config.maxAllowedRadiusMeters}m) without recording an attendance punch.
+              Test your device's current GPS position right now against the hospital center
+              ({Number(config.hospitalLat).toFixed(4)}°, {Number(config.hospitalLng).toFixed(4)}°) and active boundary tolerance
+              (<span className="font-bold text-slate-900">Allowed max {activeTesterRadius}m</span>) without recording an attendance punch.
             </p>
+
+            {/* Target Boundary Selector (Global Hospital Perimeter or Specific Ward) */}
+            <div className="mb-3 p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <label htmlFor="select-test-target-ward" className="text-3xs font-bold uppercase tracking-wider text-slate-500">
+                Evaluation Target:
+              </label>
+              <select
+                id="select-test-target-ward"
+                value={testTargetWard}
+                onChange={(e) => {
+                  setTestTargetWard(e.target.value);
+                  setTestResult(null);
+                }}
+                className="text-xs font-semibold px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                <option value="global">Hospital Global Boundary ({config.maxAllowedRadiusMeters}m)</option>
+                {config.zones.map((zone) => (
+                  <option key={zone.id} value={zone.id}>
+                    {zone.name} ({zone.radiusMeters}m{zone.customLat && zone.customLng ? ' - Custom coords' : ''})
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <button
               type="button"
@@ -707,7 +730,7 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
               className="w-full py-2.5 px-4 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50 shadow-sm"
             >
               <Crosshair className="h-4 w-4 text-amber-400" />
-              {isTestingGps ? 'Testing Live GPS (5s Timeout)...' : 'Test Current Device Location Against Geofence'}
+              {isTestingGps ? 'Testing Live GPS (5s Timeout)...' : `Test Location Against Allowed Max ${activeTesterRadius}m`}
             </button>
 
             {/* Test Result Display */}
@@ -742,8 +765,8 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
                     <span className="font-bold">{testResult.distanceMeters.toFixed(1)} meters</span>
                   </div>
                   <div>
-                    <span className="text-3xs block uppercase text-slate-500">Perimeter Limit</span>
-                    <span className="font-bold">{config.maxAllowedRadiusMeters} meters</span>
+                    <span className="text-3xs block uppercase text-slate-500">Allowed Max Radius</span>
+                    <span className="font-bold text-emerald-700">{testResult.allowedMaxRadius} meters</span>
                   </div>
                   <div>
                     <span className="text-3xs block uppercase text-slate-500">GPS Accuracy</span>
@@ -780,7 +803,7 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
             className="px-6 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all flex items-center gap-2 shadow-sm active:scale-95 disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
-            {isSaving ? 'Persisting to Firestore...' : 'Save Geofence Settings to Database'}
+            {isSaving ? 'Persisting to Firestore...' : isRecentlySaved ? 'Saved to Database ✓' : 'Save Geofence Settings to Database'}
           </button>
         </div>
       </div>

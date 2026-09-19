@@ -164,7 +164,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                     id="create-staff-username"
                     name="username"
                     required
-                    placeholder="e.g. HK-006"
+                    placeholder="e.g. HK-001"
                     value={username}
                     onChange={(e) => {
                       setUsername(e.target.value);
@@ -175,7 +175,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                   />
                 </div>
                 <p className="text-3xs text-white/40 mt-1">
-                  Unique staff_id in User model (e.g. HK-006, used for login &amp; punch portal).
+                  Unique staff_id in User model (e.g. HK-001, used for login &amp; punch portal).
                 </p>
               </div>
 

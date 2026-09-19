@@ -39,6 +39,7 @@ import {
   getStoredEmergencyRecalls,
   acceptEmergencyRecall,
   recordMidShiftEmergencyExit,
+  getTodayIso,
 } from '../data/mockHousekeepingData';
 import type { AppUser, AttendanceRecord, StaffDashboardView, DutyAllocation, EmergencyRecallAlert, ShiftName } from '../types';
 import { formatTimeTo12hStr, calculateDailyAttendance, autoCloseActiveSessions, SHIFTS } from '../utils/attendanceCalculator';
@@ -64,7 +65,7 @@ export const StaffDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { user: authUser, logout, role: authRole } = useAuth();
 
-  const [selectedDate, setSelectedDate] = useState<string>('2026-09-06');
+  const [selectedDate, setSelectedDate] = useState<string>(() => getTodayIso());
   const [users, setUsers] = useState<AppUser[]>(() => getStoredUsers());
   const [records, setRecords] = useState<AttendanceRecord[]>(() => getStoredAttendance());
   const [dutyAllocations, setDutyAllocations] = useState<DutyAllocation[]>(() => getStoredDutyAllocations());

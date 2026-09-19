@@ -71,6 +71,9 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   // Edit User Modal State
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
 
+  // In-app Delete Confirmation State
+  const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
+
   // Toggle eye reveal for a single staff row
   const handleToggleReveal = (userId: number) => {
     if (!isAdmin) return;
@@ -595,13 +598,9 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                           {onDeleteUser && (
                             <button
                               type="button"
-                              onClick={() => {
-                                if (window.confirm(`Are you sure you want to remove user "${user.full_name || user.name}"?`)) {
-                                  onDeleteUser(user.id);
-                                }
-                              }}
+                              onClick={() => setUserToDelete(user)}
                               title="Delete user account"
-                              className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                              className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -857,6 +856,46 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                   Save Changes
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-App Delete Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-6 text-left">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <div className="p-2 bg-rose-100 rounded-lg">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Confirm User Deletion</h3>
+            </div>
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              Are you sure you want to permanently delete staff account{' '}
+              <strong className="text-slate-900">{userToDelete.full_name || userToDelete.name}</strong>{' '}
+              (<span className="font-mono font-semibold text-[#1E3A8A]">{userToDelete.staff_id}</span>)? This will remove their credentials from the vault, revoke portal access, and update all rosters.
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteUser) {
+                    onDeleteUser(userToDelete.id);
+                  }
+                  setUserToDelete(null);
+                }}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+              >
+                Delete Account
+              </button>
             </div>
           </div>
         </div>

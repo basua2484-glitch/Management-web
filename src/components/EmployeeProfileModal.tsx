@@ -347,20 +347,6 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       }
     });
 
-    // If empty, provide verified mock historical emergency exit for audit log fidelity
-    if (logs.length === 0) {
-      logs.push({
-        id: 'exit_audit_001',
-        date: '2026-09-03',
-        exitTime: '12:15 PM',
-        shift: '7-3 (Morning)',
-        regularHoursCredited: 5.25,
-        reason: 'Staff suffered wrist sprain while maneuvering linen trolley. Handed over to Floor Nurse Supervisor.',
-        status: 'VERIFIED & CREDITED',
-        supervisor: 'Supervisor Rakesh',
-      });
-    }
-
     return logs;
   }, [monthlyRecords]);
 

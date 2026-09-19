@@ -22,7 +22,7 @@ function sanitizeBaseUrl(url?: string): string {
   return trimmed.replace(/\/+$/, '');
 }
 
-export const API_BASE_URL: string = sanitizeBaseUrl(import.meta.env.VITE_API_URL);
+export const API_BASE_URL: string = sanitizeBaseUrl((import.meta as any).env?.VITE_API_URL);
 
 /**
  * Returns a fully qualified or relative endpoint string.

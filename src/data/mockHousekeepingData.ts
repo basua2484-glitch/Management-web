@@ -27,6 +27,17 @@ export const HOSPITAL_SITES: HospitalSite[] = [
 ];
 
 /**
+ * Returns today's ISO date string (YYYY-MM-DD) based on local system clock
+ */
+export function getTodayIso(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = (d.getMonth() + 1).toString().padStart(2, '0');
+  const day = d.getDate().toString().padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * State & Schema Normalization Helper:
  * Ensures every user profile automatically initializes with default schema if missing:
  * - weeklyOffDay (default: "Sunday")
@@ -84,7 +95,7 @@ export function normalizeUser(u: any): AppUser {
     else if (rawStatus.toLowerCase() === 'rejected') normStatus = 'Rejected';
     else normStatus = 'Pending';
 
-    const startDate = r.startDate || r.start_date || '2026-09-06';
+    const startDate = r.startDate || r.start_date || getTodayIso();
     const endDate = r.endDate || r.end_date || startDate;
 
     return {
@@ -140,8 +151,8 @@ export const INITIAL_USERS: AppUser[] = [
   {
     id: 100,
     staff_id: 'ADMIN-001',
-    full_name: 'Admin Staff',
-    name: 'Admin Staff',
+    full_name: 'ApexCare Admin',
+    name: 'ApexCare Admin',
     username: 'admin',
     password: 'admin123',
     password_hash: createPasswordHash('admin123'),
@@ -160,8 +171,8 @@ export const INITIAL_USERS: AppUser[] = [
   {
     id: 101,
     staff_id: 'MGR-001',
-    full_name: 'Operations Manager Priya',
-    name: 'Operations Manager Priya',
+    full_name: 'Operations Manager',
+    name: 'Operations Manager',
     username: 'manager',
     password: 'manager123',
     password_hash: createPasswordHash('manager123'),
@@ -197,269 +208,9 @@ export const INITIAL_USERS: AppUser[] = [
     assigned_area: 'General Ward & ICU',
     assigned_shift: '7-3',
   },
-  {
-    id: 1,
-    staff_id: 'HK-001',
-    full_name: 'Ramesh Kumar',
-    name: 'Ramesh Kumar',
-    username: 'ramesh',
-    password: 'staff123',
-    password_hash: createPasswordHash('staff123'),
-    raw_password_vault: 'staff123',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: '3rd Floor Wards',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 1,
-    department: '3rd Floor Wards',
-    shift: 'Morning',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: '3rd Floor Wards',
-    assigned_shift: '7-3',
-    weeklyOffDay: 'Sunday',
-    leaveBalance: { casual: 10, sick: 7, paid: 15 },
-    leaveRequests: [
-      {
-        requestId: 'LR-1001',
-        userId: 1,
-        userName: 'Ramesh Kumar',
-        role: 'staff',
-        siteId: 'site-main',
-        leaveType: 'Casual',
-        startDate: '2026-09-15',
-        endDate: '2026-09-16',
-        status: 'Pending',
-        actionBy: null,
-        reason: 'Personal family event',
-        daysCount: 2,
-        createdAt: '2026-09-05T09:00:00Z',
-      },
-    ],
-  },
-  {
-    id: 2,
-    staff_id: 'HK-002',
-    full_name: 'Sunita Devi',
-    name: 'Sunita Devi',
-    username: 'sunita',
-    password: 'staff123',
-    password_hash: createPasswordHash('staff123'),
-    raw_password_vault: 'staff123',
-    role: 'staff',
-    duty_type: 'PERMANENT_RELIEVER',
-    fixed_department: 'Lobby & Common Areas',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 2,
-    department: 'Lobby & Common Areas',
-    shift: 'Morning',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'Lobby & Common Areas',
-    assigned_shift: '7-3',
-    weeklyOffDay: 'Monday',
-    leaveBalance: { casual: 12, sick: 6, paid: 14 },
-    leaveRequests: [
-      {
-        requestId: 'LR-1002',
-        userId: 2,
-        userName: 'Sunita Devi',
-        role: 'staff',
-        siteId: 'site-main',
-        leaveType: 'Sick',
-        startDate: '2026-09-06',
-        endDate: '2026-09-06',
-        status: 'Approved',
-        actionBy: 'Operations Manager Priya',
-        actionDate: '2026-09-05T14:30:00Z',
-        reason: 'Medical recovery checkup',
-        daysCount: 1,
-        createdAt: '2026-09-05T10:00:00Z',
-      },
-    ],
-  },
-  {
-    id: 3,
-    staff_id: 'HK-003',
-    full_name: 'Amit Sharma',
-    name: 'Amit Sharma',
-    username: 'amit',
-    password: 'staff123',
-    password_hash: createPasswordHash('staff123'),
-    raw_password_vault: 'staff123',
-    role: 'staff',
-    duty_type: 'TEMP_RELIEVER',
-    fixed_department: 'Laundry & Linen',
-    is_temp_reliever: true,
-    temp_department: 'Emergency Sanitation',
-    staffId: 3,
-    department: 'Laundry & Linen',
-    shift: 'Evening',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'Laundry & Linen',
-    assigned_shift: '3-11',
-    weeklyOffDay: 'Tuesday',
-    leaveBalance: { casual: 12, sick: 7, paid: 12 },
-    leaveRequests: [
-      {
-        requestId: 'LR-1003',
-        userId: 3,
-        userName: 'Amit Sharma',
-        role: 'staff',
-        siteId: 'site-main',
-        leaveType: 'Paid',
-        startDate: '2026-09-20',
-        endDate: '2026-09-22',
-        status: 'Pending',
-        actionBy: null,
-        reason: 'Hometown festival celebration',
-        daysCount: 3,
-        createdAt: '2026-09-06T11:00:00Z',
-      },
-    ],
-  },
-  {
-    id: 4,
-    staff_id: 'HK-004',
-    full_name: 'Anita Patel',
-    name: 'Anita Patel',
-    username: 'anita',
-    password: 'staff123',
-    password_hash: createPasswordHash('staff123'),
-    raw_password_vault: 'staff123',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: 'Kitchen & Dining Sanitation',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 4,
-    department: 'Kitchen & Dining Sanitation',
-    shift: 'Morning',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'Kitchen & Dining Sanitation',
-    assigned_shift: '7-3',
-  },
-  {
-    id: 5,
-    staff_id: 'HK-005',
-    full_name: 'Rahul Sharma',
-    name: 'Rahul Sharma',
-    username: 'hk005',
-    password: '123456',
-    password_hash: createPasswordHash('123456'),
-    raw_password_vault: '123456',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: 'General Ward',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 5,
-    department: 'General Ward',
-    shift: 'Morning',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'General Ward',
-    assigned_shift: '7-3',
-  },
-  {
-    id: 9,
-    staff_id: 'HK-009',
-    full_name: 'Pooja Verma',
-    name: 'Pooja Verma',
-    username: 'hk009',
-    password: '123456',
-    password_hash: createPasswordHash('123456'),
-    raw_password_vault: '123456',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: 'General Ward',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 9,
-    department: 'General Ward',
-    shift: 'Morning',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'General Ward',
-    assigned_shift: '7-3',
-  },
-  {
-    id: 12,
-    staff_id: 'HK-012',
-    full_name: 'Mohit Rawat',
-    name: 'Mohit Rawat',
-    username: 'hk012',
-    password: 'staff123',
-    password_hash: createPasswordHash('staff123'),
-    raw_password_vault: 'staff123',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: 'ICU',
-    is_temp_reliever: false,
-    temp_department: null,
-    staffId: 12,
-    department: 'ICU',
-    shift: 'Night',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'ICU',
-    assigned_shift: '11-7',
-  },
-  {
-    id: 201,
-    staff_id: 'HK-201',
-    full_name: 'Rahul Sharma',
-    name: 'Rahul Sharma',
-    username: 'rahul',
-    password: 'password123',
-    password_hash: createPasswordHash('password123'),
-    raw_password_vault: 'password123',
-    role: 'staff',
-    duty_type: 'FIXED',
-    fixed_department: 'General Ward',
-    is_temp_reliever: false,
-    temp_department: null,
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'General Ward',
-    department: 'General Ward',
-    assigned_shift: '7-3',
-  },
 ];
 
-export const INITIAL_STAFF_REQUESTS: StaffRequest[] = [
-  {
-    id: 1,
-    requested_by: 'SUP-001', // Supervisor Staff ID
-    candidate_name: 'Vikas Mehra',
-    proposed_area: 'ICU Ward 2',
-    proposed_shift: '7-3',
-    status: 'PENDING',
-    created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 2,
-    requested_by: 'SUP-001',
-    candidate_name: 'Meena Kumari',
-    proposed_area: 'Emergency Sanitation',
-    proposed_shift: '3-11',
-    status: 'PENDING',
-    created_at: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 3,
-    requested_by: 'SUP-001',
-    candidate_name: 'Deepak Joshi',
-    proposed_area: 'General Ward',
-    proposed_shift: '11-7',
-    status: 'APPROVED',
-    created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-];
+export const INITIAL_STAFF_REQUESTS: StaffRequest[] = [];
 
 export const DUTY_AREAS = [
   'General Wards',
@@ -474,210 +225,21 @@ export const DUTY_AREAS = [
   'Administrative & Doctors Lounges',
 ];
 
-export const INITIAL_STAFF: StaffUser[] = [
-  {
-    id: 1,
-    staffCode: 'HK-001',
-    name: 'Ramesh Kumar',
-    role: 'staff',
-    department: '3rd Floor Wards',
-    shift: 'Morning',
-    hourlyRate: 15,
-    phone: '+91 98765 43210',
-    active: true,
-  },
-  {
-    id: 2,
-    staffCode: 'HK-002',
-    name: 'Sunita Devi',
-    role: 'staff',
-    department: 'Lobby & Common Areas',
-    shift: 'Morning',
-    hourlyRate: 15,
-    phone: '+91 98765 43211',
-    active: true,
-  },
-  {
-    id: 3,
-    staffCode: 'HK-003',
-    name: 'Amit Sharma',
-    role: 'staff',
-    department: 'Laundry & Linen',
-    shift: 'Evening',
-    hourlyRate: 16,
-    phone: '+91 98765 43212',
-    active: true,
-  },
-  {
-    id: 4,
-    staffCode: 'HK-004',
-    name: 'Anita Patel',
-    role: 'staff',
-    department: 'Kitchen & Dining Sanitation',
-    shift: 'Morning',
-    hourlyRate: 15,
-    phone: '+91 98765 43213',
-    active: true,
-  },
-  {
-    id: 5,
-    staffCode: 'HK-005',
-    name: 'Rahul Sharma',
-    role: 'staff',
-    department: 'General Ward',
-    shift: 'Morning',
-    hourlyRate: 16,
-    phone: '+91 98765 43214',
-    active: true,
-  },
-  {
-    id: 6,
-    staffCode: 'HK-006',
-    name: 'Meena Kumari',
-    role: 'staff',
-    department: 'Guest Suites',
-    shift: 'Morning',
-    hourlyRate: 15,
-    phone: '+91 98765 43215',
-    active: true,
-  },
-  {
-    id: 7,
-    staffCode: 'HK-007',
-    name: 'Vikram Singh',
-    role: 'staff',
-    department: 'Public Facilities & Pool',
-    shift: 'Evening',
-    hourlyRate: 16,
-    phone: '+91 98765 43216',
-    active: true,
-  },
-  {
-    id: 8,
-    staffCode: 'HK-008',
-    name: 'Priya Nair',
-    role: 'staff',
-    department: 'Executive Floor',
-    shift: 'Morning',
-    hourlyRate: 16,
-    phone: '+91 98765 43217',
-    active: true,
-  },
-];
+export const INITIAL_STAFF: StaffUser[] = [];
 
-// Helper to generate seed attendance records for a given month and year
-export function generateSeedAttendance(year = 2026, month = 9): AttendanceRecord[] {
-  const records: AttendanceRecord[] = [];
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const todayDate = 6; // current date in September 2026
-
-  INITIAL_STAFF.forEach((staff) => {
-    // Generate records for all days up to the current day or for full month in prior months
-    const maxDay = (year === 2026 && month === 9) ? todayDate : (month < 9 || year < 2026 ? daysInMonth : todayDate);
-
-    for (let day = 1; day <= maxDay; day++) {
-      const dateObj = new Date(year, month - 1, day);
-      const dayOfWeek = dateObj.getDay(); // 0 is Sunday
-      const dateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-
-      // Weekly off on Sundays for some, Mondays for others
-      const isOffDay = (staff.id % 2 === 0 && dayOfWeek === 0) || (staff.id % 2 !== 0 && dayOfWeek === 1);
-
-      if (isOffDay) {
-        records.push({
-          id: `att_${staff.id}_${dateStr}`,
-          userId: staff.id,
-          date: dateStr,
-          punchIn: null,
-          punchOut: null,
-          regularHours: 0,
-          otHours: 0,
-          status: 'Weekly Off',
-          notes: 'Scheduled weekly off',
-        });
-        continue;
-      }
-
-      // Random chance of absence / leave
-      const pseudoRandom = (staff.id * 17 + day * 31) % 100;
-      if (pseudoRandom < 8) {
-        records.push({
-          id: `att_${staff.id}_${dateStr}`,
-          userId: staff.id,
-          date: dateStr,
-          punchIn: null,
-          punchOut: null,
-          regularHours: 0,
-          otHours: 0,
-          status: 'Absent',
-          notes: 'Unplanned leave',
-        });
-        continue;
-      }
-
-      // Present shifts with occasional Overtime
-      let punchIn = '08:00';
-      let punchOut = '16:30';
-      let regularHours = 8.0;
-      let otHours = 0.0;
-
-      if (staff.shift === 'Evening') {
-        punchIn = '14:00';
-        punchOut = '22:30';
-      } else if (staff.shift === 'Night') {
-        punchIn = '22:00';
-        punchOut = '06:30';
-      }
-
-      // Calculate overtime based on pseudo variability (some staff do 1.5 - 3.5 hrs OT)
-      if (pseudoRandom > 60) {
-        if (pseudoRandom > 85) {
-          otHours = 2.5;
-          punchOut = staff.shift === 'Evening' ? '01:00' : '19:00';
-        } else if (pseudoRandom > 75) {
-          otHours = 1.5;
-          punchOut = staff.shift === 'Evening' ? '00:00' : '18:00';
-        } else {
-          otHours = 1.0;
-          punchOut = staff.shift === 'Evening' ? '23:30' : '17:30';
-        }
-      }
-
-      // Explicit configuration for Ramesh Kumar on 2026-09-06 to match user template:
-      // Punched In (08:00 AM), Regular: 8.0 hrs, Overtime: 1.5 hrs, Assigned: 3rd Floor Wards
-      if (staff.id === 1 && dateStr === '2026-09-06') {
-        punchIn = '08:00';
-        punchOut = '17:30';
-        regularHours = 8.0;
-        otHours = 1.5;
-      }
-
-      const shiftCode = staff.shift === 'Night' ? '11-7' : staff.shift === 'Evening' ? '3-11' : '7-3';
-      records.push({
-        id: `att_${staff.id}_${dateStr}`,
-        userId: staff.id,
-        staff_id: staff.staffCode,
-        calendar_date: dateStr,
-        date: dateStr,
-        shift_name: shiftCode,
-        department_worked: staff.department,
-        punchIn,
-        punchOut,
-        punch_in_time: `${dateStr}T${punchIn}:00`,
-        punch_out_time: `${dateStr}T${punchOut}:00`,
-        regularHours,
-        regular_hours: regularHours,
-        otHours,
-        ot_hours: otHours,
-        ot_status: otHours > 0 ? 'APPROVED' : 'NONE',
-        status: 'Present',
-        notes: staff.id === 1 && dateStr === '2026-09-06' ? '3rd Floor Wards' : (otHours > 0 ? `Late inspection & deep sanitize (+${otHours}h OT)` : undefined),
-      });
-    }
-  });
-
-  return records;
+// Helper to generate seed attendance records - defaults to empty production state
+export function generateSeedAttendance(_year?: number, _month?: number): AttendanceRecord[] {
+  return [];
 }
+
+const PURGED_DUMMY_STAFF_IDS = new Set([
+  'HK-001', 'HK-002', 'HK-003', 'HK-004', 'HK-005', 'HK-006', 'HK-007', 'HK-008', 'HK-009', 'HK-012', 'HK-201'
+]);
+const PURGED_DUMMY_NAMES = new Set([
+  'ramesh kumar', 'sunita devi', 'amit sharma', 'anita patel', 'rahul sharma',
+  'meena kumari', 'vikram singh', 'priya nair', 'vikas mehra', 'deepak joshi',
+  'mohit rawat', 'pooja verma'
+]);
 
 const STORAGE_KEY_STAFF = 'hk_staff_users_v2';
 const STORAGE_KEY_ATTENDANCE = 'hk_attendance_records_v2';
@@ -685,7 +247,14 @@ const STORAGE_KEY_ATTENDANCE = 'hk_attendance_records_v2';
 export function getStoredStaff(): StaffUser[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_STAFF);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const parsed: StaffUser[] = JSON.parse(data);
+      return parsed.filter(
+        (s) =>
+          !PURGED_DUMMY_STAFF_IDS.has(s.staffCode?.toUpperCase()) &&
+          !PURGED_DUMMY_NAMES.has(s.name?.trim().toLowerCase())
+      );
+    }
   } catch (e) {
     console.error('Failed to parse staff from local storage', e);
   }
@@ -703,7 +272,21 @@ export function saveStoredStaff(staff: StaffUser[]): void {
 export function getStoredAttendance(): AttendanceRecord[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_ATTENDANCE);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const parsed: AttendanceRecord[] = JSON.parse(data);
+      return parsed.filter(
+        (r) =>
+          !PURGED_DUMMY_STAFF_IDS.has(r.staff_id?.toUpperCase() || '') &&
+          !String(r.id).startsWith('att_1_') &&
+          !String(r.id).startsWith('att_2_') &&
+          !String(r.id).startsWith('att_3_') &&
+          !String(r.id).startsWith('att_4_') &&
+          !String(r.id).startsWith('att_5_') &&
+          !String(r.id).startsWith('att_6_') &&
+          !String(r.id).startsWith('att_7_') &&
+          !String(r.id).startsWith('att_8_')
+      );
+    }
   } catch (e) {
     console.error('Failed to parse attendance from local storage', e);
   }
@@ -795,10 +378,10 @@ export function approveStaffRequest(
     .filter((id) => /^HK-\d+$/i.test(id))
     .map((id) => parseInt(id.replace(/^HK-/i, ''), 10))
     .filter((n) => !isNaN(n));
-  const nextNum = existingHkCodes.length > 0 ? Math.max(...existingHkCodes) + 1 : 12;
+  const nextNum = existingHkCodes.length > 0 ? Math.max(...existingHkCodes) + 1 : 1;
   const newStaffId = `HK-${nextNum.toString().padStart(3, '0')}`;
   const nextUserId = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1000;
-  const nextStaffNumericId = staffList.length > 0 ? Math.max(...staffList.map((s) => s.id)) + 1 : 100;
+  const nextStaffNumericId = staffList.length > 0 ? Math.max(...staffList.map((s) => s.id)) + 1 : 1;
 
   const defaultPassword = 'Pass@' + Math.floor(100 + Math.random() * 900);
   const shiftVal = assignedShift || targetReq.proposed_shift || '7-3';
@@ -869,7 +452,15 @@ export function getStoredUsers(): AppUser[] {
     const data = localStorage.getItem(STORAGE_KEY_USERS);
     if (data) {
       const parsed: AppUser[] = JSON.parse(data);
-      return parsed.map((u) => normalizeUser(u));
+      const filtered = parsed
+        .filter(
+          (u) =>
+            u.role !== 'staff' ||
+            (!PURGED_DUMMY_STAFF_IDS.has(u.staff_id?.toUpperCase()) &&
+              !PURGED_DUMMY_NAMES.has((u.full_name || u.name || '').trim().toLowerCase()))
+        )
+        .map((u) => normalizeUser(u));
+      return filtered.length > 0 ? filtered : INITIAL_USERS.map((u) => normalizeUser(u));
     }
   } catch (e) {
     console.error('Failed to parse users from local storage', e);
@@ -1007,50 +598,16 @@ export function verifyUserCredentials(
 
 const STORAGE_KEY_DUTY_ALLOCATIONS = 'hk_duty_allocations_v1';
 
-export const INITIAL_DUTY_ALLOCATIONS: DutyAllocation[] = [
-  {
-    id: 1,
-    staff_id: 'HK-001',
-    date: '2026-09-06',
-    assigned_department: '3rd Floor Wards',
-    assigned_by_supervisor: 'SUP-001',
-    ot_requested_hours: 2.5,
-    ot_status: 'PENDING',
-  },
-  {
-    id: 2,
-    staff_id: 'HK-002',
-    date: '2026-09-06',
-    assigned_department: 'Emergency & Trauma Care',
-    assigned_by_supervisor: 'SUP-001',
-    ot_requested_hours: 1.5,
-    ot_status: 'PENDING',
-  },
-  {
-    id: 3,
-    staff_id: 'HK-003',
-    date: '2026-09-05',
-    assigned_department: 'Laundry & Linen',
-    assigned_by_supervisor: 'SUP-001',
-    ot_requested_hours: 3.0,
-    ot_status: 'APPROVED',
-    approved_by: 'ADMIN-001',
-  },
-  {
-    id: 4,
-    staff_id: 'HK-005',
-    date: '2026-09-06',
-    assigned_department: 'ICU / Critical Care',
-    assigned_by_supervisor: 'SUP-001',
-    ot_requested_hours: 2.0,
-    ot_status: 'PENDING',
-  },
-];
+export const INITIAL_DUTY_ALLOCATIONS: DutyAllocation[] = [];
 
 export function getStoredDutyAllocations(): DutyAllocation[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_DUTY_ALLOCATIONS);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const parsed: DutyAllocation[] = JSON.parse(data);
+      // Filter out purged dummy data
+      return parsed.filter((a) => !['HK-001', 'HK-002', 'HK-003', 'HK-005'].includes(a.staff_id));
+    }
   } catch (e) {
     console.error('Failed to parse duty allocations from local storage', e);
   }
@@ -1575,7 +1132,7 @@ export interface SupervisorDutyState {
 /**
  * Checks if a supervisor is currently punched in for duty today.
  */
-export function getSupervisorDutyState(supervisorId: string, todayStr: string = '2026-09-06'): SupervisorDutyState {
+export function getSupervisorDutyState(supervisorId: string, todayStr: string = getTodayIso()): SupervisorDutyState {
   if (typeof localStorage !== 'undefined') {
     try {
       const data = localStorage.getItem(`${SUPERVISOR_DUTY_PUNCH_KEY}${supervisorId}`);
@@ -1608,7 +1165,7 @@ export function setSupervisorDutyPunch(
   supervisorId: string,
   action: 'IN' | 'OUT',
   activeShiftWard: string = '3rd Floor Wards & Critical Care',
-  todayStr: string = '2026-09-06'
+  todayStr: string = getTodayIso()
 ): SupervisorDutyState {
   const now = new Date();
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
@@ -1654,7 +1211,7 @@ export function submitStaffOtRequest(params: {
   department?: string;
 }): { success: boolean; message: string; allocation: DutyAllocation } {
   const allocations = getStoredDutyAllocations();
-  const dateStr = params.date || '2026-09-06';
+  const dateStr = params.date || getTodayIso();
   const cleanStaffId = params.staffId.toUpperCase().startsWith('HK-')
     ? params.staffId.toUpperCase()
     : `HK-${params.staffId.replace(/\D/g, '').padStart(3, '0')}`;
@@ -1993,29 +1550,16 @@ export function recordMidShiftEmergencyExit(params: {
  */
 const STORAGE_KEY_EMERGENCY_RECALLS = 'hk_emergency_recalls_v1';
 
-export const INITIAL_EMERGENCY_RECALLS: EmergencyRecallAlert[] = [
-  {
-    id: 'RECALL-2026-001',
-    staffId: 'HK-003',
-    staff_id: 'HK-003',
-    staffName: 'Amit Sharma',
-    supervisorId: 'SUP-001',
-    supervisorName: 'Supervisor Rakesh Verma',
-    supervisor_name: 'Supervisor Rakesh Verma',
-    date: '2026-09-06',
-    department: 'Emergency & Trauma Care',
-    reason: 'Mass Casualty Inflow & Sudden Ward Sanitation Surge',
-    status: 'DISPATCHED',
-    dispatchedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-    dispatched_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-  },
-];
+export const INITIAL_EMERGENCY_RECALLS: EmergencyRecallAlert[] = [];
 
 export function getStoredEmergencyRecalls(): EmergencyRecallAlert[] {
   if (typeof localStorage !== 'undefined') {
     try {
       const data = localStorage.getItem(STORAGE_KEY_EMERGENCY_RECALLS);
-      if (data) return JSON.parse(data);
+      if (data) {
+        const parsed: EmergencyRecallAlert[] = JSON.parse(data);
+        return parsed.filter((r) => r.id !== 'RECALL-2026-001' && r.staffId !== 'HK-003');
+      }
     } catch (e) {
       console.warn('Failed to parse emergency recalls from storage', e);
     }

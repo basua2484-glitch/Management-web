@@ -2,6 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import type { StaffUser, AttendanceRecord, AppUser } from '../types';
 import { StaffPunchPortal } from './StaffPunchPortal';
+import { getTodayIso } from '../data/mockHousekeepingData';
 
 interface StaffPunchPortalModalProps {
   isOpen: boolean;
@@ -20,7 +21,7 @@ export const StaffPunchPortalModal: React.FC<StaffPunchPortalModalProps> = ({
   onClose,
   staff,
   records,
-  selectedDate = '2026-09-06',
+  selectedDate = getTodayIso(),
   initialStaffId = 1,
   currentUser,
   onSaveRecord,

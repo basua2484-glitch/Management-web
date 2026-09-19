@@ -222,7 +222,20 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {staff.map((s) => {
+                {staff.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="border border-slate-200 py-10 px-4 text-center">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <Users className="h-8 w-8 text-slate-300" />
+                        <span className="text-sm font-bold text-slate-700">No Active Staff Found</span>
+                        <p className="text-xs text-slate-500 max-w-xs">
+                          The Staff Vault contains 0 personnel. Click &quot;+ Add Staff Member&quot; above to enroll personnel.
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  staff.map((s) => {
                   const matchingUser = users.find(
                     (u) =>
                       (u.staffId && u.staffId === s.id) ||
@@ -302,8 +315,9 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                       </td>
                     </tr>
                   );
-                })}
-              </tbody>
+                })
+              )}
+            </tbody>
             </table>
           </div>
         </div>

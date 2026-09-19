@@ -145,7 +145,7 @@ export const GeofenceRejectionModal: React.FC<GeofenceRejectionModalProps> = ({
             <div>
               <p className="font-bold">Next Steps for Staff:</p>
               <p className="text-2xs text-amber-800 mt-0.5">
-                Please proceed inside the hospital building (within 100 meters of the central entrance) and ensure high-accuracy device location is enabled.
+                Please proceed inside the hospital building (within {result.maxRadiusMeters || result.maxAllowedRadius || 100} meters of the central entrance) and ensure high-accuracy device location is enabled.
               </p>
             </div>
           </div>

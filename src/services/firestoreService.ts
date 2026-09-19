@@ -16,6 +16,7 @@ import {
   getDocs,
   setDoc,
   updateDoc,
+  deleteDoc,
   query,
   where,
   orderBy,
@@ -250,6 +251,48 @@ export async function saveStaffToLiveDb(staff: StaffUser): Promise<void> {
     }, { merge: true });
   } catch (err) {
     console.warn('Error saving staff to Firestore:', err);
+  }
+}
+
+/**
+ * Delete User from Live Firestore
+ */
+export async function deleteUserFromLiveDb(userOrId: Partial<AppUser> | number, staffCode?: string): Promise<void> {
+  if (!db) return;
+  try {
+    const user: Partial<AppUser> = typeof userOrId === 'number' ? { id: userOrId } : userOrId;
+    const docId = user.username?.toLowerCase() || `user_${user.id}`;
+    await deleteDoc(doc(db, COLLECTIONS.USERS, docId));
+    if (user.staff_id) {
+      try {
+        await deleteDoc(doc(db, COLLECTIONS.USERS, user.staff_id.toLowerCase()));
+      } catch {}
+    }
+    if (staffCode) {
+      try {
+        await deleteDoc(doc(db, COLLECTIONS.USERS, staffCode.toLowerCase()));
+      } catch {}
+    }
+  } catch (err) {
+    console.warn('Error deleting user from Firestore:', err);
+  }
+}
+
+/**
+ * Delete Staff from Live Firestore
+ */
+export async function deleteStaffFromLiveDb(staffId: number, staffCode?: string): Promise<void> {
+  if (!db) return;
+  try {
+    const docId = `staff_${staffId}`;
+    await deleteDoc(doc(db, COLLECTIONS.STAFF, docId));
+    if (staffCode) {
+      try {
+        await deleteDoc(doc(db, COLLECTIONS.STAFF, staffCode.toLowerCase()));
+      } catch {}
+    }
+  } catch (err) {
+    console.warn('Error deleting staff from Firestore:', err);
   }
 }
 

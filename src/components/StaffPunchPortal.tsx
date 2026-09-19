@@ -34,6 +34,7 @@ import { GeofenceStatusCard } from './GeofenceStatusCard';
 import { GeofenceRejectionModal } from './GeofenceRejectionModal';
 import { GpsHardwareAlertModal } from './GpsHardwareAlertModal';
 import { getApiEndpoint } from '../services/apiConfig';
+import { getTodayIso } from '../data/mockHousekeepingData';
 import {
   HOSPITAL_LAT,
   HOSPITAL_LNG,
@@ -77,7 +78,7 @@ const DEFAULT_STAFF_FALLBACK: StaffUser = {
 export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   staff,
   records,
-  selectedDate = '2026-09-06',
+  selectedDate = getTodayIso(),
   initialStaffId = 1, // Defaults to Ramesh Kumar (id: 1)
   currentUser,
   onSaveRecord,

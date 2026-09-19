@@ -420,8 +420,20 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
             <tbody className="divide-y divide-slate-200 text-sm text-slate-700">
               {filteredList.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-slate-400">
-                    No staff attendance found matching filters for {selectedDate}.
+                  <td colSpan={8} className="px-6 py-12 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <div className="h-10 w-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                        <UserCheck className="h-5 w-5" />
+                      </div>
+                      <span className="text-sm font-bold text-slate-800">
+                        {staff.length === 0 ? 'No Active Staff Found' : `No Staff Attendance Found for ${selectedDate}`}
+                      </span>
+                      <p className="text-xs text-slate-500 max-w-sm">
+                        {staff.length === 0
+                          ? 'The Staff Vault database has 0 active employees. Use "+ Add User / Staff" above to register personnel.'
+                          : 'No staff matching the active search or filter criteria on this date.'}
+                      </p>
+                    </div>
                   </td>
                 </tr>
               ) : (

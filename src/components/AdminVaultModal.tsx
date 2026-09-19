@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Shield, KeyRound, Eye, EyeOff, Lock, Copy, Check, Search, ShieldAlert, AlertTriangle } from 'lucide-react';
+import { X, Shield, KeyRound, Eye, EyeOff, Lock, Copy, Check, Search, ShieldAlert, AlertTriangle, Trash2 } from 'lucide-react';
 import type { AppUser, UserRole } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
 
@@ -9,6 +9,7 @@ interface AdminVaultModalProps {
   users: AppUser[];
   currentUserRole?: UserRole;
   onUpdateUserStatus?: (userId: number, newStatus: 'ACTIVE' | 'DISABLED') => void;
+  onDeleteUser?: (userId: number) => void;
 }
 
 export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
@@ -17,10 +18,12 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
   users,
   currentUserRole = 'admin',
   onUpdateUserStatus,
+  onDeleteUser,
 }) => {
   const [search, setSearch] = useState('');
   const [revealedIds, setRevealedIds] = useState<Record<number, boolean>>({});
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
 
   if (!isOpen) return null;
 
@@ -158,127 +161,151 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/70 text-slate-300 font-mono">
-                    {filteredUsers.map((user) => {
-                      const isRevealed = !!revealedIds[user.id];
-                      const vaultResult = decryptVaultPassword(user, currentUserRole);
-                      const rawPassword = vaultResult.password || '••••••••';
-                      const userStatus = user.status || (user.is_approved === false ? 'PENDING_APPROVAL' : 'ACTIVE');
+                    {filteredUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400 font-sans">
+                          <div className="flex flex-col items-center justify-center gap-1.5">
+                            <KeyRound className="h-6 w-6 text-slate-500 mb-1" />
+                            <p className="font-semibold text-slate-300 text-sm">No Active Staff Found</p>
+                            <p className="text-2xs text-slate-500">Vault database contains 0 active staff credentials matching query.</p>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredUsers.map((user) => {
+                        const isRevealed = !!revealedIds[user.id];
+                        const vaultResult = decryptVaultPassword(user, currentUserRole);
+                        const rawPassword = vaultResult.password || '••••••••';
+                        const userStatus = user.status || (user.is_approved === false ? 'PENDING_APPROVAL' : 'ACTIVE');
 
-                      return (
-                        <tr key={user.id} className="hover:bg-slate-800/40 transition-colors">
-                          {/* Staff ID & Name */}
-                          <td className="py-3 px-3">
-                            <div className="font-bold text-white text-xs">{user.full_name || user.name}</div>
-                            <div className="text-2xs text-amber-400 font-semibold tracking-wider">{user.staff_id}</div>
-                          </td>
+                        return (
+                          <tr key={user.id} className="hover:bg-slate-800/40 transition-colors">
+                            {/* Staff ID & Name */}
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-white text-xs">{user.full_name || user.name}</div>
+                              <div className="text-2xs text-amber-400 font-semibold tracking-wider">{user.staff_id}</div>
+                            </td>
 
-                          {/* Role */}
-                          <td className="py-3 px-3 font-sans">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-full text-2xs font-bold uppercase tracking-wider ${
-                                user.role === 'admin'
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                                  : user.role === 'manager'
-                                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                                  : user.role === 'supervisor'
-                                  ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                              }`}
-                            >
-                              {user.role}
-                            </span>
-                          </td>
-
-                          {/* Area & Shift */}
-                          <td className="py-3 px-3 font-sans text-2xs">
-                            <div className="text-slate-200 font-medium">{user.assigned_area || 'General Ward'}</div>
-                            <div className="text-slate-400">
-                              Shift: <span className="text-cyan-400 font-mono font-semibold">{user.assigned_shift || '7-3'}</span>
-                            </div>
-                          </td>
-
-                          {/* Status */}
-                          <td className="py-3 px-3 font-sans">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-md text-2xs font-semibold ${
-                                userStatus === 'ACTIVE'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                  : userStatus === 'PENDING_APPROVAL'
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                  : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                              }`}
-                            >
-                              {userStatus}
-                            </span>
-                          </td>
-
-                          {/* Password Hash */}
-                          <td className="py-3 px-3 text-2xs text-slate-400">
-                            <span
-                              className="block max-w-[120px] truncate bg-slate-950/80 px-2 py-1 rounded border border-slate-800 text-slate-400"
-                              title={user.password_hash || 'No hash recorded'}
-                            >
-                              {user.password_hash ? `${user.password_hash.substring(0, 18)}...` : 'N/A'}
-                            </span>
-                          </td>
-
-                          {/* Raw Vault Password */}
-                          <td className="py-3 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono bg-slate-950 px-2.5 py-1 rounded border border-slate-800 text-xs text-amber-300 font-bold min-w-[90px] text-center">
-                                {isRevealed ? rawPassword : '••••••••'}
-                              </span>
-
-                              <button
-                                type="button"
-                                onClick={() => toggleReveal(user.id)}
-                                title={isRevealed ? 'Hide Password' : 'Decrypt & View Password'}
-                                className="p-1 rounded bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
-                              >
-                                {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                              </button>
-
-                              {isRevealed && (
-                                <button
-                                  type="button"
-                                  onClick={() => copyPassword(user.id, rawPassword)}
-                                  title="Copy Plain Password"
-                                  className="p-1 rounded bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
-                                >
-                                  {copiedId === user.id ? (
-                                    <Check className="h-3.5 w-3.5 text-emerald-400" />
-                                  ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                  )}
-                                </button>
-                              )}
-                            </div>
-                          </td>
-
-                          {/* Account Control */}
-                          <td className="py-3 px-3 text-right font-sans">
-                            {user.role !== 'admin' && onUpdateUserStatus && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  onUpdateUserStatus(
-                                    user.id,
-                                    userStatus === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'
-                                  )
-                                }
-                                className={`text-2xs font-semibold px-2.5 py-1 rounded transition-colors ${
-                                  userStatus === 'ACTIVE'
-                                    ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/30'
-                                    : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30'
+                            {/* Role */}
+                            <td className="py-3 px-3 font-sans">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-full text-2xs font-bold uppercase tracking-wider ${
+                                  user.role === 'admin'
+                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                    : user.role === 'manager'
+                                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                    : user.role === 'supervisor'
+                                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                 }`}
                               >
-                                {userStatus === 'ACTIVE' ? 'Disable Account' : 'Activate Account'}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                                {user.role}
+                              </span>
+                            </td>
+
+                            {/* Area & Shift */}
+                            <td className="py-3 px-3 font-sans text-2xs">
+                              <div className="text-slate-200 font-medium">{user.assigned_area || 'General Ward'}</div>
+                              <div className="text-slate-400">
+                                Shift: <span className="text-cyan-400 font-mono font-semibold">{user.assigned_shift || '7-3'}</span>
+                              </div>
+                            </td>
+
+                            {/* Status */}
+                            <td className="py-3 px-3 font-sans">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-md text-2xs font-semibold ${
+                                  userStatus === 'ACTIVE'
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                    : userStatus === 'PENDING_APPROVAL'
+                                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                    : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                }`}
+                              >
+                                {userStatus}
+                              </span>
+                            </td>
+
+                            {/* Password Hash */}
+                            <td className="py-3 px-3 text-2xs text-slate-400">
+                              <span
+                                className="block max-w-[120px] truncate bg-slate-950/80 px-2 py-1 rounded border border-slate-800 text-slate-400"
+                                title={user.password_hash || 'No hash recorded'}
+                              >
+                                {user.password_hash ? `${user.password_hash.substring(0, 18)}...` : 'N/A'}
+                              </span>
+                            </td>
+
+                            {/* Raw Vault Password */}
+                            <td className="py-3 px-3">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono bg-slate-950 px-2.5 py-1 rounded border border-slate-800 text-xs text-amber-300 font-bold min-w-[90px] text-center">
+                                  {isRevealed ? rawPassword : '••••••••'}
+                                </span>
+
+                                <button
+                                  type="button"
+                                  onClick={() => toggleReveal(user.id)}
+                                  title={isRevealed ? 'Hide Password' : 'Decrypt & View Password'}
+                                  className="p-1 rounded bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+                                >
+                                  {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                </button>
+
+                                {isRevealed && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyPassword(user.id, rawPassword)}
+                                    title="Copy Plain Password"
+                                    className="p-1 rounded bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+                                  >
+                                    {copiedId === user.id ? (
+                                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="h-3.5 w-3.5" />
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Account Control */}
+                            <td className="py-3 px-3 text-right font-sans">
+                              <div className="flex items-center justify-end gap-2">
+                                {user.role !== 'admin' && onUpdateUserStatus && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onUpdateUserStatus(
+                                        user.id,
+                                        userStatus === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'
+                                      )
+                                    }
+                                    className={`text-2xs font-semibold px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                                      userStatus === 'ACTIVE'
+                                        ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/30'
+                                        : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30'
+                                    }`}
+                                  >
+                                    {userStatus === 'ACTIVE' ? 'Disable' : 'Activate'}
+                                  </button>
+                                )}
+                                {user.role !== 'admin' && onDeleteUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setUserToDelete(user)}
+                                    title={`Permanently delete ${user.full_name || user.name} from vault`}
+                                    className="p-1 rounded bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors cursor-pointer"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -299,13 +326,53 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-1.5 rounded-lg bg-slate-700 text-white font-semibold hover:bg-slate-600 transition-colors"
+              className="px-4 py-1.5 rounded-lg bg-slate-700 text-white font-semibold hover:bg-slate-600 transition-colors cursor-pointer"
             >
               Close Vault
             </button>
           </div>
         </div>
       </div>
+
+      {/* In-Vault Delete Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-[#0F172A] rounded-xl shadow-2xl border border-rose-500/40 max-w-md w-full p-6 text-left text-slate-200">
+            <div className="flex items-center gap-3 text-rose-400 mb-3">
+              <div className="p-2 bg-rose-500/20 border border-rose-500/30 rounded-lg">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <h3 className="text-base font-bold text-white">Permanently Delete from Vault</h3>
+            </div>
+            <p className="text-xs text-slate-300 mb-4 leading-relaxed font-sans">
+              Are you sure you want to permanently delete staff credentials for{' '}
+              <strong className="text-white">{userToDelete.full_name || userToDelete.name}</strong>{' '}
+              (<span className="font-mono text-amber-400 font-semibold">{userToDelete.staff_id}</span>)? This will erase their <code>raw_password_vault</code> record and revoke all portal login permissions.
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800 font-sans">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                className="px-3.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteUser) {
+                    onDeleteUser(userToDelete.id);
+                  }
+                  setUserToDelete(null);
+                }}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+              >
+                Delete from Vault
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

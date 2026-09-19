@@ -49,6 +49,7 @@ import {
   dispatchEmergencyRecall,
   approveEmergencyRecall,
   getStoredEmergencyRecalls,
+  getTodayIso,
 } from '../data/mockHousekeepingData';
 import type { AppUser, AttendanceRecord, DutyAllocation, StaffUser, EmergencyRecallAlert } from '../types';
 import { DutyAssignmentModal } from '../components/DutyAssignmentModal';
@@ -71,10 +72,10 @@ export const SupervisorDashboard: React.FC = () => {
   const { user: authUser, logout, role: authRole } = useAuth();
 
   const effectiveSupervisorId = authUser?.staff_id || authUser?.username || 'SUP-001';
-  const supervisorName = authUser?.name || 'Supervisor Priya';
+  const supervisorName = authUser?.full_name || authUser?.name || 'Supervisor';
 
-  // Selected date for attendance (defaults to current date in simulation)
-  const [selectedDate, setSelectedDate] = useState<string>('2026-09-06');
+  // Selected date for attendance (defaults to current dynamic system date)
+  const [selectedDate, setSelectedDate] = useState<string>(() => getTodayIso());
   const [users, setUsers] = useState<AppUser[]>(() => getStoredUsers());
   const [records, setRecords] = useState<AttendanceRecord[]>(() => getStoredAttendance());
   const [dutyAllocations, setDutyAllocations] = useState<DutyAllocation[]>(() => getStoredDutyAllocations());
@@ -1215,7 +1216,7 @@ export const SupervisorDashboard: React.FC = () => {
                     type="date"
                     id="history-date-picker"
                     value={selectedDate}
-                    max="2026-09-06"
+                    max={getTodayIso()}
                     onChange={(e) => setSelectedDate(e.target.value)}
                     className="text-xs font-semibold px-2.5 py-1 rounded-xl border border-slate-300 bg-slate-50 text-slate-700 cursor-pointer"
                   />

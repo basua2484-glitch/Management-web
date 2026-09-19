@@ -190,7 +190,7 @@ export function handleLogout(navigate?: (to: string, options?: { replace?: boole
   }
 }
 
-// Mock User Database with aliases and direct role routing
+// System Administration Accounts with direct role routing
 export const USERS_DB = [
   {
     id: "admin",
@@ -206,7 +206,7 @@ export const USERS_DB = [
     pass: "manager123",
     role: "MANAGER",
     redirect: "/manager-dashboard",
-    name: "Operations Manager Priya",
+    name: "Operations Manager",
   },
   {
     id: "supervisor",
@@ -214,39 +214,7 @@ export const USERS_DB = [
     pass: "super123",
     role: "SUPERVISOR",
     redirect: "/supervisor/dashboard",
-    name: "Supervisor Rakesh Verma",
-  },
-  {
-    id: "hk012",
-    aliases: ["hk012", "hk-012", "mohit"],
-    pass: "staff123",
-    role: "STAFF",
-    redirect: "/staff/dashboard",
-    name: "Mohit Rawat",
-  },
-  {
-    id: "hk001",
-    aliases: ["hk001", "hk-001", "ramesh"],
-    pass: "staff123",
-    role: "STAFF",
-    redirect: "/staff/dashboard",
-    name: "Ramesh Sharma",
-  },
-  {
-    id: "hk002",
-    aliases: ["hk002", "hk-002", "sunita"],
-    pass: "staff123",
-    role: "STAFF",
-    redirect: "/staff/dashboard",
-    name: "Sunita Devi",
-  },
-  {
-    id: "hk003",
-    aliases: ["hk003", "hk-003", "amit"],
-    pass: "staff123",
-    role: "STAFF",
-    redirect: "/staff/dashboard",
-    name: "Amit Patel",
+    name: "Duty Supervisor",
   },
 ];
 
@@ -352,7 +320,12 @@ export const handleLogin = async (
   });
 
   if (registered) {
-    if (registered.password === cleanPass) {
+    const isPassValid =
+      registered.password === cleanPass ||
+      registered.raw_password_vault === cleanPass ||
+      (registered.password_hash && registered.password_hash.endsWith(cleanPass));
+
+    if (isPassValid) {
       const roleUpper = registered.role.toUpperCase();
       const token = "JWT_APEXCARE_" + roleUpper + "_" + Date.now();
       const redirect =
@@ -360,7 +333,9 @@ export const handleLogin = async (
           ? '/admin-dashboard'
           : roleUpper === 'MANAGER'
           ? '/manager-dashboard'
-          : '/staff-portal';
+          : roleUpper === 'SUPERVISOR'
+          ? '/supervisor/dashboard'
+          : '/staff/dashboard';
 
       localStorage.setItem("userToken", token);
       localStorage.setItem("userRole", roleUpper);

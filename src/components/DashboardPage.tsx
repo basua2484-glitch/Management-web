@@ -58,7 +58,16 @@ import {
   rejectStaffRequest,
   HOSPITAL_SITES,
   getAllLeaveRequests,
+  getTodayIso,
 } from '../data/mockHousekeepingData';
+import {
+  deleteUserFromLiveDb,
+  deleteStaffFromLiveDb,
+  fetchLiveUsers,
+  fetchLiveStaff,
+  saveUserToLiveDb,
+  saveStaffToLiveDb,
+} from '../services/firestoreService';
 import { logout, getCurrentUser, initAuth } from '../services/firebase';
 import { performLogout, handleLogout, checkAdminRequired, adminRequired } from '../services/auth';
 import { downloadMonthlyReportPdf } from '../services/pdfGenerator';
@@ -95,8 +104,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [year, setYear] = useState<number>(2026);
   const [month, setMonth] = useState<number>(9);
 
-  // Live overview date (defaults to 2026-09-06)
-  const [selectedLiveDate, setSelectedLiveDate] = useState<string>('2026-09-06');
+  // Live overview date (defaults to current dynamic system date)
+  const [selectedLiveDate, setSelectedLiveDate] = useState<string>(() => getTodayIso());
 
   // App Authentication Users & Current User (synchronous resolution, no refresh lag)
   const [users, setUsers] = useState<AppUser[]>(() => getStoredUsers());
@@ -209,6 +218,51 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     }
     return () => {
       unsub();
+    };
+  }, []);
+
+  // Real-time synchronization with primary database collections ('users' / 'staff')
+  useEffect(() => {
+    let isMounted = true;
+    const syncWithFirestore = async () => {
+      try {
+        const [cloudUsers, cloudStaff] = await Promise.all([
+          fetchLiveUsers(),
+          fetchLiveStaff(),
+        ]);
+        if (!isMounted) return;
+        if (cloudUsers && cloudUsers.length > 0) {
+          setUsers(cloudUsers);
+          saveStoredUsers(cloudUsers);
+        }
+        if (cloudStaff && cloudStaff.length > 0) {
+          setStaff(cloudStaff);
+          saveStoredStaff(cloudStaff);
+        }
+      } catch (err) {
+        console.warn('Firestore live sync note:', err);
+      }
+    };
+    syncWithFirestore();
+
+    const handleDataUpdate = () => {
+      setStaff(getStoredStaff());
+      setUsers(getStoredUsers());
+      setRecords(getStoredAttendance());
+      setDutyAllocations(getStoredDutyAllocations());
+      setStaffRequests(getStoredStaffRequests());
+    };
+    window.addEventListener('staff-data-updated', handleDataUpdate);
+    window.addEventListener('user-data-updated', handleDataUpdate);
+    window.addEventListener('duty-data-updated', handleDataUpdate);
+    window.addEventListener('attendance-data-updated', handleDataUpdate);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('staff-data-updated', handleDataUpdate);
+      window.removeEventListener('user-data-updated', handleDataUpdate);
+      window.removeEventListener('duty-data-updated', handleDataUpdate);
+      window.removeEventListener('attendance-data-updated', handleDataUpdate);
     };
   }, []);
 
@@ -613,12 +667,21 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       });
       setStaff(updatedStaffList);
       saveStoredStaff(updatedStaffList);
+
+      const targetStaffDoc = updatedStaffList.find((s) => s.id === matchingStaff.id);
+      if (targetStaffDoc) {
+        saveStaffToLiveDb(targetStaffDoc).catch(console.warn);
+      }
     }
+
+    saveUserToLiveDb(updatedUser).catch(console.warn);
+    window.dispatchEvent(new Event('staff-data-updated'));
+    window.dispatchEvent(new Event('user-data-updated'));
 
     addFlash(`Updated ${updatedUser.full_name || updatedUser.name} duty profile & credentials.`, 'success');
   };
 
-  const handleDeleteUser = (userId: number) => {
+  const handleDeleteUser = async (userId: number) => {
     if (!isAdmin) {
       addFlash('Unauthorized: Admin role required to delete users.', 'danger');
       return;
@@ -627,12 +690,35 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const updatedUsers = users.filter((u) => u.id !== userId);
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-    if (target?.staffId) {
-      const updatedStaff = staff.filter((s) => s.id !== target.staffId);
-      setStaff(updatedStaff);
-      saveStoredStaff(updatedStaff);
+
+    // Delete matching staff member by id, staffCode, or name
+    const updatedStaff = staff.filter((s) => {
+      if (target?.staffId && s.id === target.staffId) return false;
+      if (s.id === userId) return false;
+      if (target?.staff_id && s.staffCode?.toLowerCase() === target.staff_id.toLowerCase()) return false;
+      if (target?.name && s.name.toLowerCase() === target.name.toLowerCase()) return false;
+      return true;
+    });
+    setStaff(updatedStaff);
+    saveStoredStaff(updatedStaff);
+
+    // Also persist deletion to Firestore
+    try {
+      if (target) {
+        await deleteUserFromLiveDb(target, target.staff_id);
+      } else {
+        await deleteUserFromLiveDb(userId);
+      }
+      if (target?.staffId || target?.staff_id) {
+        await deleteStaffFromLiveDb(target.staffId || userId, target.staff_id);
+      }
+    } catch (err) {
+      console.warn('Firestore deletion error:', err);
     }
-    addFlash('User account deleted successfully.', 'info');
+
+    window.dispatchEvent(new Event('staff-data-updated'));
+    window.dispatchEvent(new Event('user-data-updated'));
+    addFlash(`User account ${target?.full_name || target?.name || ''} deleted successfully from database and vault.`, 'info');
   };
 
   const handleUpdateUserStatus = (userId: number, newStatus: 'ACTIVE' | 'DISABLED') => {
@@ -643,6 +729,11 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const updatedUsers = users.map((u) => (u.id === userId ? { ...u, status: newStatus } : u));
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
+    const targetUser = updatedUsers.find((u) => u.id === userId);
+    if (targetUser) {
+      saveUserToLiveDb(targetUser).catch(console.warn);
+    }
+    window.dispatchEvent(new Event('user-data-updated'));
     addFlash(`Account status updated to ${newStatus}.`, 'info');
   };
 
@@ -655,8 +746,24 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const result = approveStaffRequest(requestId, assignedShift);
     if (result.success) {
       setStaffRequests(getStoredStaffRequests());
-      setUsers(getStoredUsers());
-      setStaff(getStoredStaff());
+      const updatedU = getStoredUsers();
+      const updatedS = getStoredStaff();
+      setUsers(updatedU);
+      setStaff(updatedS);
+
+      // Save newly created user & staff to Firestore
+      if (result.user) {
+        saveUserToLiveDb(result.user).catch(console.warn);
+        const newlyCreatedStaff = updatedS.find(
+          (s) => s.id === result.user?.staffId || (result.user?.staff_id && s.staffCode === result.user.staff_id)
+        );
+        if (newlyCreatedStaff) {
+          saveStaffToLiveDb(newlyCreatedStaff).catch(console.warn);
+        }
+      }
+
+      window.dispatchEvent(new Event('staff-data-updated'));
+      window.dispatchEvent(new Event('user-data-updated'));
       addFlash(result.message, 'success');
     } else {
       addFlash(result.message, 'warning');
@@ -916,7 +1023,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       const updatedStaff = [...staff, newStaffUser];
       setStaff(updatedStaff);
       saveStoredStaff(updatedStaff);
+      saveStaffToLiveDb(newStaffUser).catch(console.warn);
     }
+
+    saveUserToLiveDb(newAppUser).catch(console.warn);
+    window.dispatchEvent(new Event('staff-data-updated'));
+    window.dispatchEvent(new Event('user-data-updated'));
 
     const successMsg = `Staff Account (${data.name.trim()}) ready hai! Staff ID: ${chosenStaffId}`;
     addFlash(successMsg, 'success');
@@ -2068,6 +2180,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         users={users}
         currentUserRole={userRole}
         onUpdateUserStatus={handleUpdateUserStatus}
+        onDeleteUser={handleDeleteUser}
       />
 
       {/* Staff Joining Request Modal (Supervisor / Admin Queue Submission) */}
