@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Plus, Users, Check, Phone, Building, KeyRound, Ticket } from 'lucide-react';
+import { X, Plus, Users, Check, Phone, Building, KeyRound, Ticket, Sparkles, Lock } from 'lucide-react';
 import type { StaffUser, AppUser, UserRole } from '../types';
 import type { CredentialCardData } from './CredentialCardModal';
+import { generateSubAccountId } from '../services/firestoreService';
 
 interface StaffManagementModalProps {
   isOpen: boolean;
@@ -9,7 +10,8 @@ interface StaffManagementModalProps {
   staff: StaffUser[];
   users?: AppUser[];
   currentUserRole?: UserRole;
-  onAddStaff: (newStaff: Omit<StaffUser, 'id' | 'staffCode'>) => void;
+  companyPrefix?: string;
+  onAddStaff: (newStaff: Omit<StaffUser, 'id'> & { staffCode?: string }) => void;
   onToggleActive: (staffId: number) => void;
   onViewCredentialSlip?: (slip: CredentialCardData) => void;
 }
@@ -20,6 +22,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
   staff,
   users = [],
   currentUserRole = 'admin',
+  companyPrefix,
   onAddStaff,
   onToggleActive,
   onViewCredentialSlip,
@@ -34,20 +37,31 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
 
   if (!isOpen) return null;
 
-  const nextStaffCode = `HK-${(staff.length + 1).toString().padStart(3, '0')}`;
+  const effectiveCompanyPrefix = (
+    companyPrefix ||
+    (typeof localStorage !== 'undefined' &&
+      (localStorage.getItem('tenant_id') ||
+        localStorage.getItem('tenantId') ||
+        localStorage.getItem('company_code'))) ||
+    'APEX'
+  ).toUpperCase();
+  const roleForId = role === 'lead' ? 'manager' : role;
+  const nextStaffCode = generateSubAccountId(effectiveCompanyPrefix, roleForId, staff);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     if (!name.trim()) return;
 
-    // Strict Guard Check: if current_user.role != 'admin': 403
-    if (currentUserRole !== 'admin') {
-      setErrorMessage('Unauthorized Access: Admin Privileges Required');
+    // Rule: Admins and Managers authorized to onboard employees
+    const roleUpper = (currentUserRole || '').toUpperCase();
+    if (roleUpper !== 'ADMIN' && roleUpper !== 'MANAGER') {
+      setErrorMessage('Unauthorized Access: Admin or Manager Privileges Required');
       return;
     }
 
     onAddStaff({
+      staffCode: nextStaffCode,
       name: name.trim(),
       department,
       shift,
@@ -113,13 +127,19 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                 </div>
               )}
               <div className="flex items-center justify-between border-b border-blue-200 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-[#1E3A8A]">
-                  New Staff Member (ID: {nextStaffCode})
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-[#1E3A8A]">
+                    New Staff Member
+                  </span>
+                  <span className="inline-flex items-center gap-1 font-mono text-2xs px-2 py-0.5 rounded bg-blue-100 text-blue-900 font-bold border border-blue-300">
+                    <Sparkles className="h-3 w-3 text-blue-600" />
+                    <span>Auto-ID: {nextStaffCode}</span>
+                  </span>
+                </div>
                 <button
                   type="button"
                   onClick={() => setIsAdding(false)}
-                  className="text-xs text-slate-500 hover:text-slate-700"
+                  className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -227,7 +247,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                     <td colSpan={7} className="border border-slate-200 py-10 px-4 text-center">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Users className="h-8 w-8 text-slate-300" />
-                        <span className="text-sm font-bold text-slate-700">No Active Staff Found</span>
+                        <span className="text-sm font-bold text-slate-700">0 Registered Accounts / No Active Staff Found</span>
                         <p className="text-xs text-slate-500 max-w-xs">
                           The Staff Vault contains 0 personnel. Click &quot;+ Add Staff Member&quot; above to enroll personnel.
                         </p>
@@ -235,7 +255,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  staff.map((s) => {
+                  staff.map((s, idx) => {
                   const matchingUser = users.find(
                     (u) =>
                       (u.staffId && u.staffId === s.id) ||
@@ -250,7 +270,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
                   const passStr = matchingUser?.password || '123456';
 
                   return (
-                    <tr key={s.id} className="hover:bg-slate-50">
+                    <tr key={s.staffCode || (s.id ? `mgmt-s-${s.id}` : `mgmt-s-${idx}`)} className="hover:bg-slate-50">
                       <td className="border border-slate-200 px-3 py-2.5 text-center font-mono font-bold text-[#1E3A8A]">
                         {s.staffCode}
                       </td>

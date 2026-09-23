@@ -18,7 +18,7 @@ interface StaffRequestModalProps {
 export const StaffRequestModal: React.FC<StaffRequestModalProps> = ({
   isOpen,
   onClose,
-  currentUserStaffId = 'SUP-001',
+  currentUserStaffId = '',
   onSubmitRequest,
 }) => {
   const [candidateName, setCandidateName] = useState('');

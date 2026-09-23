@@ -10,6 +10,7 @@ interface AuthContextType {
   user: AppUser | null;
   token: string | null;
   role: 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' | null;
+  tenantId: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (
@@ -85,6 +86,18 @@ function getStoredUserId(): string | null {
       if (id) return id;
     }
     return getCookie('user_id');
+  } catch {
+    return null;
+  }
+}
+
+function getStoredTenantId(): string | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const tid = localStorage.getItem('tenant_id') || localStorage.getItem('tenantId');
+      if (tid) return tid;
+    }
+    return getCookie('tenant_id');
   } catch {
     return null;
   }
@@ -177,6 +190,21 @@ function resolveUserProfile(
 
   // Schema normalization: Ensure leaveBalance, weeklyOffDay, siteId, leaveRequests exist
   if (userProfile) {
+    if (!userProfile.tenant_id) {
+      const tid = getStoredTenantId();
+      if (tid) {
+        userProfile.tenant_id = tid;
+        userProfile.tenantId = tid;
+      }
+    }
+    if (!userProfile.company_prefix && typeof localStorage !== 'undefined') {
+      const ccode = localStorage.getItem('company_code');
+      if (ccode) userProfile.company_prefix = ccode;
+    }
+    if (!userProfile.company_name && typeof localStorage !== 'undefined') {
+      const cname = localStorage.getItem('company_name');
+      if (cname) userProfile.company_name = cname;
+    }
     if (!userProfile.siteId) userProfile.siteId = 'site-main';
     if (!userProfile.weeklyOffDay) userProfile.weeklyOffDay = 'Sunday';
     if (!userProfile.leaveBalance) {
@@ -202,6 +230,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Synchronous initial check for persistent storage - instant boot, no refresh lag
   const [token, setToken] = useState<string | null>(() => getStoredToken());
   const [role, setRole] = useState<'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF' | null>(() => getStoredRole());
+  const [tenantId, setTenantId] = useState<string | null>(() => getStoredTenantId());
   const [user, setUser] = useState<AppUser | null>(() => {
     const t = getStoredToken();
     const r = getStoredRole();
@@ -221,6 +250,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const storedToken = getStoredToken();
       const storedRole = getStoredRole();
       const storedUserId = getStoredUserId();
+      const storedTid = getStoredTenantId();
 
       if (storedToken && storedRole) {
         const userProfile = resolveUserProfile(storedRole, storedUserId);
@@ -228,12 +258,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Guarded state setters - only trigger re-renders if actual value changes
         setToken((prev) => (prev !== storedToken ? storedToken : prev));
         setRole((prev) => (prev !== storedRole ? storedRole : prev));
+        setTenantId((prev) => (prev !== storedTid ? storedTid : prev));
         setUser((prev) => (isSameUser(prev, userProfile) ? prev : userProfile));
       } else {
         // Only clear if neither local session nor Firebase user is active
         if (!auth?.currentUser) {
           setToken((prev) => (prev !== null ? null : prev));
           setRole((prev) => (prev !== null ? null : prev));
+          setTenantId((prev) => (prev !== null ? null : prev));
           setUser((prev) => (prev !== null ? null : prev));
         }
       }
@@ -392,6 +424,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(null);
       setRole(null);
       setUser(null);
+      setTenantId(null);
       setIsLoading(false);
 
       // 5. Navigate to login
@@ -409,13 +442,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user,
       token,
       role,
+      tenantId: user?.tenant_id || user?.tenantId || tenantId,
       isAuthenticated: Boolean(token && role),
       isLoading,
       login,
       logout,
       refreshAuth: restoreAuth,
     }),
-    [user, token, role, isLoading, login, logout, restoreAuth]
+    [user, token, role, tenantId, isLoading, login, logout, restoreAuth]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

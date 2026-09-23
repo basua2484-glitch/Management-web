@@ -426,7 +426,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
                         <UserCheck className="h-5 w-5" />
                       </div>
                       <span className="text-sm font-bold text-slate-800">
-                        {staff.length === 0 ? 'No Active Staff Found' : `No Staff Attendance Found for ${selectedDate}`}
+                        {staff.length === 0 ? '0 Registered Accounts / No Active Staff Found' : `No Staff Attendance Found for ${selectedDate}`}
                       </span>
                       <p className="text-xs text-slate-500 max-w-sm">
                         {staff.length === 0

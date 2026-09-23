@@ -56,10 +56,15 @@ import {
   createStaffRequest,
   approveStaffRequest,
   rejectStaffRequest,
+  getStoredRemovalRequests,
+  saveStoredRemovalRequests,
+  approveRemovalRequest,
+  rejectRemovalRequest,
   HOSPITAL_SITES,
   getAllLeaveRequests,
   getTodayIso,
 } from '../data/mockHousekeepingData';
+import { canDeleteUser } from './AdminStaffTable';
 import {
   deleteUserFromLiveDb,
   deleteStaffFromLiveDb,
@@ -67,6 +72,10 @@ import {
   fetchLiveStaff,
   saveUserToLiveDb,
   saveStaffToLiveDb,
+  fetchLiveAttendanceRecords,
+  fetchLiveDutyAllocations,
+  getActiveTenantId,
+  generateSubAccountId,
 } from '../services/firestoreService';
 import { logout, getCurrentUser, initAuth } from '../services/firebase';
 import { performLogout, handleLogout, checkAdminRequired, adminRequired } from '../services/auth';
@@ -83,6 +92,7 @@ import { StaffPunchPortalModal } from './StaffPunchPortalModal';
 import { RegisterStaffModal } from './RegisterStaffModal';
 import { PendingApprovalModal } from './PendingApprovalModal';
 import { AdminStaffTable } from './AdminStaffTable';
+import { StaffVault } from './StaffVault';
 import { AdminVaultModal } from './AdminVaultModal';
 import { StaffRequestModal } from './StaffRequestModal';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
@@ -94,12 +104,12 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export interface DashboardPageProps {
-  defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence';
+  defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence';
 }
 
 export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const navigate = useNavigate();
-  const { user: authUser, role: authRole, logout: authLogout } = useAuth();
+  const { user: authUser, role: authRole, tenantId, logout: authLogout } = useAuth();
   // Current monthly report period
   const [year, setYear] = useState<number>(2026);
   const [month, setMonth] = useState<number>(9);
@@ -122,6 +132,34 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const isStaff = userRole === 'staff';
   const isAdminOrManager = isAdmin || isManager;
   const isElevatedRole = isAdmin || isManager || isSupervisor;
+
+  // Active tenant prefix resolution for strict tenant isolation
+  const activeTenantPrefix = useMemo(() => {
+    if (currentUser?.company_prefix && currentUser.company_prefix.trim()) {
+      return currentUser.company_prefix.trim().toUpperCase();
+    }
+    if (currentUser?.tenant_id && currentUser.tenant_id.trim()) {
+      return currentUser.tenant_id.trim().toUpperCase();
+    }
+    const staffId = currentUser?.staff_id || currentUser?.username || '';
+    const match = String(staffId).match(/^([A-Za-z0-9]+)-/);
+    if (match && match[1]) {
+      return match[1].toUpperCase();
+    }
+    if (tenantId && tenantId.trim()) {
+      return tenantId.trim().toUpperCase();
+    }
+    if (typeof localStorage !== 'undefined') {
+      const stored =
+        localStorage.getItem('tenant_id') ||
+        localStorage.getItem('tenantId') ||
+        localStorage.getItem('company_code');
+      if (stored && stored.trim()) {
+        return stored.trim().toUpperCase();
+      }
+    }
+    return 'APEX';
+  }, [currentUser, tenantId]);
 
   // Leave Requests state for badge indicator
   const [allLeaveRequests, setAllLeaveRequests] = useState(() => getAllLeaveRequests());
@@ -156,8 +194,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     setFlashes((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'pending-approvals', 'leaves', 'geofence'
-  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence'>(() => {
+  // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'staff-vault', 'pending-approvals', 'leaves', 'geofence'
+  const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence'>(() => {
     if (defaultTab) return defaultTab;
     const user = getStoredCurrentUser();
     if (user?.role === 'staff') return 'portal';
@@ -171,6 +209,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [records, setRecords] = useState<AttendanceRecord[]>(() => getStoredAttendance());
   const [staffRequests, setStaffRequests] = useState<StaffRequest[]>(() => getStoredStaffRequests());
   const [dutyAllocations, setDutyAllocations] = useState<DutyAllocation[]>(() => getStoredDutyAllocations());
+  const [removalRequests, setRemovalRequests] = useState(() => getStoredRemovalRequests());
 
   // Google User / Auth
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
@@ -193,14 +232,29 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [activeCredentialSlip, setActiveCredentialSlip] = useState<CredentialCardData | null>(null);
   const [profileModalStaffId, setProfileModalStaffId] = useState<string | null>(null);
 
-  // Pending approvals (Signups, Staff Requests, Overtime Requests)
+  // Pending approvals (Signups, Staff Requests, Overtime Requests, Removal Requests)
   const pendingUsers = useMemo(() => users.filter((u) => u.is_approved === false), [users]);
   const pendingStaffRequests = useMemo(() => staffRequests.filter((r) => r.status === 'PENDING'), [staffRequests]);
   const pendingOtRequests = useMemo(
     () => dutyAllocations.filter((a) => a.ot_status === 'PENDING' && (a.ot_requested_hours || 0) > 0),
     [dutyAllocations]
   );
-  const totalPendingCount = pendingUsers.length + pendingStaffRequests.length + pendingOtRequests.length;
+  const pendingRemovalRequests = useMemo(() => removalRequests.filter((r) => r.status === 'PENDING'), [removalRequests]);
+  const totalPendingCount = pendingUsers.length + pendingStaffRequests.length + pendingOtRequests.length + pendingRemovalRequests.length;
+
+  const tenantUsersCount = useMemo(() => {
+    const userCode = String(currentUser?.staff_id || currentUser?.id || '');
+    const prefix = userCode.includes('-')
+      ? userCode.split('-')[0].toUpperCase()
+      : (currentUser?.company_prefix || currentUser?.tenant_id || '').toUpperCase();
+    if (!prefix) return users.length;
+    return users.filter((u) => {
+      const uid = String(u.id || '').toUpperCase();
+      if (uid.startsWith(prefix)) return true;
+      const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
+      return sid.startsWith(prefix) || (u.tenant_id && u.tenant_id.toUpperCase() === prefix);
+    }).length;
+  }, [users, currentUser]);
 
   // Listen for route changes and expose helpers
   useEffect(() => {
@@ -221,23 +275,34 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     };
   }, []);
 
-  // Real-time synchronization with primary database collections ('users' / 'staff')
+  // Real-time synchronization with primary database collections ('users' / 'staff' / 'attendance')
   useEffect(() => {
     let isMounted = true;
     const syncWithFirestore = async () => {
       try {
-        const [cloudUsers, cloudStaff] = await Promise.all([
-          fetchLiveUsers(),
-          fetchLiveStaff(),
+        const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
+        const [cloudUsers, cloudStaff, cloudRecords, cloudDuties] = await Promise.all([
+          fetchLiveUsers(effectiveTenantId),
+          fetchLiveStaff(effectiveTenantId),
+          fetchLiveAttendanceRecords(effectiveTenantId),
+          fetchLiveDutyAllocations(effectiveTenantId),
         ]);
         if (!isMounted) return;
-        if (cloudUsers && cloudUsers.length > 0) {
+        if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
           setUsers(cloudUsers);
           saveStoredUsers(cloudUsers);
         }
-        if (cloudStaff && cloudStaff.length > 0) {
+        if (Array.isArray(cloudStaff) && cloudStaff.length > 0) {
           setStaff(cloudStaff);
           saveStoredStaff(cloudStaff);
+        }
+        if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
+          setRecords(cloudRecords);
+          saveStoredAttendance(cloudRecords);
+        }
+        if (Array.isArray(cloudDuties) && cloudDuties.length > 0) {
+          setDutyAllocations(cloudDuties);
+          saveStoredDutyAllocations(cloudDuties);
         }
       } catch (err) {
         console.warn('Firestore live sync note:', err);
@@ -334,20 +399,73 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return new Date(year, month, 0).getDate();
   }, [year, month]);
 
+  // Unified Duty Staff: Derived directly from primary 'users' / 'staff' database collections
+  // Standardized role filtering: WHERE role === 'staff' (management roles ADMIN, MANAGER, SUPERVISOR do not participate in daily duty shifts)
+  const unifiedDutyStaff = useMemo(() => {
+    const staffMap = new Map<string, StaffUser>();
+
+    // 1. Existing staff users with role === 'staff'
+    staff.forEach((s) => {
+      if ((s.role || '').toLowerCase() === 'staff') {
+        staffMap.set(s.staffCode.toUpperCase(), s);
+      }
+    });
+
+    // 2. Synchronize any user from primary users collection with role === 'staff'
+    users.forEach((u) => {
+      if ((u.role || '').toLowerCase() === 'staff') {
+        const code = (u.staff_id || u.username || `HK-${u.id}`).toUpperCase();
+        if (!staffMap.has(code)) {
+          staffMap.set(code, {
+            id: u.id,
+            staffCode: code,
+            name: u.full_name || u.name,
+            role: 'staff',
+            department: u.fixed_department || u.department || 'Floors & Rooms',
+            shift: (u.assigned_shift === '3-11' ? 'Evening' : u.assigned_shift === '11-7' ? 'Night' : 'Morning') as any,
+            active: u.status === 'ACTIVE',
+            dutyType: u.duty_type || 'FIXED',
+            fixedDepartment: u.fixed_department || undefined,
+            isTempReliever: u.is_temp_reliever,
+            tempDepartment: u.temp_department || undefined,
+          });
+        }
+      }
+    });
+
+    return Array.from(staffMap.values());
+  }, [staff, users]);
+
+  // Total active staff count for baseline presence denominator
+  const totalActiveStaffCount = useMemo(() => {
+    return unifiedDutyStaff.filter((s) => s.active).length;
+  }, [unifiedDutyStaff]);
+
   // Staff Only View (Sirf apna data dekhne ke liye):
   // When staff role is logged in, restrict data view to only their own record
   const visibleStaff = useMemo(() => {
     if (currentUser?.role === 'staff') {
-      const filtered = staff.filter((s) => {
+      const filtered = unifiedDutyStaff.filter((s) => {
         if (currentUser.staffId && s.id === currentUser.staffId) return true;
         if (currentUser.staff_id && s.staffCode.toLowerCase() === currentUser.staff_id.toLowerCase()) return true;
         if (currentUser.username && s.staffCode.toLowerCase() === currentUser.username.toLowerCase()) return true;
         return s.name.toLowerCase() === currentUser.name.toLowerCase();
       });
-      return filtered.length > 0 ? filtered : staff.slice(0, 1);
+      return filtered.length > 0 ? filtered : unifiedDutyStaff.slice(0, 1);
     }
-    return staff;
-  }, [staff, currentUser]);
+    return unifiedDutyStaff;
+  }, [unifiedDutyStaff, currentUser]);
+
+  // Dynamic present count for current live date (or today)
+  const dynamicPresentCount = useMemo(() => {
+    if (totalActiveStaffCount === 0) return 0;
+    const presentUserIds = new Set(
+      records
+        .filter((r) => r.date === selectedLiveDate && Boolean(r.punchIn))
+        .map((r) => r.userId)
+    );
+    return unifiedDutyStaff.filter((s) => s.active && presentUserIds.has(s.id)).length;
+  }, [unifiedDutyStaff, records, selectedLiveDate, totalActiveStaffCount]);
 
   // Aggregate monthly data matching Python backend formula
   const summaryData = useMemo<MonthlyStaffSummary[]>(() => {
@@ -440,19 +558,30 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleAddStaffMember = (newStaffData: Omit<StaffUser, 'id'>) => {
-    // Strict Guard Check
-    if (!isAdmin) {
-      addFlash('Unauthorized Access: Admin Privileges Required', 'danger');
+    // Rule: Only authenticated Admins and Managers inside the app can create Staff, Supervisors, or Managers
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized Access: Admin or Manager Privileges Required', 'danger');
       return;
     }
 
-    const newId = staff.length > 0 ? Math.max(...staff.map((s) => s.id)) + 1 : 1;
+    const companyPrefix = activeTenantPrefix;
+    const activeTenantId = activeTenantPrefix;
+    const autoStaffCode =
+      newStaffData.staffCode ||
+      generateSubAccountId(companyPrefix, (newStaffData.role as any) || 'staff', staff);
+
+    const numericStaffIds = staff.map((s) => Number(s.id)).filter((n) => !isNaN(n) && n > 0);
+    const newId = numericStaffIds.length > 0 ? Math.max(...numericStaffIds) + 1 : 101;
     const newMember: StaffUser = {
       ...newStaffData,
       id: newId,
+      staffCode: autoStaffCode,
+      tenant_id: activeTenantId,
+      company_prefix: companyPrefix,
     };
     const updatedStaff = [...staff, newMember];
     handleSaveStaff(updatedStaff);
+    saveStaffToLiveDb(newMember).catch(console.warn);
 
     // Synchronize to User model (id, staff_id, name, role='staff')
     const cleanStaffId = newMember.staffCode;
@@ -462,14 +591,17 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         (u.username && u.username.toLowerCase() === cleanStaffId.toLowerCase())
     );
     if (!existingUser) {
-      const newUserId = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1;
+      const numericUserIds = users.map((u) => Number(u.id)).filter((n) => !isNaN(n) && n > 0);
+      const newUserId = numericUserIds.length > 0 ? Math.max(...numericUserIds) + 1 : 101;
       const linkedUser: AppUser = {
         id: newUserId,
         staff_id: cleanStaffId,
         username: cleanStaffId,
+        tenant_id: activeTenantId,
+        company_prefix: companyPrefix,
         name: newMember.name,
         full_name: newMember.name,
-        role: 'staff',
+        role: (newStaffData.role as any) || 'staff',
         duty_type: 'FIXED',
         fixed_department: newMember.department,
         is_temp_reliever: false,
@@ -488,6 +620,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       const updatedUsers = [...users, linkedUser];
       setUsers(updatedUsers);
       saveStoredUsers(updatedUsers);
+      saveUserToLiveDb(linkedUser).catch(console.warn);
     }
   };
 
@@ -589,14 +722,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   // Role Access Control Decorator: @admin_required & @role_required
-  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'pending-approvals' | 'leaves' | 'geofence') => {
+  const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence') => {
     if (!currentUser) {
       handleAppLogout();
       return;
     }
 
-    // Admin Dashboard / Staff Management / Approvals Queue / Geofence Settings protected by @admin_required
-    if (targetTab === 'live' || targetTab === 'admin-staff' || targetTab === 'pending-approvals' || targetTab === 'geofence') {
+    // Admin Dashboard / Staff Management / Staff Vault / Approvals Queue / Geofence Settings protected by @admin_required
+    if (targetTab === 'live' || targetTab === 'admin-staff' || targetTab === 'staff-vault' || targetTab === 'pending-approvals' || targetTab === 'geofence') {
       const check = checkAdminRequired(currentUser);
       if (!check.authorized && !isAdminOrManager && !isSupervisor) {
         // Unauthorized attempt -> Redirect to login
@@ -682,11 +815,16 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleDeleteUser = async (userId: number) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required to delete users.', 'danger');
+    const target = users.find((u) => u.id === userId);
+    if (!target) return;
+
+    // Check delete permission using canDeleteUser matrix
+    const allowed = canDeleteUser(userRole, target.role, currentUser?.id, target.id);
+    if (!allowed) {
+      addFlash(`Unauthorized: Your role (${(userRole || '').toUpperCase()}) cannot delete ${target.role || 'this'} account.`, 'danger');
       return;
     }
-    const target = users.find((u) => u.id === userId);
+
     const updatedUsers = users.filter((u) => u.id !== userId);
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
@@ -719,6 +857,42 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     window.dispatchEvent(new Event('staff-data-updated'));
     window.dispatchEvent(new Event('user-data-updated'));
     addFlash(`User account ${target?.full_name || target?.name || ''} deleted successfully from database and vault.`, 'info');
+  };
+
+  // Supervisor Staff Removal Request Handlers (Admin/Manager Approval)
+  const handleApproveRemovalRequest = async (requestId: string | number) => {
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required to approve staff removals.', 'danger');
+      return;
+    }
+    const currentApprover = currentUser?.staff_id || currentUser?.username || 'ADMIN';
+    const result = approveRemovalRequest(requestId, currentApprover);
+    if (result.success && result.request) {
+      // Find the user to delete
+      const targetUser = users.find(
+        (u) =>
+          (result.request?.user_id && u.id === result.request.user_id) ||
+          (result.request?.staff_id && (u.staff_id === result.request.staff_id || u.username === result.request.staff_id))
+      );
+      if (targetUser) {
+        await handleDeleteUser(targetUser.id);
+      }
+      setRemovalRequests(getStoredRemovalRequests());
+      addFlash(result.message, 'success');
+    } else {
+      addFlash(result.message, 'warning');
+    }
+  };
+
+  const handleRejectRemovalRequest = (requestId: string | number) => {
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required to reject removal requests.', 'danger');
+      return;
+    }
+    const currentApprover = currentUser?.staff_id || currentUser?.username || 'ADMIN';
+    const result = rejectRemovalRequest(requestId, currentApprover);
+    setRemovalRequests(getStoredRemovalRequests());
+    addFlash(result.message, 'info');
   };
 
   const handleUpdateUserStatus = (userId: number, newStatus: 'ACTIVE' | 'DISABLED') => {
@@ -797,7 +971,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       addFlash('Unauthorized: Admin role required for overtime approvals.', 'danger');
       return;
     }
-    const result = approveDutyOtRequest(allocationId, currentUser?.staff_id || 'ADMIN-001');
+    const result = approveDutyOtRequest(allocationId, currentUser?.staff_id || currentUser?.username || 'SYSTEM');
     setDutyAllocations(getStoredDutyAllocations());
     setRecords(getStoredAttendance());
     addFlash(result.message, 'success');
@@ -808,7 +982,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       addFlash('Unauthorized: Admin role required for overtime rejections.', 'danger');
       return;
     }
-    const result = rejectDutyOtRequest(allocationId, currentUser?.staff_id || 'ADMIN-001');
+    const result = rejectDutyOtRequest(allocationId, currentUser?.staff_id || currentUser?.username || 'SYSTEM');
     setDutyAllocations(getStoredDutyAllocations());
     addFlash(result.message, 'info');
   };
@@ -834,7 +1008,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       return { success: false, message: msg };
     }
 
-    const newUserId = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1;
+    const numericUserIds = users.map((u) => Number(u.id)).filter((n) => !isNaN(n) && n > 0);
+    const newUserId = numericUserIds.length > 0 ? Math.max(...numericUserIds) + 1 : 101;
     // Account banega par is_approved = False rahega
     const newUser: AppUser = {
       id: newUserId,
@@ -885,7 +1060,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     let newStaffId = targetUser.staffId;
     let generatedStaffCode = targetUser.staff_id;
     if (assignedRole === 'staff' && !newStaffId) {
-      newStaffId = staff.length > 0 ? Math.max(...staff.map((s) => s.id)) + 1 : 1;
+      const numericStaffIds = staff.map((s) => Number(s.id)).filter((n) => !isNaN(n) && n > 0);
+      newStaffId = numericStaffIds.length > 0 ? Math.max(...numericStaffIds) + 1 : 101;
       generatedStaffCode = `HK-${newStaffId.toString().padStart(3, '0')}`;
       const newStaffMember: StaffUser = {
         id: newStaffId,
@@ -944,9 +1120,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     is_temp_reliever?: boolean;
     temp_department?: string | null;
   }): { success: boolean; message: string; status?: number } => {
-    // Strict Guard Check
-    if (!isAdmin) {
-      const errorMsg = 'Unauthorized Access: Admin Privileges Required';
+    // Rule: Only authenticated Admins and Managers inside the app can create Staff, Supervisors, or Managers
+    if (!isAdminOrManager) {
+      const errorMsg = 'Unauthorized Access: Admin or Manager Privileges Required';
       addFlash(errorMsg, 'danger');
       return { success: false, message: errorMsg, status: 403 };
     }
@@ -965,8 +1141,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       return { success: false, message: msg };
     }
 
-    const newUserId = users.length > 0 ? Math.max(...users.map((u) => u.id)) + 1 : 1;
-    const newStaffId = staff.length > 0 ? Math.max(...staff.map((s) => s.id)) + 1 : 1;
+    const numericUserIds = users.map((u) => Number(u.id)).filter((n) => !isNaN(n) && n > 0);
+    const newUserId = numericUserIds.length > 0 ? Math.max(...numericUserIds) + 1 : 101;
+    const numericStaffIds = staff.map((s) => Number(s.id)).filter((n) => !isNaN(n) && n > 0);
+    const newStaffId = numericStaffIds.length > 0 ? Math.max(...numericStaffIds) + 1 : 101;
     const area = data.assigned_area.trim() || 'General Ward';
     const pwd = data.password.trim();
     const dutyType = data.duty_type || 'FIXED';
@@ -975,10 +1153,17 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const tempDept = data.temp_department || null;
     const shiftVal = data.assigned_shift || '7-3';
 
+    // Newly added employees automatically inherit the Admin's active 'tenantId' prefix (e.g. SAHO-MGR-002, SAHO-STF-001)
+    const companyPrefix = activeTenantPrefix;
+    const activeTenantId = activeTenantPrefix;
+
     const newAppUser: AppUser = {
       id: newUserId,
       staff_id: chosenStaffId,
       username: chosenStaffId,
+      tenant_id: activeTenantId,
+      tenantId: activeTenantId,
+      company_prefix: companyPrefix,
       password: pwd,
       password_hash: createPasswordHash(pwd),
       raw_password_vault: pwd,
@@ -1006,15 +1191,15 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         shiftVal === '11-7' ? 'Night' : shiftVal === '3-11' ? 'Evening' : 'Morning';
       const newStaffUser: StaffUser = {
         id: newStaffId,
-        staffCode: chosenStaffId.toUpperCase().startsWith('HK-')
-          ? chosenStaffId.toUpperCase()
-          : `HK-${newStaffId.toString().padStart(3, '0')}`,
+        staffCode: chosenStaffId,
+        tenant_id: activeTenantId,
+        company_prefix: companyPrefix,
         name: data.name.trim(),
         role: 'staff',
         dutyType,
         fixedDepartment: fixedDept,
         isTempReliever: isTemp,
-        tempDepartment: tempDept || undefined,
+        tempDepartment: tempDept ?? null,
         department: isTemp && tempDept ? tempDept : fixedDept,
         shift: shiftNamed,
         hourlyRate: 15,
@@ -1163,7 +1348,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   <span>Staff &amp; Vault</span>
                 </span>
                 <span className="badge bg-primary-subtle text-primary border border-primary-subtle" style={{ fontSize: '0.65rem' }}>
-                  {users.length}
+                  {tenantUsersCount}
                 </span>
               </button>
             ) : (
@@ -1628,8 +1813,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               <span>Sync to Google Sheets</span>
             </button>
 
-            {/* Admin Only Buttons (Staff ko nahi dikhega) */}
-            {isAdmin && (
+            {/* Admin and Manager Buttons (Staff & Supervisor restricted) */}
+            {isAdminOrManager && (
               <>
                 <button
                   type="button"
@@ -1641,7 +1826,20 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   title="Open Staff Management & Vault Table"
                 >
                   <Users className="me-1 inline" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Staff &amp; Vault</span>
+                  <span>Staff Roster</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-staff-vault-tab"
+                  onClick={() => handleNavigateTab('staff-vault')}
+                  className={`btn btn-sm cursor-pointer ${
+                    activeTab === 'staff-vault' ? 'btn-primary' : 'btn-outline-primary'
+                  }`}
+                  title="Open Dedicated Staff Vault Table"
+                >
+                  <KeyRound className="me-1 inline text-amber-500" style={{ width: '0.875rem', height: '0.875rem' }} />
+                  <span>Staff Vault</span>
                 </button>
 
                 <button
@@ -1657,16 +1855,18 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   <span>Approvals ({totalPendingCount})</span>
                 </button>
 
-                <button
-                  type="button"
-                  id="btn-open-vault-modal"
-                  onClick={() => setIsAdminVaultModalOpen(true)}
-                  className="btn btn-outline-dark btn-sm cursor-pointer"
-                  title="Open Admin Decrypted Password Vault Modal"
-                >
-                  <KeyRound className="me-1 inline text-amber-500" style={{ width: '0.875rem', height: '0.875rem' }} />
-                  <span>Vault</span>
-                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    id="btn-open-vault-modal"
+                    onClick={() => setIsAdminVaultModalOpen(true)}
+                    className="btn btn-outline-dark btn-sm cursor-pointer"
+                    title="Open Admin Decrypted Password Vault Modal"
+                  >
+                    <KeyRound className="me-1 inline text-amber-500" style={{ width: '0.875rem', height: '0.875rem' }} />
+                    <span>Vault</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -1754,7 +1954,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               Presence
             </span>
             <div className="text-lg sm:text-2xl font-bold mt-1 truncate text-slate-900 font-sans">
-              {aggregatePresentDays}/{totalPossibleDays}
+              {dynamicPresentCount}/{totalActiveStaffCount}
             </div>
           </div>
 
@@ -1793,6 +1993,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             <AdminStaffTable
               users={users}
               currentUserRole={userRole}
+              currentUserId={currentUser?.id}
+              currentStaffId={currentUser?.staff_id || currentUser?.username}
+              currentUserName={currentUser?.name || currentUser?.full_name}
               onUpdateUser={handleUpdateUser}
               onDeleteUser={handleDeleteUser}
               onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
@@ -1800,6 +2003,19 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               onOpenPendingApprovals={() => handleNavigateTab('pending-approvals')}
               pendingCount={totalPendingCount}
               onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+            />
+          ) : activeTab === 'staff-vault' ? (
+            /* Dedicated Staff Vault Table with Strict Tenant Isolation */
+            <StaffVault
+              users={users}
+              currentUser={currentUser}
+              currentUserRole={userRole}
+              currentUserId={currentUser?.id}
+              currentStaffId={currentUser?.staff_id || currentUser?.username}
+              onUpdateUser={handleUpdateUser}
+              onDeleteUser={handleDeleteUser}
+              onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
+              onOpenVaultModal={() => setIsAdminVaultModalOpen(true)}
             />
           ) : activeTab === 'pending-approvals' ? (
             /* Dedicated Pending Approvals Queue View */
@@ -1833,8 +2049,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 </div>
               </div>
 
-              {/* Three-column card queue overview */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Four-column card queue overview */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 {/* 1. Staff Joining Requests */}
                 <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
                   <div className="flex items-center justify-between border-b pb-2">
@@ -1850,8 +2066,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                     </div>
                   ) : (
                     <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                      {pendingStaffRequests.map((req) => (
-                        <div key={req.id} className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                      {pendingStaffRequests.map((req, idx) => (
+                        <div key={`staff-req-${req.id || idx}`} className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
                           <div className="flex items-start justify-between">
                             <div>
                               <div className="font-bold text-xs text-slate-900">{req.candidate_name}</div>
@@ -1900,8 +2116,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                     </div>
                   ) : (
                     <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                      {pendingOtRequests.map((ot) => (
-                        <div key={ot.id} className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg space-y-2">
+                      {pendingOtRequests.map((ot, idx) => (
+                        <div key={`ot-req-${ot.id || idx}`} className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg space-y-2">
                           <div className="flex items-start justify-between">
                             <div>
                               <div className="font-bold text-xs text-slate-900 font-mono">{ot.staff_id}</div>
@@ -1951,8 +2167,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                     </div>
                   ) : (
                     <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                      {pendingUsers.map((pu) => (
-                        <div key={pu.id} className="p-3 bg-purple-50/40 border border-purple-200 rounded-lg space-y-2">
+                      {pendingUsers.map((pu, idx) => (
+                        <div key={pu.staff_id || (pu.id ? `pending-u-${pu.id}` : `pending-u-${idx}`)} className="p-3 bg-purple-50/40 border border-purple-200 rounded-lg space-y-2">
                           <div className="flex items-start justify-between">
                             <div>
                               <div className="font-bold text-xs text-slate-900">{pu.name}</div>
@@ -1967,6 +2183,58 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                               className="flex-1 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-2xs font-bold cursor-pointer"
                             >
                               Approve Staff
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Staff Removal Requests */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <ShieldAlert className="h-4 w-4 text-rose-600" />
+                      <span>Removal Requests ({pendingRemovalRequests.length})</span>
+                    </span>
+                    <span className="badge bg-rose-100 text-rose-800 text-2xs">Removal Queue</span>
+                  </div>
+                  {pendingRemovalRequests.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 text-xs">
+                      No pending removal requests.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                      {pendingRemovalRequests.map((req, idx) => (
+                        <div key={`rem-req-${req.id || idx}`} className="p-3 bg-rose-50/40 border border-rose-200 rounded-lg space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="font-bold text-xs text-slate-900">{req.staff_name}</div>
+                              <div className="text-2xs text-slate-500 font-mono">ID: {req.staff_id}</div>
+                            </div>
+                            <span className="badge bg-rose-100 text-rose-800 text-2xs">PENDING</span>
+                          </div>
+                          <div className="text-2xs bg-white/80 p-2 rounded border border-slate-200 italic text-slate-600">
+                            "{req.reason}"
+                          </div>
+                          <div className="text-2xs text-slate-500">
+                            By: {req.requested_by_name || req.requested_by}
+                          </div>
+                          <div className="flex items-center gap-2 pt-1 border-t border-rose-200">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveRemovalRequest(req.id)}
+                              className="flex-1 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-2xs font-bold cursor-pointer"
+                            >
+                              Approve &amp; Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRejectRemovalRequest(req.id)}
+                              className="px-3 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-2xs font-semibold cursor-pointer"
+                            >
+                              Reject
                             </button>
                           </div>
                         </div>
@@ -2119,6 +2387,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         staff={staff}
         users={users}
         currentUserRole={userRole}
+        companyPrefix={activeTenantPrefix}
         onAddStaff={handleAddStaffMember}
         onToggleActive={handleToggleStaffActive}
         onViewCredentialSlip={(slip) => setActiveCredentialSlip(slip)}
@@ -2148,16 +2417,17 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onFlash={addFlash}
       />
 
-      {/* Admin Only: New Staff Account Creator (No Public Signup) - POST /admin/create_staff_account */}
+      {/* Internal Employee Onboarding (Admin & Manager Privileges) */}
       <RegisterStaffModal
         isOpen={isRegisterStaffModalOpen}
         onClose={() => setIsRegisterStaffModalOpen(false)}
         currentUserRole={userRole}
+        activeTenantPrefix={activeTenantPrefix}
         onStaffAccountCreated={(slip) => setActiveCredentialSlip(slip)}
         onRegister={handleCreateStaffAccount}
       />
 
-      {/* Admin Approval Modal matching POST /admin/approve_user/<id> & Staff Requests & Overtime */}
+      {/* Admin Approval Modal matching POST /admin/approve_user/<id> & Staff Requests & Overtime & Removals */}
       <PendingApprovalModal
         isOpen={isPendingModalOpen}
         onClose={() => setIsPendingModalOpen(false)}
@@ -2171,6 +2441,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onApproveOtRequest={handleApproveOtRequest}
         onRejectOtRequest={handleRejectOtRequest}
         onOpenNewStaffRequest={() => setIsStaffRequestModalOpen(true)}
+        removalRequests={removalRequests}
+        onApproveRemovalRequest={handleApproveRemovalRequest}
+        onRejectRemovalRequest={handleRejectRemovalRequest}
       />
 
       {/* Admin Decrypted Password Vault Terminal Modal */}
@@ -2187,7 +2460,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <StaffRequestModal
         isOpen={isStaffRequestModalOpen}
         onClose={() => setIsStaffRequestModalOpen(false)}
-        currentUserStaffId={currentUser?.staff_id || 'ADMIN-001'}
+        currentUserStaffId={currentUser?.staff_id || currentUser?.username || 'STAFF'}
         onSubmitRequest={handleCreateStaffRequest}
       />
 
@@ -2199,18 +2472,20 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       />
 
       {/* Employee Profile, Quick Actions & Duty Assignment Modal */}
-      <EmployeeProfileModal
-        staffId={profileModalStaffId}
-        onClose={() => setProfileModalStaffId(null)}
-        userRole={userRole === 'admin' ? 'admin' : userRole === 'manager' ? 'manager' : 'supervisor'}
-        selectedDate={selectedLiveDate}
-        onActionComplete={() => {
-          setUsers(getStoredUsers());
-          setStaff(getStoredStaff());
-          setRecords(getStoredAttendance());
-          setDutyAllocations(getStoredDutyAllocations());
-        }}
-      />
+      {profileModalStaffId && (
+        <EmployeeProfileModal
+          staffId={profileModalStaffId}
+          onClose={() => setProfileModalStaffId(null)}
+          userRole={userRole === 'admin' ? 'admin' : userRole === 'manager' ? 'manager' : 'supervisor'}
+          selectedDate={selectedLiveDate}
+          onActionComplete={() => {
+            setUsers(getStoredUsers());
+            setStaff(getStoredStaff());
+            setRecords(getStoredAttendance());
+            setDutyAllocations(getStoredDutyAllocations());
+          }}
+        />
+      )}
 
       {/* System Terminal Info Modal (?) */}
       {isSystemInfoOpen && (

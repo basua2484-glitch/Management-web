@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import Login from './pages/Login';
+import { LoginPage } from './components/LoginPage';
 import AdminDashboard from './pages/AdminDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import SupervisorDashboard from './pages/SupervisorDashboard';
@@ -48,9 +48,9 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Default URL (`/`) -> Intelligently routes to dashboard if logged in, or login */}
-          <Route path="/" element={<RootRedirect />} />
-          <Route path="/login" element={<Login />} />
+          {/* Default URL (`/`) -> Directly renders LoginPage so anyone opening the app lands on the Login Interface first */}
+          <Route path="/" element={<LoginPage />} />
+          <Route path="/login" element={<LoginPage />} />
 
           {/* 1. Admin Dashboard Route */}
           <Route 

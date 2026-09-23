@@ -811,13 +811,13 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {staffUsers.map((user) => {
+                  {staffUsers.map((user, idx) => {
                     const onLeave = isUserOnLeaveOnDate(user, selectedDate);
                     const onOff = isUserWeeklyOffOnDate(user, selectedDate);
                     const bal = user.leaveBalance || { casual: 12, sick: 7, paid: 15 };
 
                     return (
-                      <tr key={user.id} className="hover:bg-white/5 transition-colors">
+                      <tr key={user.staff_id || (user.id ? `leave-user-${user.id}` : `leave-user-${idx}`)} className="hover:bg-white/5 transition-colors">
                         <td className="py-3 px-4 font-mono font-bold text-cyan-300">
                           {user.staff_id || `HK-${user.id.toString().padStart(3, '0')}`}
                         </td>
@@ -901,10 +901,10 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {staffUsers.map((user) => {
+                  {staffUsers.map((user, idx) => {
                     const bal = user.leaveBalance || { casual: 12, sick: 7, paid: 15 };
                     return (
-                      <tr key={user.id} className="hover:bg-white/5 transition-colors">
+                      <tr key={user.staff_id || (user.id ? `leave-bal-${user.id}` : `leave-bal-${idx}`)} className="hover:bg-white/5 transition-colors">
                         <td className="py-3 px-4 font-mono font-bold text-cyan-300">
                           {user.staff_id || `HK-${user.id.toString().padStart(3, '0')}`}
                         </td>

@@ -1,6 +1,7 @@
-import { getStoredUsers, saveStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getStoredUsers, saveStoredUsers, saveStoredCurrentUser } from '../data/mockHousekeepingData';
 import { logout as firebaseLogout } from './firebase';
 import { getApiEndpoint } from './apiConfig';
+import { fetchLiveUsers } from './firestoreService';
 
 export interface LogoutResult {
   success: boolean;
@@ -54,6 +55,10 @@ export async function performLogout(): Promise<LogoutResult> {
     localStorage.removeItem("userId");
     localStorage.removeItem("user_token");
     localStorage.removeItem("user_role");
+    localStorage.removeItem("company_code");
+    localStorage.removeItem("tenant_id");
+    localStorage.removeItem("tenantId");
+    localStorage.removeItem("company_name");
     sessionStorage.clear();
   } catch (err) {
     console.warn('Storage wipe warning:', err);
@@ -190,33 +195,15 @@ export function handleLogout(navigate?: (to: string, options?: { replace?: boole
   }
 }
 
-// System Administration Accounts with direct role routing
-export const USERS_DB = [
-  {
-    id: "admin",
-    aliases: ["admin", "admin001", "admin-001"],
-    pass: "admin123",
-    role: "ADMIN",
-    redirect: "/admin/dashboard",
-    name: "ApexCare Admin",
-  },
-  {
-    id: "manager",
-    aliases: ["manager", "mgr001", "mgr-001"],
-    pass: "manager123",
-    role: "MANAGER",
-    redirect: "/manager-dashboard",
-    name: "Operations Manager",
-  },
-  {
-    id: "supervisor",
-    aliases: ["supervisor", "sup001", "sup-001", "rakesh"],
-    pass: "super123",
-    role: "SUPERVISOR",
-    redirect: "/supervisor/dashboard",
-    name: "Duty Supervisor",
-  },
-];
+// System Administration Accounts with direct role routing (Starts clean with 0 seed accounts)
+export const USERS_DB: {
+  id: string;
+  aliases?: string[];
+  pass: string;
+  role: string;
+  redirect: string;
+  name: string;
+}[] = [];
 
 export const handleLogin = async (
   staffId: string,
@@ -233,86 +220,77 @@ export const handleLogin = async (
     return false;
   }
 
-  // 1. First check mock credentials (Guarantees instant, zero-failure login on Vercel deployment)
-  const mockUser = USERS_DB.find(
-    (u) =>
-      u.id.toLowerCase() === cleanId ||
-      u.id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId ||
-      (u.aliases && u.aliases.some((a) => a.toLowerCase().replace(/[-_\s]/g, '') === normalizedId))
-  );
+  // 1. Check local registered database across all tenants during authentication
+  let allUsers = getStoredUsers('ALL');
 
-  if (mockUser) {
-    if (cleanPass === mockUser.pass) {
-      const roleUpper = mockUser.role.toUpperCase();
-      const token = "JWT_APEXCARE_" + roleUpper + "_" + Date.now();
+  // Also check direct housekeeping_users localStorage array
+  let customFallbackUsers: any[] = [];
+  try {
+    const rawHkUsers = localStorage.getItem('housekeeping_users');
+    if (rawHkUsers) {
+      customFallbackUsers = JSON.parse(rawHkUsers);
+    }
+  } catch {}
 
-      // Save Session Token & Role in Local Storage
-      localStorage.setItem("userToken", token);
-      localStorage.setItem("userRole", roleUpper);
-      localStorage.setItem("userId", mockUser.id);
-      localStorage.setItem("user_token", token);
-      localStorage.setItem("user_role", mockUser.role.toLowerCase());
+  // If user is not found locally, query live Firestore database
+  const localMatch = allUsers.find((u) => {
+    if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId) return true;
+    if (u.username && u.username.toLowerCase() === cleanId) return true;
+    return false;
+  }) || customFallbackUsers.find((u) => {
+    const sid = (u.id || u.staff_id || u.username || '').toString().toLowerCase().replace(/[-_\s]/g, '');
+    const uname = (u.username || u.id || '').toString().toLowerCase();
+    return sid === normalizedId || uname === cleanId;
+  });
 
-      // Set user profile in stored application data
-      const allUsers = getStoredUsers();
-      const matched = allUsers.find(
-        (u) =>
-          u.username.toLowerCase() === mockUser.id.toLowerCase() ||
-          (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId)
-      );
+  if (!localMatch) {
+    try {
+      const liveCloudUsers = await fetchLiveUsers();
+      if (liveCloudUsers && liveCloudUsers.length > 0) {
+        allUsers = liveCloudUsers;
+        saveStoredUsers(liveCloudUsers);
+      }
+    } catch {}
+  }
 
-      if (matched) {
-        saveStoredCurrentUser(matched);
-      } else {
-        saveStoredCurrentUser({
-          id: mockUser.id === 'admin' ? 100 : mockUser.id === 'manager' ? 101 : mockUser.id === 'supervisor' ? 102 : 1,
-          username: mockUser.id,
-          name: mockUser.name,
-          full_name: mockUser.name,
-          role: mockUser.role.toLowerCase() as any,
-          duty_type: 'FIXED',
-          fixed_department: mockUser.role === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
-          is_temp_reliever: false,
-          temp_department: null,
+  // Merge any custom fallback users into allUsers if not already present
+  if (customFallbackUsers.length > 0) {
+    customFallbackUsers.forEach((cu) => {
+      const cid = (cu.id || cu.staff_id || cu.username || '').toString();
+      if (cid && !allUsers.some((u) => (u.staff_id && u.staff_id.toLowerCase() === cid.toLowerCase()) || (u.username && u.username.toLowerCase() === cid.toLowerCase()))) {
+        allUsers.push({
+          id: cu.id || cid,
+          staff_id: cid,
+          username: cu.username || cid,
+          role: (cu.role || 'admin').toLowerCase() as any,
+          full_name: cu.fullName || cu.full_name || cu.name || 'Admin',
+          name: cu.fullName || cu.full_name || cu.name || 'Admin',
+          password: cu.password,
+          raw_password_vault: cu.password,
+          password_hash: cu.password,
           status: 'ACTIVE',
           is_approved: true,
-          staff_id: mockUser.id.toUpperCase(),
-          assigned_area: mockUser.role === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
+          company_name: cu.tenantName || cu.company_name,
+          tenant_id: cu.tenantId || cu.tenant_id,
+          duty_type: 'FIXED',
+          fixed_department: 'Hospital Wide',
+          is_temp_reliever: false,
+          temp_department: null,
           assigned_shift: '7-3',
-          raw_password_vault: mockUser.pass,
-          password_hash: `pbkdf2:sha256:600000$vault_salt$${mockUser.id}`,
+          weeklyOffDay: 'Sunday',
+          leaveBalance: { casual: 12, sick: 7, paid: 15 },
+          leaveRequests: [],
         });
       }
+    });
+  }
 
-      // Sync Session Cookies
-      try {
-        document.cookie = `session=active_${mockUser.id}; Path=/; SameSite=Lax`;
-        document.cookie = `user_id=${mockUser.id}; Path=/; SameSite=Lax`;
-        document.cookie = `role=${mockUser.role.toLowerCase()}; Path=/; SameSite=Lax`;
-        document.cookie = `authToken=${token}; Path=/; SameSite=Lax`;
-        document.cookie = `userRole=${roleUpper}; Path=/; SameSite=Lax`;
-      } catch {}
-
-      // Fire server endpoint asynchronously in background
-      try {
-        fetch(getApiEndpoint('/api/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ staffId: cleanId, password: cleanPass }),
-        }).catch(() => {});
-      } catch {}
-
-      // Dynamic Role-Based Redirection
-      navigate(mockUser.redirect, { replace: true });
-      return true;
-    } else {
-      setError("Invalid credentials");
-      return false;
-    }
+  if (allUsers.length === 0) {
+    setError("0 registered accounts found in system. Please use 'Register Company' to create your organization.");
+    return false;
   }
 
   // 2. Check dynamic registered staff in hospital database
-  const allUsers = getStoredUsers();
   const registered = allUsers.find((u) => {
     if (u.staff_id && u.staff_id.toLowerCase().replace(/[-_\s]/g, '') === normalizedId) return true;
     if (u.username && u.username.toLowerCase() === cleanId) return true;
@@ -342,7 +320,24 @@ export const handleLogin = async (
       localStorage.setItem("userId", registered.staff_id || registered.username);
       localStorage.setItem("user_token", token);
       localStorage.setItem("user_role", registered.role.toLowerCase());
-      saveStoredCurrentUser(registered);
+      
+      const tid = registered.tenant_id || registered.tenantId || '';
+      const staffCode = registered.staff_id || registered.username || '';
+      const prefixMatch = String(staffCode).match(/^([A-Za-z0-9]+)-/);
+      const derivedPrefix = registered.company_prefix || (prefixMatch ? prefixMatch[1].toUpperCase() : tid || 'APEX');
+      
+      localStorage.setItem("company_code", derivedPrefix);
+      localStorage.setItem("tenant_id", tid || derivedPrefix);
+      localStorage.setItem("tenantId", tid || derivedPrefix);
+      if (registered.company_name) {
+        localStorage.setItem("company_name", registered.company_name);
+      }
+      saveStoredCurrentUser({
+        ...registered,
+        tenant_id: tid || derivedPrefix,
+        tenantId: tid || derivedPrefix,
+        company_prefix: derivedPrefix,
+      });
 
       try {
         document.cookie = `session=active_${registered.id}; Path=/; SameSite=Lax`;
@@ -350,6 +345,9 @@ export const handleLogin = async (
         document.cookie = `role=${registered.role.toLowerCase()}; Path=/; SameSite=Lax`;
         document.cookie = `authToken=${token}; Path=/; SameSite=Lax`;
         document.cookie = `userRole=${roleUpper}; Path=/; SameSite=Lax`;
+        if (registered.tenant_id) {
+          document.cookie = `tenant_id=${registered.tenant_id}; Path=/; SameSite=Lax`;
+        }
       } catch {}
 
       navigate(redirect, { replace: true });

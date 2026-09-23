@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Shield, KeyRound, Eye, EyeOff, Lock, Copy, Check, Search, ShieldAlert, AlertTriangle, Trash2 } from 'lucide-react';
 import type { AppUser, UserRole } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
+import { canDeleteUser } from './AdminStaffTable';
 
 interface AdminVaultModalProps {
   isOpen: boolean;
@@ -39,7 +40,39 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const filteredUsers = users.filter((u) => {
+  // Extract active tenant prefix
+  const activeTenantPrefix = (() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const curUserStr = localStorage.getItem('hk_current_user_v2') || localStorage.getItem('currentUser');
+        if (curUserStr) {
+          const u = JSON.parse(curUserStr);
+          if (u?.id && typeof u.id === 'string' && u.id.includes('-')) return u.id.split('-')[0].toUpperCase();
+          if (u?.staff_id && typeof u.staff_id === 'string' && u.staff_id.includes('-')) return u.staff_id.split('-')[0].toUpperCase();
+          if (u?.company_prefix) return u.company_prefix.toUpperCase();
+          if (u?.tenant_id) return u.tenant_id.toUpperCase();
+        }
+        const code = localStorage.getItem('company_code') || localStorage.getItem('tenant_id');
+        if (code) return code.toUpperCase();
+        const uid = localStorage.getItem('userId');
+        if (uid && uid.includes('-')) return uid.split('-')[0].toUpperCase();
+      }
+    } catch {}
+    return '';
+  })();
+
+  const tenantScopedUsers = activeTenantPrefix
+    ? users.filter((u) => {
+        const uid = String(u.id || '').toUpperCase();
+        if (uid.startsWith(activeTenantPrefix)) return true;
+        const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
+        if (sid && sid.startsWith(activeTenantPrefix)) return true;
+        const tid = (u.tenant_id || u.tenantId || u.company_prefix || '').toUpperCase();
+        return tid === activeTenantPrefix;
+      })
+    : users;
+
+  const filteredUsers = tenantScopedUsers.filter((u) => {
     const q = search.toLowerCase().trim();
     if (!q) return true;
     return (
@@ -166,20 +199,26 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                         <td colSpan={7} className="py-8 text-center text-slate-400 font-sans">
                           <div className="flex flex-col items-center justify-center gap-1.5">
                             <KeyRound className="h-6 w-6 text-slate-500 mb-1" />
-                            <p className="font-semibold text-slate-300 text-sm">No Active Staff Found</p>
-                            <p className="text-2xs text-slate-500">Vault database contains 0 active staff credentials matching query.</p>
+                            <p className="font-semibold text-slate-300 text-sm">
+                              {users.length === 0 ? '0 Registered Accounts / No Active Staff Found' : 'No Active Staff Found'}
+                            </p>
+                            <p className="text-2xs text-slate-500">
+                              {users.length === 0
+                                ? 'The primary Vault database currently contains 0 registered accounts.'
+                                : 'Vault database contains 0 active staff credentials matching query.'}
+                            </p>
                           </div>
                         </td>
                       </tr>
                     ) : (
-                      filteredUsers.map((user) => {
+                      filteredUsers.map((user, idx) => {
                         const isRevealed = !!revealedIds[user.id];
                         const vaultResult = decryptVaultPassword(user, currentUserRole);
                         const rawPassword = vaultResult.password || '••••••••';
                         const userStatus = user.status || (user.is_approved === false ? 'PENDING_APPROVAL' : 'ACTIVE');
 
                         return (
-                          <tr key={user.id} className="hover:bg-slate-800/40 transition-colors">
+                          <tr key={user.staff_id || (user.id ? `vault-${user.id}` : `vault-${idx}`)} className="hover:bg-slate-800/40 transition-colors">
                             {/* Staff ID & Name */}
                             <td className="py-3 px-3">
                               <div className="font-bold text-white text-xs">{user.full_name || user.name}</div>
@@ -290,7 +329,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                                     {userStatus === 'ACTIVE' ? 'Disable' : 'Activate'}
                                   </button>
                                 )}
-                                {user.role !== 'admin' && onDeleteUser && (
+                                {onDeleteUser && canDeleteUser(currentUserRole, user.role) && (
                                   <button
                                     type="button"
                                     onClick={() => setUserToDelete(user)}

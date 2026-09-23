@@ -198,8 +198,17 @@ export const ReportTable: React.FC<ReportTableProps> = ({
           <tbody className="text-xs text-slate-800 divide-y divide-slate-100">
             {filteredAndSortedData.length === 0 ? (
               <tr>
-                <td colSpan={6} className="p-8 text-center bg-slate-50 text-slate-400">
-                  No staff records matching filter for {monthName}.
+                <td colSpan={6} className="p-8 text-center bg-slate-50 text-slate-500">
+                  <div className="flex flex-col items-center justify-center gap-1.5 py-4">
+                    <span className="text-sm font-bold text-slate-700">
+                      {summaryData.length === 0 ? '0 Registered Accounts / No Active Staff Found' : `No Staff Records Found for ${monthName}`}
+                    </span>
+                    <p className="text-xs text-slate-400">
+                      {summaryData.length === 0
+                        ? `The Staff Vault database currently has 0 active staff records for ${monthName}.`
+                        : `No staff records matching the selected search or filter criteria for ${monthName}.`}
+                    </p>
+                  </div>
                 </td>
               </tr>
             ) : (

@@ -3,6 +3,7 @@ import type {
   AttendanceRecord,
   AppUser,
   StaffRequest,
+  RemovalRequest,
   UserRole,
   SystemRole,
   StaffDashboardView,
@@ -116,9 +117,19 @@ export function normalizeUser(u: any): AppUser {
     };
   });
 
+  const parsedNumFromStaffId = staff_id
+    ? parseInt(staff_id.replace(/\D/g, ''), 10)
+    : NaN;
+  const uniqueNumericId =
+    typeof u.id === 'number' && !isNaN(u.id) && u.id > 0
+      ? u.id
+      : !isNaN(parsedNumFromStaffId) && parsedNumFromStaffId > 0
+      ? parsedNumFromStaffId
+      : Math.floor(Math.random() * 899999) + 100000;
+
   return {
     ...u,
-    id: u.id || 1,
+    id: uniqueNumericId,
     staff_id,
     username: u.username || staff_id,
     full_name,
@@ -142,73 +153,16 @@ export function normalizeUser(u: any): AppUser {
     weekly_off_day: weeklyOffDay,
     leaveBalance,
     leave_balance: leaveBalance,
+    tenant_id: u.tenant_id || u.tenantId || (staff_id.includes('-') ? staff_id.split('-')[0].toUpperCase() : 'APEX'),
+    tenantId: u.tenantId || u.tenant_id || (staff_id.includes('-') ? staff_id.split('-')[0].toUpperCase() : 'APEX'),
+    company_prefix: u.company_prefix || u.tenant_id || (staff_id.includes('-') ? staff_id.split('-')[0].toUpperCase() : 'APEX'),
+    company_name: u.company_name || u.tenantName || 'ApexCare Hospital',
     leaveRequests,
     leave_requests: leaveRequests,
   };
 }
 
-export const INITIAL_USERS: AppUser[] = [
-  {
-    id: 100,
-    staff_id: 'ADMIN-001',
-    full_name: 'ApexCare Admin',
-    name: 'ApexCare Admin',
-    username: 'admin',
-    password: 'admin123',
-    password_hash: createPasswordHash('admin123'),
-    raw_password_vault: 'admin123',
-    role: 'admin',
-    duty_type: 'FIXED',
-    fixed_department: 'HQ Ops Control',
-    is_temp_reliever: false,
-    temp_department: null,
-    department: 'HK Operations Management',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'HQ Ops Control',
-    assigned_shift: '7-3',
-  },
-  {
-    id: 101,
-    staff_id: 'MGR-001',
-    full_name: 'Operations Manager',
-    name: 'Operations Manager',
-    username: 'manager',
-    password: 'manager123',
-    password_hash: createPasswordHash('manager123'),
-    raw_password_vault: 'manager123',
-    role: 'manager',
-    duty_type: 'FIXED',
-    fixed_department: 'Ops Floor & Inspection',
-    is_temp_reliever: false,
-    temp_department: null,
-    department: 'Housekeeping Operations',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'Ops Floor & Inspection',
-    assigned_shift: '7-3',
-  },
-  {
-    id: 102,
-    staff_id: 'SUP-001',
-    full_name: 'Supervisor Rakesh Verma',
-    name: 'Supervisor Rakesh Verma',
-    username: 'supervisor',
-    password: 'super123',
-    password_hash: createPasswordHash('super123'),
-    raw_password_vault: 'super123',
-    role: 'supervisor',
-    duty_type: 'FIXED',
-    fixed_department: 'General Ward & ICU',
-    is_temp_reliever: false,
-    temp_department: null,
-    department: 'Floor Supervision & Shifts',
-    status: 'ACTIVE',
-    is_approved: true,
-    assigned_area: 'General Ward & ICU',
-    assigned_shift: '7-3',
-  },
-];
+export const INITIAL_USERS: AppUser[] = [];
 
 export const INITIAL_STAFF_REQUESTS: StaffRequest[] = [];
 
@@ -244,16 +198,28 @@ const PURGED_DUMMY_NAMES = new Set([
 const STORAGE_KEY_STAFF = 'hk_staff_users_v2';
 const STORAGE_KEY_ATTENDANCE = 'hk_attendance_records_v2';
 
-export function getStoredStaff(): StaffUser[] {
+export function getStoredStaff(companyPrefixFilter?: string): StaffUser[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_STAFF);
     if (data) {
       const parsed: StaffUser[] = JSON.parse(data);
-      return parsed.filter(
+      const cleaned = parsed.filter(
         (s) =>
           !PURGED_DUMMY_STAFF_IDS.has(s.staffCode?.toUpperCase()) &&
           !PURGED_DUMMY_NAMES.has(s.name?.trim().toLowerCase())
       );
+
+      const activePrefix = companyPrefixFilter !== undefined ? companyPrefixFilter : getActiveCompanyPrefix();
+      if (activePrefix && activePrefix !== 'ALL') {
+        const prefixUpper = activePrefix.toUpperCase();
+        return cleaned.filter((s) => {
+          const sc = (s.staffCode || (s as any).staff_id || String(s.id || '')).toUpperCase();
+          if (sc.startsWith(prefixUpper)) return true;
+          const tid = (s.tenant_id || s.tenantId || '').toUpperCase();
+          return tid === prefixUpper;
+        });
+      }
+      return cleaned;
     }
   } catch (e) {
     console.error('Failed to parse staff from local storage', e);
@@ -263,7 +229,28 @@ export function getStoredStaff(): StaffUser[] {
 
 export function saveStoredStaff(staff: StaffUser[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(staff));
+    const activePrefix = getActiveCompanyPrefix();
+    let allStored: StaffUser[] = [];
+    const data = localStorage.getItem(STORAGE_KEY_STAFF);
+    if (data) {
+      try {
+        allStored = JSON.parse(data);
+      } catch {}
+    }
+
+    let combined: StaffUser[];
+    if (activePrefix) {
+      const otherTenants = allStored.filter((s) => {
+        const sc = (s.staffCode || (s as any).staff_id || String(s.id || '')).toUpperCase();
+        const tid = (s.tenant_id || s.tenantId || '').toUpperCase();
+        return !sc.startsWith(activePrefix) && tid !== activePrefix;
+      });
+      combined = [...otherTenants, ...staff];
+    } else {
+      combined = staff;
+    }
+
+    localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(combined));
   } catch (e) {
     console.error('Failed to save staff to local storage', e);
   }
@@ -317,6 +304,113 @@ export function saveStoredAttendance(records: AttendanceRecord[]): void {
 const STORAGE_KEY_USERS = 'hk_auth_users_v2';
 const STORAGE_KEY_CURRENT_USER = 'hk_current_user_v2';
 const STORAGE_KEY_STAFF_REQUESTS = 'hk_staff_requests_v1';
+const STORAGE_KEY_REMOVAL_REQUESTS = 'hk_removal_requests_v1';
+
+export function getStoredRemovalRequests(): RemovalRequest[] {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY_REMOVAL_REQUESTS);
+    if (data) return JSON.parse(data);
+  } catch (e) {
+    console.error('Failed to parse removal requests from local storage', e);
+  }
+  return [];
+}
+
+export function saveStoredRemovalRequests(requests: RemovalRequest[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_REMOVAL_REQUESTS, JSON.stringify(requests));
+    window.dispatchEvent(new CustomEvent('removal-requests-updated'));
+  } catch (e) {
+    console.error('Failed to save removal requests to local storage', e);
+  }
+}
+
+export function createRemovalRequest(data: {
+  staff_id: string;
+  staff_name: string;
+  user_id?: number;
+  role?: string;
+  requested_by: string;
+  requested_by_name?: string;
+  reason: string;
+}): RemovalRequest {
+  const requests = getStoredRemovalRequests();
+  const nextId = `rem_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const newRequest: RemovalRequest = {
+    id: nextId,
+    staff_id: data.staff_id,
+    staff_name: data.staff_name,
+    user_id: data.user_id,
+    role: data.role || 'staff',
+    requested_by: data.requested_by,
+    requested_by_name: data.requested_by_name,
+    reason: data.reason.trim(),
+    status: 'PENDING',
+    created_at: new Date().toISOString(),
+  };
+
+  const updated = [newRequest, ...requests];
+  saveStoredRemovalRequests(updated);
+  return newRequest;
+}
+
+export function approveRemovalRequest(
+  requestId: string | number,
+  reviewedBy: string
+): { success: boolean; message: string; request?: RemovalRequest } {
+  const requests = getStoredRemovalRequests();
+  const target = requests.find((r) => String(r.id) === String(requestId));
+  if (!target) {
+    return { success: false, message: 'Removal request not found' };
+  }
+
+  // Mark request approved
+  const updatedRequests = requests.map((r) =>
+    String(r.id) === String(requestId)
+      ? { ...r, status: 'APPROVED' as const, reviewed_by: reviewedBy, reviewed_at: new Date().toISOString() }
+      : r
+  );
+  saveStoredRemovalRequests(updatedRequests);
+
+  // Perform actual deletion of user and staff roster records
+  const users = getStoredUsers();
+  const targetUser = users.find(
+    (u) =>
+      (target.user_id && u.id === target.user_id) ||
+      (target.staff_id && u.staff_id?.toLowerCase() === target.staff_id.toLowerCase())
+  );
+  if (targetUser) {
+    const updatedUsers = users.filter((u) => u.id !== targetUser.id);
+    saveStoredUsers(updatedUsers);
+  }
+
+  const staff = getStoredStaff();
+  const updatedStaff = staff.filter(
+    (s) =>
+      (target.staff_id && s.staffCode?.toLowerCase() === target.staff_id.toLowerCase()) ||
+      (target.user_id && s.id === target.user_id)
+  );
+  saveStoredStaff(updatedStaff);
+
+  window.dispatchEvent(new Event('staff-data-updated'));
+  window.dispatchEvent(new Event('user-data-updated'));
+
+  return { success: true, message: `Staff member ${target.staff_name} removed successfully.`, request: target };
+}
+
+export function rejectRemovalRequest(
+  requestId: string | number,
+  reviewedBy: string
+): { success: boolean; message: string } {
+  const requests = getStoredRemovalRequests();
+  const updatedRequests = requests.map((r) =>
+    String(r.id) === String(requestId)
+      ? { ...r, status: 'REJECTED' as const, reviewed_by: reviewedBy, reviewed_at: new Date().toISOString() }
+      : r
+  );
+  saveStoredRemovalRequests(updatedRequests);
+  return { success: true, message: 'Removal request rejected.' };
+}
 
 export function getStoredStaffRequests(): StaffRequest[] {
   try {
@@ -447,30 +541,136 @@ export function rejectStaffRequest(requestId: number): { success: boolean; messa
   return { success: true, message: 'Staff request rejected.' };
 }
 
-export function getStoredUsers(): AppUser[] {
+export function getActiveCompanyPrefix(currentUserTenantId?: string): string {
+  if (currentUserTenantId && currentUserTenantId.trim()) {
+    const cleaned = currentUserTenantId.trim().toUpperCase();
+    return cleaned.includes('-') ? cleaned.split('-')[0] : cleaned;
+  }
+  try {
+    if (typeof localStorage === 'undefined') return '';
+    const companyCode = localStorage.getItem('company_code');
+    if (companyCode && companyCode.trim()) return companyCode.trim().toUpperCase();
+    const tenantId = localStorage.getItem('tenant_id') || localStorage.getItem('tenantId');
+    if (tenantId && tenantId.trim()) return tenantId.trim().toUpperCase();
+    const curUserStr = localStorage.getItem('hk_current_user_v2') || localStorage.getItem('currentUser');
+    if (curUserStr) {
+      const u = JSON.parse(curUserStr);
+      if (u?.company_prefix) return u.company_prefix.trim().toUpperCase();
+      if (u?.tenant_id) return u.tenant_id.trim().toUpperCase();
+      if (u?.tenantId) return u.tenantId.trim().toUpperCase();
+      const id = u?.id || u?.staff_id || u?.username;
+      if (typeof id === 'string' && id.includes('-')) {
+        return id.split('-')[0].toUpperCase();
+      }
+    }
+    const userId = localStorage.getItem('userId');
+    if (userId && userId.includes('-')) {
+      return userId.split('-')[0].toUpperCase();
+    }
+  } catch {}
+  return '';
+}
+
+export function getStoredUsers(companyPrefixFilter?: string): AppUser[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY_USERS);
+    let parsed: AppUser[] = [];
     if (data) {
-      const parsed: AppUser[] = JSON.parse(data);
+      try {
+        parsed = JSON.parse(data);
+      } catch {}
+    }
+
+    // Also ingest users stored in housekeeping_users
+    const legacyData = localStorage.getItem('housekeeping_users');
+    if (legacyData) {
+      try {
+        const legacyParsed: any[] = JSON.parse(legacyData);
+        legacyParsed.forEach((lu) => {
+          const sid = lu.staff_id || lu.username || lu.id;
+          if (sid && !parsed.some((p) => (p.staff_id && p.staff_id.toLowerCase() === sid.toLowerCase()) || (p.username && p.username.toLowerCase() === sid.toLowerCase()))) {
+            parsed.push(normalizeUser({
+              ...lu,
+              staff_id: sid,
+              username: lu.username || sid,
+              role: (lu.role || 'ADMIN').toLowerCase(),
+              full_name: lu.fullName || lu.full_name || lu.name || 'Master Admin',
+              password: lu.password,
+              raw_password_vault: lu.password,
+              company_name: lu.tenantName || lu.company_name,
+            }));
+          }
+        });
+      } catch {}
+    }
+
+    if (parsed.length > 0) {
       const filtered = parsed
-        .filter(
-          (u) =>
-            u.role !== 'staff' ||
-            (!PURGED_DUMMY_STAFF_IDS.has(u.staff_id?.toUpperCase()) &&
-              !PURGED_DUMMY_NAMES.has((u.full_name || u.name || '').trim().toLowerCase()))
-        )
+        .filter((u) => {
+          const sid = (u.staff_id || '').toUpperCase();
+          const uname = (u.username || '').toLowerCase();
+          const name = (u.full_name || u.name || '').trim().toLowerCase();
+
+          // 1. Purge default initial seed accounts
+          if (sid === 'ADMIN-001' && (name.includes('admin') || uname === 'admin')) return false;
+          if (sid === 'MGR-001' && (name.includes('manager') || uname === 'manager')) return false;
+          if (sid === 'SUP-001' && (name.includes('supervisor') || name.includes('rakesh') || uname === 'supervisor')) return false;
+
+          // 2. Purge dummy staff
+          if (PURGED_DUMMY_STAFF_IDS.has(sid)) return false;
+          if (PURGED_DUMMY_NAMES.has(name)) return false;
+
+          return true;
+        })
         .map((u) => normalizeUser(u));
-      return filtered.length > 0 ? filtered : INITIAL_USERS.map((u) => normalizeUser(u));
+
+      // 4. Isolation to LocalStorage Utilities:
+      // Automatic tenant isolation based on logged-in user's company prefix
+      const activePrefix = companyPrefixFilter !== undefined ? companyPrefixFilter : getActiveCompanyPrefix();
+      if (activePrefix && activePrefix !== 'ALL') {
+        const prefixUpper = activePrefix.toUpperCase();
+        return filtered.filter((u) => {
+          const uid = String(u.id || '').toUpperCase();
+          if (uid.startsWith(prefixUpper)) return true;
+          const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
+          if (sid.startsWith(prefixUpper)) return true;
+          const tid = (u.tenant_id || u.tenantId || u.company_prefix || '').toUpperCase();
+          return tid === prefixUpper;
+        });
+      }
+
+      return filtered;
     }
   } catch (e) {
     console.error('Failed to parse users from local storage', e);
   }
-  return INITIAL_USERS.map((u) => normalizeUser(u));
+  return [];
 }
 
 export function saveStoredUsers(users: AppUser[]): void {
   try {
-    const normalized = users.map((u) => normalizeUser(u));
+    const activePrefix = getActiveCompanyPrefix();
+    let allStored: AppUser[] = [];
+    const data = localStorage.getItem(STORAGE_KEY_USERS);
+    if (data) {
+      try {
+        allStored = JSON.parse(data);
+      } catch {}
+    }
+
+    let combined: AppUser[];
+    if (activePrefix) {
+      const otherTenants = allStored.filter((u) => {
+        const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
+        const tid = (u.tenant_id || u.tenantId || u.company_prefix || '').toUpperCase();
+        return !sid.startsWith(activePrefix) && tid !== activePrefix;
+      });
+      combined = [...otherTenants, ...users];
+    } else {
+      combined = users;
+    }
+
+    const normalized = combined.map((u) => normalizeUser(u));
     localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(normalized));
   } catch (e) {
     console.error('Failed to save users to local storage', e);
@@ -624,7 +824,7 @@ export function saveStoredDutyAllocations(allocations: DutyAllocation[]): void {
 
 export function approveDutyOtRequest(
   allocationId: number,
-  approvedBy: string = 'ADMIN-001'
+  approvedBy: string = 'ADMIN'
 ): { success: boolean; message: string } {
   const allocations = getStoredDutyAllocations();
   const updated = allocations.map((a) => {
@@ -670,7 +870,7 @@ export function approveDutyOtRequest(
 
 export function rejectDutyOtRequest(
   allocationId: number,
-  rejectedBy: string = 'ADMIN-001'
+  rejectedBy: string = 'ADMIN'
 ): { success: boolean; message: string } {
   const allocations = getStoredDutyAllocations();
   const updated = allocations.map((a) => {
@@ -1237,7 +1437,7 @@ export function submitStaffOtRequest(params: {
       staff_id: cleanStaffId,
       date: dateStr,
       assigned_department: params.department || 'General Housekeeping',
-      assigned_by_supervisor: 'SUP-001',
+      assigned_by_supervisor: 'Supervisor',
       ot_requested_hours: params.hours,
       ot_status: 'PENDING',
       notes: params.reason || 'Staff Overtime Extension Request',

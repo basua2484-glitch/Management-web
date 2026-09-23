@@ -71,7 +71,7 @@ export const SupervisorDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { user: authUser, logout, role: authRole } = useAuth();
 
-  const effectiveSupervisorId = authUser?.staff_id || authUser?.username || 'SUP-001';
+  const effectiveSupervisorId = authUser?.staff_id || authUser?.username || 'SUPERVISOR';
   const supervisorName = authUser?.full_name || authUser?.name || 'Supervisor';
 
   // Selected date for attendance (defaults to current dynamic system date)
@@ -1053,9 +1053,9 @@ export const SupervisorDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredStaff.map((staff) => (
+                    {filteredStaff.map((staff, idx) => (
                       <tr
-                        key={staff.id}
+                        key={staff.staffCode || (staff.id ? `sup-staff-${staff.id}` : `sup-staff-${idx}`)}
                         id={`row-supervisor-live-staff-${staff.id}`}
                         onClick={() => setSelectedProfileStaffId(staff.staffCode)}
                         className="hover:bg-blue-50/60 transition-colors cursor-pointer group"
@@ -1242,12 +1242,12 @@ export const SupervisorDashboard: React.FC = () => {
                     {records
                       .filter((r) => r.date === selectedDate)
                       .slice(0, 15)
-                      .map((rec) => {
+                      .map((rec, idx) => {
                         const staff = staffList.find((s) => s.id === rec.userId);
                         const staffCode = staff?.staffCode || rec.staff_id;
                         return (
                           <tr
-                            key={rec.id}
+                            key={rec.id ? `archive-rec-${rec.id}` : `archive-rec-${rec.date}-${idx}`}
                             id={`row-archive-staff-${rec.id}`}
                             onClick={() => {
                               if (staffCode) setSelectedProfileStaffId(staffCode);
@@ -1302,9 +1302,9 @@ export const SupervisorDashboard: React.FC = () => {
                   Past Overtime Authorizations Log
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  {historicalOtRequests.map((ot) => (
+                  {historicalOtRequests.map((ot, idx) => (
                     <div
-                      key={ot.id}
+                      key={ot.id ? `hist-ot-${ot.id}` : `hist-ot-${ot.date}-${idx}`}
                       className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
                     >
                       <div>
@@ -1384,8 +1384,8 @@ export const SupervisorDashboard: React.FC = () => {
                   onChange={(e) => setContinuousOtStaffCode(e.target.value)}
                   className="w-full text-xs font-semibold rounded-xl border border-slate-300 bg-white p-2.5 focus:ring-1 focus:ring-blue-600 focus:border-blue-600"
                 >
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.staffCode}>
+                  {staffList.map((s, idx) => (
+                    <option key={s.staffCode || (s.id ? `ot-opt-${s.id}` : `ot-opt-${idx}`)} value={s.staffCode}>
                       {s.name} ({s.staffCode}) &bull; Current: {s.department}
                     </option>
                   ))}
@@ -1521,8 +1521,8 @@ export const SupervisorDashboard: React.FC = () => {
                   onChange={(e) => setRecallStaffCode(e.target.value)}
                   className="w-full text-xs font-semibold rounded-xl border border-slate-300 bg-white p-2.5 focus:ring-1 focus:ring-rose-500 focus:border-rose-500"
                 >
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.staffCode}>
+                  {staffList.map((s, idx) => (
+                    <option key={s.staffCode || (s.id ? `recall-opt-${s.id}` : `recall-opt-${idx}`)} value={s.staffCode}>
                       {s.name} ({s.staffCode}) &bull; {s.department}
                     </option>
                   ))}
@@ -1596,18 +1596,20 @@ export const SupervisorDashboard: React.FC = () => {
       )}
 
       {/* Employee Profile, Quick Actions & Duty Assignment Modal */}
-      <EmployeeProfileModal
-        staffId={selectedProfileStaffId}
-        onClose={() => setSelectedProfileStaffId(null)}
-        userRole="supervisor"
-        selectedDate={selectedDate}
-        isShiftGated={!dutyState.isPunchedIn}
-        onActionComplete={() => {
-          setUsers(getStoredUsers());
-          setRecords(getStoredAttendance());
-          setDutyAllocations(getStoredDutyAllocations());
-        }}
-      />
+      {selectedProfileStaffId && (
+        <EmployeeProfileModal
+          staffId={selectedProfileStaffId}
+          onClose={() => setSelectedProfileStaffId(null)}
+          userRole="supervisor"
+          selectedDate={selectedDate}
+          isShiftGated={!dutyState.isPunchedIn}
+          onActionComplete={() => {
+            setUsers(getStoredUsers());
+            setRecords(getStoredAttendance());
+            setDutyAllocations(getStoredDutyAllocations());
+          }}
+        />
+      )}
 
       {/* Geofence Rejection Popup Modal */}
       <GeofenceRejectionModal

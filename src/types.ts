@@ -1,6 +1,27 @@
 export type UserRole = 'admin' | 'manager' | 'supervisor' | 'staff';
 export type SystemRole = 'admin' | 'manager' | 'supervisor' | 'staff';
 
+export interface Tenant {
+  tenant_id: string; // e.g. TENANT-APEX or TENANT-APEX-apexcare
+  company_name: string; // e.g. "ApexCare"
+  company_prefix: string; // e.g. "APEX"
+  root_admin_id: string; // e.g. "APEX-ADM-001"
+  admin_name: string;
+  admin_email?: string;
+  created_at: string;
+  status: 'ACTIVE' | 'INACTIVE';
+}
+
+export interface TaskItem {
+  id: string;
+  tenant_id: string;
+  title: string;
+  assigned_to?: string;
+  department?: string;
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+  created_at: string;
+}
+
 export interface StaffDashboardView {
   staffId: string;
   fullName: string;
@@ -179,6 +200,9 @@ export interface StaffDutyProfile {
 
 export interface DutyAllocation {
   id: number;
+  tenant_id?: string;
+  tenantId?: string;
+  company_prefix?: string;
   staff_id: string;
   date: string; // YYYY-MM-DD
   assigned_department: string;
@@ -228,7 +252,11 @@ export interface DutyAllocation {
  */
 export interface User {
   id: number;
-  staff_id: string; // e.g. HK-012
+  tenant_id?: string;
+  tenantId?: string;
+  company_name?: string;
+  company_prefix?: string;
+  staff_id: string; // e.g. APEX-ADM-001 or HK-012
   full_name: string;
   name: string; // alias for full_name for backward compatibility
   role: UserRole; // 'admin', 'manager', 'supervisor', 'staff'
@@ -306,6 +334,22 @@ export interface StaffRequest {
   created_at: string; // ISO string
 }
 
+export interface RemovalRequest {
+  id: string | number;
+  tenant_id?: string;
+  staff_id: string; // e.g. HK-012 or user.staff_id
+  staff_name: string;
+  user_id?: number;
+  role?: string;
+  requested_by: string; // Supervisor Staff ID / username
+  requested_by_name?: string;
+  reason: string; // Reason for Removal / Termination Request
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  created_at: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+}
+
 export interface FlashMessage {
   id: string;
   type: 'danger' | 'warning' | 'success' | 'info';
@@ -314,7 +358,10 @@ export interface FlashMessage {
 
 export interface StaffUser {
   id: number;
-  staffCode: string; // e.g., "HK-001"
+  tenant_id?: string;
+  tenantId?: string;
+  company_prefix?: string;
+  staffCode: string; // e.g., "APEX-STF-001" or "HK-001"
   name: string;
   role: 'staff' | 'supervisor' | 'lead';
   department: string;
@@ -389,6 +436,9 @@ export interface DailyAttendanceCalculation {
  */
 export interface AttendanceRecord {
   id: string;
+  tenant_id?: string;
+  tenantId?: string;
+  company_prefix?: string;
   userId: number; // numeric user ID link
   staff_id?: string; // HK-012
   calendar_date?: string; // YYYY-MM-DD

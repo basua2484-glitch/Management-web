@@ -1,12 +1,15 @@
-import React, { useState } from 'react';
-import { X, UserPlus, Check, AlertTriangle, Shield, KeyRound, Building2, User } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, UserPlus, Check, AlertTriangle, Shield, KeyRound, Building2, User, Lock, Sparkles } from 'lucide-react';
 import type { UserRole } from '../types';
 import type { CredentialCardData } from './CredentialCardModal';
+import { generateSubAccountId } from '../services/firestoreService';
+import { getStoredUsers } from '../data/mockHousekeepingData';
 
 interface RegisterStaffModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUserRole?: UserRole;
+  activeTenantPrefix?: string;
   onStaffAccountCreated?: (slip: CredentialCardData) => void;
   onRegister: (data: {
     staff_id?: string;
@@ -27,6 +30,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   isOpen,
   onClose,
   currentUserRole = 'admin',
+  activeTenantPrefix,
   onStaffAccountCreated,
   onRegister,
 }) => {
@@ -41,17 +45,35 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   const [tempDepartment, setTempDepartment] = useState('');
   const [errorWarning, setErrorWarning] = useState<string | null>(null);
 
+  // Inherit active Admin/Manager tenantId prefix
+  const companyPrefix = (
+    activeTenantPrefix ||
+    (typeof localStorage !== 'undefined' &&
+      (localStorage.getItem('tenant_id') ||
+        localStorage.getItem('tenantId') ||
+        localStorage.getItem('company_code'))) ||
+    'APEX'
+  ).toUpperCase();
+
+  // Auto-generate sequential unique ID whenever modal opens or role changes
+  useEffect(() => {
+    if (isOpen) {
+      const existing = getStoredUsers();
+      const nextId = generateSubAccountId(companyPrefix, role, existing);
+      setUsername(nextId);
+    }
+  }, [isOpen, role, companyPrefix]);
+
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorWarning(null);
 
-    // Strict Guard Check matching:
-    // if current_user.role != 'admin':
-    //     return jsonify({"error": "Unauthorized Access: Admin Privileges Required"}), 403
-    if (currentUserRole !== 'admin') {
-      setErrorWarning('Unauthorized Access: Admin Privileges Required');
+    // Rule: Only authenticated Admins and Managers inside the app can create Staff, Supervisors, or Managers
+    const roleUpper = (currentUserRole || '').toUpperCase();
+    if (roleUpper !== 'ADMIN' && roleUpper !== 'MANAGER') {
+      setErrorWarning('Unauthorized Access: Admin or Manager authorization required to onboard staff.');
       return;
     }
 
@@ -117,12 +139,12 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
               <div className="flex items-center gap-2">
                 <Shield className="h-4 w-4 text-[#00FF9C]" />
                 <span className="text-2xs uppercase tracking-widest text-[#00FF9C] font-bold">
-                  // ADMIN ONLY • POST /admin/create_staff_account
+                  // INTERNAL ONBOARDING • ADMIN &amp; MANAGER ACCESS
                 </span>
               </div>
               <h4 className="text-base font-bold text-white tracking-tight mt-1 flex items-center gap-2">
                 <UserPlus className="h-4 w-4 text-white/80" />
-                <span>New Staff Account Creator</span>
+                <span>Internal Employee Onboarding</span>
               </h4>
             </div>
             <button
@@ -135,7 +157,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
             </button>
           </div>
 
-          {/* Form matching @app.route('/admin/create_staff_account', methods=['POST']) */}
+          {/* Form matching internal onboarding */}
           <form action="/admin/create_staff_account" method="POST" onSubmit={handleSubmit}>
             <div className="p-5 space-y-4 text-xs">
               
@@ -150,32 +172,36 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                 </div>
               )}
 
-              {/* Staff ID / Username */}
+              {/* Staff ID / Username (Auto-Generated & Read-Only) */}
               <div>
-                <label
-                  htmlFor="create-staff-username"
-                  className="block font-bold text-2xs uppercase tracking-wider text-white/70 mb-1"
-                >
-                  Staff ID (staff_id - Unique) *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label
+                    htmlFor="create-staff-username"
+                    className="block font-bold text-2xs uppercase tracking-wider text-white/70"
+                  >
+                    Staff ID (Unique • Auto-Generated) *
+                  </label>
+                  <span className="inline-flex items-center gap-1 text-3xs font-mono text-[#00FF9C] bg-[#00FF9C]/10 px-2 py-0.5 rounded border border-[#00FF9C]/30">
+                    <Sparkles className="h-3 w-3" />
+                    <span>Auto-Inherited Tenant Prefix</span>
+                  </span>
+                </div>
                 <div className="relative">
                   <input
                     type="text"
                     id="create-staff-username"
                     name="username"
                     required
-                    placeholder="e.g. HK-001"
+                    readOnly
                     value={username}
-                    onChange={(e) => {
-                      setUsername(e.target.value);
-                      if (errorWarning) setErrorWarning(null);
-                    }}
-                    autoComplete="off"
-                    className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white placeholder:text-white/20 focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
+                    className="w-full rounded border border-[#00FF9C]/40 bg-[#0D0D0E] px-3 py-2 text-xs font-mono font-bold text-amber-300 focus:outline-hidden cursor-default select-all"
                   />
+                  <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40">
+                    <Lock className="h-3.5 w-3.5" />
+                  </div>
                 </div>
                 <p className="text-3xs text-white/40 mt-1">
-                  Unique staff_id in User model (e.g. HK-001, used for login &amp; punch portal).
+                  Active Tenant Prefix: <code className="text-[#00FF9C] font-bold">{companyPrefix}</code> • Automatically inherited from the active session.
                 </p>
               </div>
 
@@ -242,10 +268,12 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                     onChange={(e) => setRole(e.target.value as UserRole)}
                     className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
                   >
-                    <option value="staff">Staff (Punch Only)</option>
-                    <option value="supervisor">Supervisor (Floor Lead)</option>
-                    <option value="manager">Manager (Reports &amp; Assign)</option>
-                    <option value="admin">Admin (Full Control)</option>
+                    <option value="staff">Staff ({companyPrefix}-STF-...)</option>
+                    <option value="supervisor">Supervisor ({companyPrefix}-SUP-...)</option>
+                    <option value="manager">Manager ({companyPrefix}-MGR-...)</option>
+                    {(currentUserRole || '').toLowerCase() === 'admin' && (
+                      <option value="admin">Admin ({companyPrefix}-ADM-...)</option>
+                    )}
                   </select>
                 </div>
 

@@ -213,9 +213,9 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
               >
                 All Staff ({staff.length})
               </button>
-              {staff.map((s) => (
+              {staff.map((s, idx) => (
                 <button
-                  key={s.id}
+                  key={s.staffCode || (s.id ? `staff-btn-${s.id}` : `staff-btn-${idx}`)}
                   type="button"
                   onClick={() => setActiveStaffFilter(s.id)}
                   className={`btn btn-sm text-xs font-medium px-2.5 py-1 rounded-lg transition-colors ${
@@ -270,8 +270,8 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
                         className="form-select form-select-sm w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
                         required
                       >
-                        {staff.map((s) => (
-                          <option key={s.id} value={s.id}>
+                        {staff.map((s, idx) => (
+                          <option key={s.staffCode || (s.id ? `opt-s-${s.id}` : `opt-s-${idx}`)} value={s.id}>
                             HK-{String(s.id).padStart(3, '0')} - {s.name} ({s.department})
                           </option>
                         ))}
@@ -433,13 +433,13 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  monthRecords.map((log) => {
+                  monthRecords.map((log, idx) => {
                     const st = staffMap.get(log.userId);
                     const formattedStaffCode = `HK-${String(st?.id || log.userId).padStart(3, '0')}`;
                     const staffName = st?.name || `Staff #${log.userId}`;
 
                     return (
-                      <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                      <tr key={log.id ? `log-${log.id}` : `log-${log.userId}-${log.date}-${idx}`} className="hover:bg-slate-50 transition-colors">
                         {/* DATE */}
                         <td className="py-2.5 px-3 font-mono font-medium text-slate-700">
                           {log.date}

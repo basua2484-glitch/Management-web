@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Users,
   KeyRound,
@@ -23,19 +23,54 @@ import {
   Calendar,
   Lock,
   User,
+  UserMinus,
 } from 'lucide-react';
 import type { AppUser, UserRole, DutyType, ShiftName, UserStatus } from '../types';
 import { decryptVaultPassword, createPasswordHash } from '../services/vaultService';
-import { DUTY_AREAS } from '../data/mockHousekeepingData';
+import { DUTY_AREAS, createRemovalRequest } from '../data/mockHousekeepingData';
+import { RemovalRequestModal } from './RemovalRequestModal';
+
+export function canDeleteUser(
+  currentUserRole?: string | null,
+  targetUserRole?: string | null,
+  currentUserId?: number | string,
+  targetUserId?: number | string
+): boolean {
+  if (!currentUserRole || !targetUserRole) return false;
+  const curr = currentUserRole.toUpperCase();
+  const target = targetUserRole.toUpperCase();
+
+  // Self-deletion is strictly forbidden for all roles
+  if (currentUserId !== undefined && targetUserId !== undefined && String(currentUserId) === String(targetUserId)) {
+    return false;
+  }
+
+  // ADMIN: Can delete MANAGER, SUPERVISOR, and STAFF. Cannot delete themselves.
+  if (curr === 'ADMIN') {
+    return target === 'MANAGER' || target === 'SUPERVISOR' || target === 'STAFF';
+  }
+
+  // MANAGER: Can delete SUPERVISOR and STAFF. CANNOT delete ADMIN.
+  if (curr === 'MANAGER') {
+    return target === 'SUPERVISOR' || target === 'STAFF';
+  }
+
+  // SUPERVISOR: CANNOT delete anyone (ADMIN, MANAGER, or STAFF).
+  return false;
+}
 
 interface AdminStaffTableProps {
   users: AppUser[];
   currentUserRole?: UserRole;
+  currentUserId?: number;
+  currentStaffId?: string;
+  currentUserName?: string;
   onUpdateUser: (updatedUser: AppUser) => void;
   onDeleteUser?: (userId: number) => void;
   onOpenAddUser?: () => void;
   onOpenVaultModal?: () => void;
   onOpenPendingApprovals?: () => void;
+  onRequestRemoval?: (user: AppUser) => void;
   pendingCount?: number;
   onOpenProfileModal?: (staffId: string) => void;
 }
@@ -43,15 +78,20 @@ interface AdminStaffTableProps {
 export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   users,
   currentUserRole = 'admin',
+  currentUserId,
+  currentStaffId,
+  currentUserName,
   onUpdateUser,
   onDeleteUser,
   onOpenAddUser,
   onOpenVaultModal,
   onOpenPendingApprovals,
+  onRequestRemoval,
   pendingCount = 0,
   onOpenProfileModal,
 }) => {
   const isAdmin = currentUserRole === 'admin';
+  const roleUpper = (currentUserRole || 'staff').toUpperCase();
 
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState('');
@@ -73,6 +113,24 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
 
   // In-app Delete Confirmation State
   const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
+
+  // Supervisor Staff Removal Request State
+  const [staffForRemoval, setStaffForRemoval] = useState<AppUser | null>(null);
+  const [removalSuccessMessage, setRemovalSuccessMessage] = useState<string | null>(null);
+
+  const handleRemovalSubmit = (data: {
+    staff_id: string;
+    staff_name: string;
+    user_id?: number;
+    role?: string;
+    reason: string;
+    requested_by: string;
+    requested_by_name?: string;
+  }) => {
+    createRemovalRequest(data);
+    setRemovalSuccessMessage(`Removal request for ${data.staff_name} submitted to Admin & Manager approval queue.`);
+    setTimeout(() => setRemovalSuccessMessage(null), 4000);
+  };
 
   // Toggle eye reveal for a single staff row
   const handleToggleReveal = (userId: number) => {
@@ -166,8 +224,54 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
     onUpdateUser(updated);
   };
 
-  // Filtered staff users
-  const filteredUsers = users.filter((u) => {
+  // Extract active tenant prefix from current user / session / localStorage
+  const activeTenantPrefix = useMemo(() => {
+    if (typeof currentStaffId === 'string' && currentStaffId.includes('-')) {
+      return currentStaffId.split('-')[0].toUpperCase();
+    }
+    const uidStr = String(currentUserId || '');
+    if (uidStr.includes('-')) {
+      return uidStr.split('-')[0].toUpperCase();
+    }
+    if (typeof localStorage !== 'undefined') {
+      const curUserStr = localStorage.getItem('hk_current_user_v2') || localStorage.getItem('currentUser');
+      if (curUserStr) {
+        try {
+          const u = JSON.parse(curUserStr);
+          const uId = String(u?.id || '');
+          if (uId.includes('-')) return uId.split('-')[0].toUpperCase();
+          if (u?.staff_id && typeof u.staff_id === 'string' && u.staff_id.includes('-')) return u.staff_id.split('-')[0].toUpperCase();
+          if (u?.company_prefix) return u.company_prefix.toUpperCase();
+          if (u?.tenant_id) return u.tenant_id.toUpperCase();
+        } catch {}
+      }
+      const code = localStorage.getItem('company_code') || localStorage.getItem('tenant_id');
+      if (code) return code.toUpperCase();
+      const uid = localStorage.getItem('userId');
+      if (uid && uid.includes('-')) return uid.split('-')[0].toUpperCase();
+    }
+    return '';
+  }, [currentStaffId, currentUserId]);
+
+  // Strict tenant filtering: Do NOT pass raw 'users' or 'localStorage' array directly to the table.
+  const tenantScopedUsers = useMemo(() => {
+    if (!activeTenantPrefix) return users;
+    return users.filter((user) => {
+      const uid = String(user.id || '').toUpperCase();
+      if (uid.startsWith(activeTenantPrefix)) {
+        return true;
+      }
+      const sid = (user.staff_id || user.username || String(user.id || '')).toUpperCase();
+      if (sid && sid.startsWith(activeTenantPrefix)) {
+        return true;
+      }
+      const tid = (user.tenant_id || user.tenantId || user.company_prefix || '').toUpperCase();
+      return tid === activeTenantPrefix;
+    });
+  }, [users, activeTenantPrefix]);
+
+  // Filtered staff users scoped strictly to tenant
+  const filteredUsers = tenantScopedUsers.filter((u) => {
     const q = searchTerm.toLowerCase().trim();
     const matchesSearch =
       !q ||
@@ -189,14 +293,21 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
     return matchesSearch && matchesDutyType && matchesRole && matchesStatus;
   });
 
-  // Metric counts
-  const totalCount = users.length;
-  const activeCount = users.filter((u) => u.status === 'ACTIVE' || (u.is_approved !== false && u.status !== 'DISABLED')).length;
-  const fixedDutyCount = users.filter((u) => u.duty_type === 'FIXED' || !u.duty_type).length;
-  const relieverCount = users.filter((u) => u.duty_type === 'PERMANENT_RELIEVER' || u.duty_type === 'TEMP_RELIEVER' || u.is_temp_reliever).length;
+  // Metric counts - strictly counting from tenantScopedUsers
+  const totalCount = tenantScopedUsers.length;
+  const activeCount = tenantScopedUsers.filter((u) => u.status === 'ACTIVE' || (u.is_approved !== false && u.status !== 'DISABLED')).length;
+  const fixedDutyCount = tenantScopedUsers.filter((u) => u.duty_type === 'FIXED' || !u.duty_type).length;
+  const relieverCount = tenantScopedUsers.filter((u) => u.duty_type === 'PERMANENT_RELIEVER' || u.duty_type === 'TEMP_RELIEVER' || u.is_temp_reliever).length;
 
   return (
     <div className="space-y-4 text-slate-800 font-sans" id="admin-staff-table-section">
+      {removalSuccessMessage && (
+        <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs font-semibold text-amber-900 shadow-xs animate-in fade-in">
+          <CheckCircle className="h-4 w-4 text-amber-600 shrink-0" />
+          <span>{removalSuccessMessage}</span>
+        </div>
+      )}
+
       {/* Top Header & Fast Action Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
         <div>
@@ -266,13 +377,13 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
 
       {/* Metrics Row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-[#1E3A8A]">
-          <span className="text-2xs font-bold uppercase tracking-wider text-slate-500">Total Users</span>
-          <div className="text-xl font-bold text-slate-900 mt-0.5">{totalCount}</div>
+        <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-[#1E3A8A]" id="summary-card-total-users">
+          <span className="text-2xs font-bold uppercase tracking-wider text-slate-500">TOTAL USERS</span>
+          <div className="text-xl font-bold text-slate-900 mt-0.5" id="val-total-users">{totalCount}</div>
         </div>
-        <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-emerald-600">
-          <span className="text-2xs font-bold uppercase tracking-wider text-emerald-700">Active Accounts</span>
-          <div className="text-xl font-bold text-emerald-700 mt-0.5">{activeCount}</div>
+        <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-emerald-600" id="summary-card-active-accounts">
+          <span className="text-2xs font-bold uppercase tracking-wider text-emerald-700">ACTIVE ACCOUNTS</span>
+          <div className="text-xl font-bold text-emerald-700 mt-0.5" id="val-active-accounts">{activeCount}</div>
         </div>
         <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-purple-600">
           <span className="text-2xs font-bold uppercase tracking-wider text-purple-700">Fixed Staff</span>
@@ -372,12 +483,22 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
-                    No users matching criteria found.
+                  <td colSpan={8} className="py-12 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Users className="h-8 w-8 text-slate-300" />
+                      <span className="text-sm font-bold text-slate-800">
+                        {users.length === 0 ? '0 Registered Accounts / No Active Staff Found' : 'No users matching criteria found'}
+                      </span>
+                      <p className="text-xs text-slate-500 max-w-sm">
+                        {users.length === 0
+                          ? 'The primary Staff Vault database currently has 0 registered accounts. Click "+ Add User / Staff" above to register personnel.'
+                          : 'No staff accounts match the active filter or search query.'}
+                      </p>
+                    </div>
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((user) => {
+                filteredUsers.map((user, idx) => {
                   const isRevealed = Boolean(revealedPasswords[user.id]);
                   const vaultResult = decryptVaultPassword(user, currentUserRole);
                   const rawPlaintext = vaultResult.password || user.raw_password_vault || user.password || '••••••••';
@@ -389,7 +510,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                       : user.fixed_department || user.assigned_area || 'General Wards';
 
                   return (
-                    <tr key={user.id} className="hover:bg-slate-50 transition-colors">
+                    <tr key={user.staff_id || (user.id ? `user-${user.id}` : `user-row-${idx}`)} className="hover:bg-slate-50 transition-colors">
                       {/* Staff ID & Name */}
                       <td className="py-3 px-4 font-sans">
                         <button
@@ -595,14 +716,34 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                           >
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
-                          {onDeleteUser && (
+                          {/* Check Delete Permission: ADMIN can delete MANAGER, SUPERVISOR, STAFF; MANAGER can delete SUPERVISOR, STAFF; SUPERVISOR cannot delete anyone */}
+                          {canDeleteUser(roleUpper, user.role, currentUserId, user.id) && (
                             <button
                               type="button"
                               onClick={() => setUserToDelete(user)}
                               title="Delete user account"
-                              className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                              className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition cursor-pointer"
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {/* Supervisor Removal Request Button: For STAFF rows, show "Request Removal" button instead of direct Delete */}
+                          {roleUpper === 'SUPERVISOR' && (user.role || '').toUpperCase() === 'STAFF' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (onRequestRemoval) {
+                                  onRequestRemoval(user);
+                                } else {
+                                  setStaffForRemoval(user);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-semibold bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-300 rounded transition cursor-pointer"
+                              title="Submit removal request to Admin / Manager"
+                            >
+                              <UserMinus className="w-3.5 h-3.5 text-amber-600" />
+                              <span>Request Removal</span>
                             </button>
                           )}
                         </div>
@@ -900,6 +1041,16 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
           </div>
         </div>
       )}
+
+      {/* Supervisor Request Removal Modal */}
+      <RemovalRequestModal
+        isOpen={Boolean(staffForRemoval)}
+        onClose={() => setStaffForRemoval(null)}
+        staffUser={staffForRemoval}
+        currentSupervisorId={currentStaffId || 'SUP-001'}
+        currentSupervisorName={currentUserName || 'Supervisor'}
+        onSubmitRequest={handleRemovalSubmit}
+      />
     </div>
   );
 };

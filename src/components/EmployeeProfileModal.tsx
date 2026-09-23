@@ -58,8 +58,6 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   isShiftGated = false,
   onActionComplete,
 }) => {
-  if (!staffId) return null;
-
   // Active tab selection
   const [activeTab, setActiveTab] = useState<'duty' | 'monthly' | 'ot' | 'emergency' | 'actions'>('duty');
 
@@ -81,7 +79,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   const [recalls, setRecalls] = useState(() => getStoredEmergencyRecalls());
 
   // Find user matching staffId
-  const normalizedSearchId = staffId.trim().toLowerCase();
+  const normalizedSearchId = (staffId || '').trim().toLowerCase();
   const matchedUser = useMemo(() => {
     return users.find((u) => {
       const uStaffId = (u.staff_id || '').toLowerCase();
@@ -112,7 +110,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   const displayName =
     matchedUser?.full_name || matchedUser?.name || matchedStaff?.name || 'Ramesh Kumar';
   const displayStaffCode =
-    matchedUser?.staff_id || matchedStaff?.staffCode || staffId;
+    matchedUser?.staff_id || matchedStaff?.staffCode || staffId || '';
   const currentDutyType: DutyType =
     matchedUser?.duty_type || (matchedStaff?.department.includes('Reliever') ? 'PERMANENT_RELIEVER' : 'FIXED');
   const assignedWard =
@@ -139,7 +137,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   }, [assignedShift]);
 
   // Find Target Attendance Record
-  const numericId = matchedStaff?.id || matchedUser?.id || (parseInt(staffId.replace(/\D/g, ''), 10) || 1);
+  const numericId = matchedStaff?.id || matchedUser?.id || (parseInt((staffId || '').replace(/\D/g, ''), 10) || 1);
   const todayRecord = useMemo(() => {
     return attendanceList.find((r) => {
       const matchDate = r.date === effectiveDate;
@@ -286,34 +284,8 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       }
     });
 
-    // Ensure at least 2 records for rich display
-    if (otList.length === 0) {
-      otList.push(
-        {
-          id: 'seed_ot_1',
-          date: effectiveDate,
-          department: assignedWard,
-          type: 'Post-Shift Extension',
-          hours: 1.5,
-          status: 'APPROVED',
-          authorizedBy: 'Supervisor Rakesh',
-          notes: 'ICU Sanitation and Post-Surgical Ward Sterilization',
-        },
-        {
-          id: 'seed_ot_2',
-          date: '2026-09-04',
-          department: 'Emergency & Trauma Center',
-          type: 'Continuous Extended OT',
-          hours: 3.0,
-          status: 'APPROVED',
-          authorizedBy: 'Supervisor Rakesh',
-          notes: 'Emergency Surge Coverage (Pure OT authorized)',
-        }
-      );
-    }
-
     return otList.sort((a, b) => b.date.localeCompare(a.date));
-  }, [allocations, displayStaffCode, monthlyRecords, effectiveDate, assignedWard]);
+  }, [allocations, displayStaffCode, monthlyRecords]);
 
   // Emergency Exit Logs
   const emergencyExitLogs = useMemo(() => {
@@ -339,10 +311,10 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
           date: r.date,
           exitTime: (r as any)?.departure_time || '11:45 AM',
           shift: r.shift_name || '7-3 (Morning)',
-          regularHoursCredited: r.regularHours || 4.75,
-          reason: (r as any)?.departure_reason || 'Mid-shift acute medical ailment. Reliever dispatched.',
+          regularHoursCredited: r.regularHours || 0,
+          reason: (r as any)?.departure_reason || 'Mid-shift medical departure. Reliever dispatched.',
           status: 'VERIFIED & CREDITED',
-          supervisor: 'Supervisor Rakesh',
+          supervisor: (r as any)?.supervisor || 'Duty Supervisor',
         });
       }
     });
@@ -471,6 +443,8 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       onActionComplete?.();
     }, 1800);
   };
+
+  if (!staffId) return null;
 
   return (
     <div
@@ -738,8 +712,8 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {monthlyRecords.slice(0, 15).map((rec) => (
-                      <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
+                    {monthlyRecords.slice(0, 15).map((rec, idx) => (
+                      <tr key={rec.id ? `mrec-${rec.id}` : `mrec-${rec.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
                         <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{rec.date}</td>
                         <td className="py-2.5 px-3 text-2xs text-slate-600">{rec.shift_name || assignedShift}</td>
                         <td className="py-2.5 px-3 font-mono text-2xs">
@@ -808,8 +782,8 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {staffOtRecords.map((ot) => (
-                      <tr key={ot.id} className="hover:bg-slate-50/70 transition-colors">
+                    {staffOtRecords.map((ot, idx) => (
+                      <tr key={ot.id ? `ot-${ot.id}` : `ot-${ot.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
                         <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{ot.date}</td>
                         <td className="py-2.5 px-3 font-semibold text-slate-800">{ot.department}</td>
                         <td className="py-2.5 px-3 text-2xs text-slate-600">{ot.type}</td>
@@ -872,8 +846,8 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {emergencyExitLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                    {emergencyExitLogs.map((log, idx) => (
+                      <tr key={log.id ? `elog-${log.id}` : `elog-${log.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
                         <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{log.date}</td>
                         <td className="py-2.5 px-3 font-mono text-2xs font-bold text-rose-700">{log.exitTime}</td>
                         <td className="py-2.5 px-3 font-mono font-bold text-emerald-700">

@@ -802,8 +802,8 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
               }}
               className="w-full appearance-none rounded-xl border border-slate-300 bg-white py-2 pl-3.5 pr-8 text-xs font-semibold text-slate-800 shadow-xs focus:border-[#1E3A8A] focus:outline-hidden focus:ring-1 focus:ring-[#1E3A8A]"
             >
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>
+              {staff.map((s, idx) => (
+                <option key={s.staffCode || (s.id ? `portal-s-${s.id}` : `portal-s-${idx}`)} value={s.id}>
                   {s.name} (HK-{String(s.id).padStart(3, '0')}) - {s.department || 'General'}
                 </option>
               ))}

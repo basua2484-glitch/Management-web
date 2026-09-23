@@ -170,8 +170,8 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
                 onChange={(e) => setStaffId(Number(e.target.value))}
                 className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
               >
-                {staff.map((s) => (
-                  <option key={s.id} value={s.id}>
+                {staff.map((s, idx) => (
+                  <option key={s.staffCode || (s.id ? `duty-s-${s.id}` : `duty-s-${idx}`)} value={s.id}>
                     {s.staffCode} - {s.name} ({s.department})
                   </option>
                 ))}

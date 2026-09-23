@@ -659,10 +659,10 @@ export const StaffDashboard: React.FC = () => {
                 >
                   {users
                     .filter((u) => u.role === 'staff' || !u.role)
-                    .map((u) => {
+                    .map((u, idx) => {
                       const code = u.staff_id || `HK-${String(u.id).padStart(3, '0')}`;
                       return (
-                        <option key={u.id} value={code} className="bg-slate-900 text-white">
+                        <option key={u.staff_id || (u.id ? `staff-u-${u.id}` : `staff-u-${idx}`)} value={code} className="bg-slate-900 text-white">
                           {u.name} ({code})
                         </option>
                       );

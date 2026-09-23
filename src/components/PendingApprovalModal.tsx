@@ -15,8 +15,10 @@ import {
   Timer,
   Calendar,
   Plus,
+  UserMinus,
+  Trash2,
 } from 'lucide-react';
-import type { AppUser, UserRole, StaffRequest, DutyAllocation } from '../types';
+import type { AppUser, UserRole, StaffRequest, DutyAllocation, RemovalRequest } from '../types';
 
 interface PendingApprovalModalProps {
   isOpen: boolean;
@@ -32,7 +34,10 @@ interface PendingApprovalModalProps {
   onApproveOtRequest?: (allocationId: number) => void;
   onRejectOtRequest?: (allocationId: number) => void;
   onOpenNewStaffRequest?: () => void;
-  defaultTab?: 'requests' | 'overtime' | 'users';
+  removalRequests?: RemovalRequest[];
+  onApproveRemovalRequest?: (requestId: string | number) => void;
+  onRejectRemovalRequest?: (requestId: string | number) => void;
+  defaultTab?: 'requests' | 'overtime' | 'users' | 'removals';
 }
 
 export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
@@ -49,16 +54,19 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
   onApproveOtRequest,
   onRejectOtRequest,
   onOpenNewStaffRequest,
+  removalRequests = [],
+  onApproveRemovalRequest,
+  onRejectRemovalRequest,
   defaultTab = 'requests',
 }) => {
-  const [activeTab, setActiveTab] = useState<'requests' | 'overtime' | 'users'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<'requests' | 'overtime' | 'users' | 'removals'>(defaultTab);
   const [selectedRoles, setSelectedRoles] = useState<Record<number, UserRole>>({});
   const [selectedAreas, setSelectedAreas] = useState<Record<number, string>>({});
   const [requestFilter, setRequestFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
 
   if (!isOpen) return null;
 
-  const isUserAdmin = currentUserRole === 'admin';
+  const isUserAdmin = currentUserRole === 'admin' || currentUserRole === 'manager';
 
   const handleRoleChange = (userId: number, role: UserRole) => {
     setSelectedRoles((prev) => ({ ...prev, [userId]: role }));
@@ -76,6 +84,7 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
 
   const pendingRequestsCount = staffRequests.filter((r) => r.status === 'PENDING').length;
   const pendingOtCount = dutyAllocations.filter((d) => d.ot_status === 'PENDING').length;
+  const pendingRemovalCount = removalRequests.filter((r) => r.status === 'PENDING').length;
 
   const filteredStaffRequests = staffRequests.filter((r) => {
     if (requestFilter === 'ALL') return true;
@@ -85,6 +94,11 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
   const filteredOtAllocations = dutyAllocations.filter((d) => {
     if (requestFilter === 'ALL') return true;
     return d.ot_status === requestFilter;
+  });
+
+  const filteredRemovalRequests = removalRequests.filter((r) => {
+    if (requestFilter === 'ALL') return true;
+    return r.status === requestFilter;
   });
 
   return (
@@ -196,6 +210,26 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
               {pendingUsers.length > 0 && (
                 <span className="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-bold">
                   {pendingUsers.length}
+                </span>
+              )}
+            </button>
+
+            {/* Tab 4: Removal Requests */}
+            <button
+              type="button"
+              id="tab-approval-removals"
+              onClick={() => setActiveTab('removals')}
+              className={`pb-3 px-3 text-xs font-bold border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap ${
+                activeTab === 'removals'
+                  ? 'border-[#1E3A8A] text-[#1E3A8A]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <UserMinus className="h-4 w-4 text-rose-600" />
+              <span>Removal Requests</span>
+              {pendingRemovalCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-bold">
+                  {pendingRemovalCount}
                 </span>
               )}
             </button>
@@ -400,7 +434,7 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                               </div>
                               <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
                                 <span>Date: <strong className="text-slate-800">{ot.date}</strong></span>
-                                <span>• Supervisor: <code className="text-slate-800 font-mono bg-white px-1 py-0.2 rounded border border-slate-200">{ot.assigned_by_supervisor || 'SUP-001'}</code></span>
+                                <span>• Supervisor: <code className="text-slate-800 font-mono bg-white px-1 py-0.2 rounded border border-slate-200">{ot.assigned_by_supervisor || 'Supervisor'}</code></span>
                                 {ot.approved_by && <span>• Approved by: <code className="text-emerald-800 font-bold">{ot.approved_by}</code></span>}
                               </p>
                             </div>
@@ -463,7 +497,7 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                       <span>Admin assigns role &amp; duty area</span>
                     </div>
 
-                    {pendingUsers.map((user) => {
+                    {pendingUsers.map((user, idx) => {
                       const currentAssignedRole = selectedRoles[user.id] || (user.role || 'staff');
                       const currentAssignedArea =
                         selectedAreas[user.id] ||
@@ -473,7 +507,7 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
 
                       return (
                         <div
-                          key={user.id}
+                          key={user.staff_id || (user.id ? `pending-${user.id}` : `pending-u-${idx}`)}
                           className="rounded-xl border border-amber-200 bg-amber-50/40 p-4 sm:p-5 transition-all shadow-2xs space-y-4"
                           id={`pending-user-card-${user.id}`}
                         >
@@ -557,6 +591,128 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                               <span>Approve Account &amp; Grant Access</span>
                             </button>
                           </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 4: Supervisor Staff Removal Requests */}
+            {activeTab === 'removals' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                  <div className="text-xs text-slate-500">
+                    Model: <code>RemovalRequest(requested_by, staff_name, reason, status)</code>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-500">Filter:</span>
+                    <select
+                      value={requestFilter}
+                      onChange={(e) => setRequestFilter(e.target.value as any)}
+                      className="text-xs border border-slate-200 rounded-lg px-2.5 py-1 bg-white font-semibold text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="ALL">All Requests ({removalRequests.length})</option>
+                      <option value="PENDING">Pending Only ({pendingRemovalCount})</option>
+                      <option value="APPROVED">Approved Only</option>
+                      <option value="REJECTED">Rejected Only</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredRemovalRequests.length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 space-y-3">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                      <CheckCircle className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-slate-800 text-sm">No Removal Requests</h4>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Supervisor requests to remove or de-allocate staff members will appear here.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredRemovalRequests.map((req) => {
+                      const isPending = req.status === 'PENDING';
+                      return (
+                        <div
+                          key={req.id}
+                          className={`rounded-xl border p-4 transition-all shadow-2xs space-y-3 ${
+                            isPending
+                              ? 'border-rose-200 bg-rose-50/30'
+                              : req.status === 'APPROVED'
+                              ? 'border-emerald-200 bg-emerald-50/20'
+                              : 'border-slate-200 bg-slate-50/50 opacity-75'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-slate-900 text-sm">
+                                  {req.staff_name}
+                                </span>
+                                <span className="font-mono text-2xs px-2 py-0.5 rounded-md bg-blue-50 text-[#1E3A8A] font-semibold border border-blue-200">
+                                  {req.staff_id}
+                                </span>
+                                {req.role && (
+                                  <span className="text-2xs font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                                    {req.role}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                Requested by <strong className="text-slate-700">{req.requested_by_name || req.requested_by}</strong> on{' '}
+                                {new Date(req.created_at).toLocaleDateString()}
+                              </p>
+                            </div>
+
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-2xs font-bold uppercase tracking-wider self-start sm:self-auto ${
+                                req.status === 'APPROVED'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : req.status === 'REJECTED'
+                                  ? 'bg-slate-200 text-slate-700'
+                                  : 'bg-rose-100 text-rose-800 border border-rose-200 animate-pulse'
+                              }`}
+                            >
+                              {req.status}
+                            </span>
+                          </div>
+
+                          {/* Reason */}
+                          <div className="bg-white/80 rounded-lg p-2.5 border border-slate-200 text-xs text-slate-700">
+                            <span className="font-bold text-slate-900 block mb-0.5">Removal Reason:</span>
+                            <p className="italic text-slate-600">"{req.reason}"</p>
+                          </div>
+
+                          {/* Action Buttons for Admins & Managers */}
+                          {isPending && isUserAdmin && (
+                            <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                              {onRejectRemovalRequest && (
+                                <button
+                                  type="button"
+                                  onClick={() => onRejectRemovalRequest(req.id)}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 hover:bg-slate-100 text-slate-700 px-3 py-1.5 text-xs font-semibold cursor-pointer"
+                                >
+                                  <ThumbsDown className="h-3.5 w-3.5" />
+                                  <span>Reject Request</span>
+                                </button>
+                              )}
+                              {onApproveRemovalRequest && (
+                                <button
+                                  type="button"
+                                  onClick={() => onApproveRemovalRequest(req.id)}
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-1.5 text-xs font-bold shadow-xs cursor-pointer"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <span>Approve &amp; Delete User</span>
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}

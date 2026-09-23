@@ -1,5 +1,94 @@
 import type { User, UserRole } from '../types';
 
+export interface EphemeralVaultRecord {
+  staffId: string;
+  decryptedPass: string;
+  expiresAt: number;
+}
+
+// Memory-only Cache for Ephemeral Decryption (Auto-purges)
+const vaultEphemeralStore = new Map<string, EphemeralVaultRecord>();
+
+export { vaultEphemeralStore };
+
+/**
+ * Encrypts a plaintext password with a random salt delimiter suitable for vault storage
+ */
+export function encryptVaultPayload(plainPassword: string): string {
+  const salt = Math.random().toString(36).substring(2, 10);
+  return btoa(`${salt}::${plainPassword}`);
+}
+
+/**
+ * Secure Ephemeral Decryption & Purge Engine
+ * Decrypts with Base64 + Salt delimiter, caches in RAM for 30s, then auto-purges.
+ */
+export const decryptVaultPasswordSecure = async (
+  userRecord: { raw_password_vault?: string; staff_id: string },
+  requesterRole: string,
+  adminPasskeyVerified: boolean
+): Promise<string> => {
+  // Guard 1: RBAC & Passkey Lock
+  const roleUpper = (requesterRole || '').toUpperCase();
+  if (roleUpper !== 'ADMIN' || !adminPasskeyVerified) {
+    throw new Error("SECURITY_VIOLATION: Unauthorized Vault Access.");
+  }
+
+  if (!userRecord.raw_password_vault) {
+    throw new Error("VAULT_EMPTY: No encrypted payload found.");
+  }
+
+  // Check Ephemeral Cache
+  const cached = vaultEphemeralStore.get(userRecord.staff_id);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.decryptedPass;
+  }
+
+  try {
+    // Decryption Routine (Base64 + Salt Delimiter)
+    let plainPassword: string | undefined;
+    try {
+      const decodedPayload = atob(userRecord.raw_password_vault);
+      const [salt, passFromPayload] = decodedPayload.split('::');
+      if (passFromPayload) {
+        plainPassword = passFromPayload;
+      } else if (salt && !decodedPayload.includes('::')) {
+        // In case payload was just base64 encoded password
+        plainPassword = decodedPayload;
+      }
+    } catch {
+      // Fallback if raw_password_vault was stored in plain text
+      plainPassword = userRecord.raw_password_vault;
+    }
+
+    if (!plainPassword && userRecord.raw_password_vault) {
+      plainPassword = userRecord.raw_password_vault;
+    }
+
+    if (!plainPassword) {
+      throw new Error("VAULT_CORRUPT: Invalid salt or encryption token.");
+    }
+
+    // Lock in ephemeral store for exactly 30 seconds
+    const expiresAt = Date.now() + 30000;
+    vaultEphemeralStore.set(userRecord.staff_id, {
+      staffId: userRecord.staff_id,
+      decryptedPass: plainPassword,
+      expiresAt,
+    });
+
+    // Auto-Purge from RAM after 30 Seconds
+    setTimeout(() => {
+      vaultEphemeralStore.delete(userRecord.staff_id);
+    }, 30000);
+
+    return plainPassword;
+  } catch (err) {
+    console.error("[Vault Security Error]: Decryption failed", err);
+    throw new Error("DECRYPTION_FAILED: Token corrupt or bad salt.");
+  }
+};
+
 /**
  * Hash generator for User.password_hash matching Flask / Django werkzeug security standard
  */
