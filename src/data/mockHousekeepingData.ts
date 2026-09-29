@@ -127,6 +127,26 @@ export function normalizeUser(u: any): AppUser {
       ? parsedNumFromStaffId
       : Math.floor(Math.random() * 899999) + 100000;
 
+  // Role-based duty status resolution
+  let dutyStatus: 'ON_DUTY' | 'OFF_DUTY' = 'ON_DUTY';
+  if (u.dutyStatus === 'ON_DUTY' || u.dutyStatus === 'OFF_DUTY') {
+    dutyStatus = u.dutyStatus;
+  } else {
+    const roleUpper = (u.role || '').toUpperCase();
+    if (roleUpper === 'SUPERVISOR') {
+      const supKey = `hk_supervisor_duty_punch_${staff_id || u.username || 'SUPERVISOR'}`;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const supData = localStorage.getItem(supKey);
+          if (supData) {
+            const parsed = JSON.parse(supData);
+            dutyStatus = parsed.isPunchedIn ? 'ON_DUTY' : 'OFF_DUTY';
+          }
+        }
+      } catch {}
+    }
+  }
+
   return {
     ...u,
     id: uniqueNumericId,
@@ -135,6 +155,8 @@ export function normalizeUser(u: any): AppUser {
     full_name,
     name: full_name,
     duty_type,
+    dutyStatus,
+    isOnDuty: dutyStatus === 'ON_DUTY',
     fixed_department,
     is_temp_reliever,
     temp_department,
@@ -503,6 +525,10 @@ export function approveStaffRequest(
     shift: shiftNamed,
     status: 'ACTIVE',
     is_approved: true,
+    attendanceLogs: [],
+    presentDays: 0,
+    regularHours: 0,
+    overtimeHours: 0,
   };
 
   const newStaffMember: StaffUser = {
@@ -513,6 +539,10 @@ export function approveStaffRequest(
     department: targetReq.proposed_area || 'General Ward',
     shift: shiftNamed,
     active: true,
+    attendanceLogs: [],
+    presentDays: 0,
+    regularHours: 0,
+    overtimeHours: 0,
   };
 
   // Update request status
@@ -1383,6 +1413,22 @@ export function setSupervisorDutyPunch(
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.setItem(`${SUPERVISOR_DUTY_PUNCH_KEY}${supervisorId}`, JSON.stringify(nextState));
+      const nextDutyStatus = action === 'IN' ? 'ON_DUTY' : 'OFF_DUTY';
+      localStorage.setItem(`hk_duty_status_${supervisorId}`, nextDutyStatus);
+
+      // Synchronize current user dutyStatus if matching
+      const currentStored = getStoredCurrentUser();
+      if (
+        currentStored &&
+        (currentStored.staff_id === supervisorId ||
+          currentStored.username === supervisorId ||
+          (currentStored.role && currentStored.role.toLowerCase() === 'supervisor'))
+      ) {
+        currentStored.dutyStatus = nextDutyStatus;
+        currentStored.isOnDuty = nextDutyStatus === 'ON_DUTY';
+        saveStoredCurrentUser(currentStored);
+      }
+
       // Also sync with SupervisorAccessContext
       saveSupervisorAccessContext({
         supervisorId,
@@ -1392,6 +1438,7 @@ export function setSupervisorDutyPunch(
       window.dispatchEvent(
         new CustomEvent('supervisor-duty-punch-changed', { detail: nextState })
       );
+      window.dispatchEvent(new Event('auth-state-change'));
     } catch (e) {
       console.error('Failed to save supervisor duty punch', e);
     }

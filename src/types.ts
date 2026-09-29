@@ -1,5 +1,6 @@
 export type UserRole = 'admin' | 'manager' | 'supervisor' | 'staff';
 export type SystemRole = 'admin' | 'manager' | 'supervisor' | 'staff';
+export type DutyStatus = 'ON_DUTY' | 'OFF_DUTY';
 
 export interface Tenant {
   tenant_id: string; // e.g. TENANT-APEX or TENANT-APEX-apexcare
@@ -130,6 +131,8 @@ export interface UserProfile {
   weeklyOffDay?: DayOfWeek | string;
   leaveBalance?: LeaveBalance;
   leaveRequests?: LeaveRequest[];
+  dutyStatus?: DutyStatus | string;
+  isOnDuty?: boolean;
 }
 
 export interface JoiningRequest {
@@ -260,6 +263,9 @@ export interface User {
   full_name: string;
   name: string; // alias for full_name for backward compatibility
   role: UserRole; // 'admin', 'manager', 'supervisor', 'staff'
+  mobile?: string;
+  phone?: string;
+  email?: string;
 
   // Site Hierarchy & Scoping
   site_id?: string | null; // e.g. 'site-main', 'site-east', 'site-north'
@@ -293,6 +299,16 @@ export interface User {
   leave_balance?: LeaveBalance;
   leaveRequests?: LeaveRequest[]; // default []
   leave_requests?: LeaveRequest[];
+
+  // Role-based Off-Duty / On-Duty state tracking
+  dutyStatus?: DutyStatus | string;
+  isOnDuty?: boolean;
+
+  // Real-Time Attendance State (Initialized empty for all new accounts)
+  attendanceLogs?: AttendanceRecord[] | any[];
+  presentDays?: number;
+  regularHours?: number;
+  overtimeHours?: number;
 
   // Backward compatibility fields
   assigned_area?: string; // alias for effective department
@@ -363,7 +379,7 @@ export interface StaffUser {
   company_prefix?: string;
   staffCode: string; // e.g., "APEX-STF-001" or "HK-001"
   name: string;
-  role: 'staff' | 'supervisor' | 'lead';
+  role: 'staff' | 'supervisor' | 'manager' | 'lead' | 'admin';
   department: string;
   shift: 'Morning' | 'Evening' | 'Night';
   siteId?: string;
@@ -372,11 +388,19 @@ export interface StaffUser {
   supervisorName?: string;
   hourlyRate?: number;
   phone?: string;
+  mobile?: string;
+  email?: string;
   active: boolean;
   dutyType?: DutyType;
   fixedDepartment?: string;
   isTempReliever?: boolean;
   tempDepartment?: string;
+  dutyStatus?: DutyStatus | string;
+  isOnDuty?: boolean;
+  attendanceLogs?: AttendanceRecord[] | any[];
+  presentDays?: number;
+  regularHours?: number;
+  overtimeHours?: number;
 }
 
 export interface AttendanceSession {
@@ -532,6 +556,8 @@ export function toUserProfile(u: User): UserProfile {
     weeklyOffDay: u.weeklyOffDay || u.weekly_off_day || 'Sunday',
     leaveBalance: u.leaveBalance || u.leave_balance || { casual: 12, sick: 7, paid: 15 },
     leaveRequests: u.leaveRequests || u.leave_requests || [],
+    dutyStatus: u.dutyStatus || (u.isOnDuty ? 'ON_DUTY' : 'OFF_DUTY'),
+    isOnDuty: u.dutyStatus ? u.dutyStatus === 'ON_DUTY' : Boolean(u.isOnDuty),
   };
 }
 

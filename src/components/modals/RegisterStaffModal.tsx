@@ -20,11 +20,14 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
 }) => {
   const [generatedStaffId, setGeneratedStaffId] = useState('');
   const [fullName, setFullName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
   const [tempPassword, setTempPassword] = useState('123456');
   const [role, setRole] = useState<'STAFF' | 'SUPERVISOR' | 'MANAGER'>('STAFF');
   const [assignedArea, setAssignedArea] = useState('General Ward');
   const [assignedShift, setAssignedShift] = useState('7-3 (Morning)');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // 🛑 FIX: Calculate Next Sequential Unique ID on Modal Open
   useEffect(() => {
@@ -51,6 +54,13 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
 
   const handleSubmitOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg(null);
+
+    if (!mobile.trim()) {
+      setErrorMsg('Mobile Number is strictly required for onboarding.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -61,6 +71,9 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
         staff_id: generatedStaffId, // Dynamic ID (e.g., SAHO-STF-002)
         tenant_id: tenantPrefix,
         name: fullName.trim(),
+        mobile: mobile.trim(),
+        phone: mobile.trim(),
+        email: email.trim() || undefined,
         // 🛑 FIX: Undefined value se bachne ke liye fallback set karein
         tempDepartment: null, // Ya tempDepartment || ""
         assigned_area: assignedArea || "General Ward",
@@ -74,8 +87,9 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       await onSuccess(newStaffPayload);
       setIsSubmitting(false);
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Onboarding Failed:", err);
+      setErrorMsg(err?.message || 'Onboarding failed');
       setIsSubmitting(false);
     }
   };
@@ -87,6 +101,12 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
           <span className="text-xs font-mono text-emerald-400">// INTERNAL ONBOARDING • ADMIN ACCESS</span>
           <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
         </div>
+
+        {errorMsg && (
+          <div className="mb-4 p-2.5 rounded-lg bg-rose-950/80 border border-rose-500/60 text-rose-200 text-xs font-medium">
+            {errorMsg}
+          </div>
+        )}
 
         <form onSubmit={handleSubmitOnboarding} className="space-y-4">
           <div>
@@ -109,6 +129,37 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
               placeholder="e.g. Pooja Verma"
               className="w-full mt-1 px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-800 text-white text-sm outline-none focus:border-emerald-500"
             />
+          </div>
+
+          {/* Mobile (Strictly Required) and Email (Optional) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-mono text-slate-400">MOBILE NUMBER *</label>
+                <span className="text-3xs text-rose-400 font-mono font-bold">REQUIRED</span>
+              </div>
+              <input
+                type="tel"
+                required
+                value={mobile}
+                onChange={(e) => setMobile(e.target.value)}
+                placeholder="e.g. +91 98765 43210"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800 text-white text-sm outline-none focus:border-emerald-500 font-mono"
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-mono text-slate-400">EMAIL ID (OPTIONAL)</label>
+                <span className="text-3xs text-slate-500 font-mono">OPTIONAL</span>
+              </div>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g. staff@hospital.com"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800 text-white text-sm outline-none focus:border-emerald-500 font-mono"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

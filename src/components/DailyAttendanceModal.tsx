@@ -427,9 +427,9 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
                   <tr>
                     <td
                       colSpan={isAdminOrManager ? 8 : 7}
-                      className="py-8 text-center text-slate-400 italic text-xs"
+                      className="py-8 text-center text-slate-400 font-medium text-xs"
                     >
-                      No attendance logs recorded for {monthName} {currentYear}.
+                      No Attendance Records Found
                     </td>
                   </tr>
                 ) : (

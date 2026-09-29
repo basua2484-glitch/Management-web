@@ -29,7 +29,16 @@ export const fetchAttendanceLogsFromDB = async (tenantId: string): Promise<any[]
 export const getStaffMonthlyAttendance = async (staffId: string, tenantId: string) => {
   // 🛑 GUARD: Strictly verify that both staffId AND tenantId match exactly
   if (!staffId || !tenantId) {
-    return { records: [], totalPresent: 0, totalOT: 0 };
+    return {
+      records: [],
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
+      totalPresent: 0,
+      totalOT: 0,
+      reliabilityScore: 0,
+    };
   }
 
   // Fetch from database
@@ -37,22 +46,45 @@ export const getStaffMonthlyAttendance = async (staffId: string, tenantId: strin
 
   // 🛑 STRICT FILTER: Ensure NO mock records bleed into newly created tenant staff IDs
   const filteredLogs = allLogs.filter(
-    (log: any) => log.staff_id === staffId && log.tenant_id === tenantId
+    (log: any) =>
+      (log.staff_id === staffId || (log as any).staffCode === staffId) &&
+      (log.tenant_id === tenantId || !(log as any).tenant_id)
   );
 
   // For a newly onboarded staff member who hasn't punched in yet, return 0 logs
   if (filteredLogs.length === 0) {
     return {
       records: [],
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
       totalPresent: 0,
       totalOT: 0,
-      reliabilityScore: 100
+      reliabilityScore: 0,
     };
   }
 
+  const presentDays = filteredLogs.filter(
+    (l: any) => l.status === 'PRESENT' || l.status === 'Present'
+  ).length;
+  const regularHours = filteredLogs.reduce(
+    (sum: number, l: any) => sum + (l.regular_hours || l.regularHours || 0),
+    0
+  );
+  const overtimeHours = filteredLogs.reduce(
+    (sum: number, l: any) => sum + (l.ot_hours || l.overtimeHours || l.otHours || 0),
+    0
+  );
+
   return {
     records: filteredLogs,
-    totalPresent: filteredLogs.filter((l: any) => l.status === 'PRESENT').length,
-    totalOT: filteredLogs.reduce((sum: number, l: any) => sum + (l.ot_hours || l.overtimeHours || 0), 0)
+    attendanceLogs: filteredLogs,
+    presentDays,
+    regularHours,
+    overtimeHours,
+    totalPresent: presentDays,
+    totalOT: overtimeHours,
+    reliabilityScore: Math.min(100, Math.round((presentDays / 26) * 100)),
   };
 };

@@ -29,6 +29,11 @@ import type { AppUser, UserRole, DutyType, ShiftName, UserStatus } from '../type
 import { decryptVaultPassword, createPasswordHash } from '../services/vaultService';
 import { DUTY_AREAS, createRemovalRequest } from '../data/mockHousekeepingData';
 import { RemovalRequestModal } from './RemovalRequestModal';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 export function canDeleteUser(
   currentUserRole?: string | null,
@@ -65,6 +70,8 @@ interface AdminStaffTableProps {
   currentUserId?: number;
   currentStaffId?: string;
   currentUserName?: string;
+  currentUserDutyStatus?: 'ON_DUTY' | 'OFF_DUTY' | string;
+  isOnDuty?: boolean;
   onUpdateUser: (updatedUser: AppUser) => void;
   onDeleteUser?: (userId: number) => void;
   onOpenAddUser?: () => void;
@@ -81,6 +88,8 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   currentUserId,
   currentStaffId,
   currentUserName,
+  currentUserDutyStatus,
+  isOnDuty,
   onUpdateUser,
   onDeleteUser,
   onOpenAddUser,
@@ -90,8 +99,20 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   pendingCount = 0,
   onOpenProfileModal,
 }) => {
-  const isAdmin = currentUserRole === 'admin';
   const roleUpper = (currentUserRole || 'staff').toUpperCase();
+  const isAdmin = roleUpper === 'ADMIN';
+  const isManager = roleUpper === 'MANAGER';
+  const isSupervisor = roleUpper === 'SUPERVISOR';
+  const isAdminOrManager = isAdmin || isManager;
+
+  // DUTY STATE GUARD (In App/State Logic):
+  // Check user duty status: const isOnDuty = currentUser.dutyStatus === 'ON_DUTY';
+  const effectiveIsOnDuty = isOnDuty !== undefined ? Boolean(isOnDuty) : currentUserDutyStatus === 'ON_DUTY';
+  const canPerformAction = canSupervisorAction(roleUpper, effectiveIsOnDuty);
+
+  const handleRestrictedAction = (actionName: string = 'this action') => {
+    showOffDutyToast();
+  };
 
   // Filters & Search
   const [searchTerm, setSearchTerm] = useState('');
@@ -308,6 +329,24 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
         </div>
       )}
 
+      {/* Off-Duty Supervisor Read-Only Banner */}
+      {isSupervisor && !canPerformAction && (
+        <div
+          id="supervisor-table-off-duty-banner"
+          className="p-3.5 bg-amber-500/15 border-2 border-amber-500/40 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+              <div className="text-2xs text-amber-800 mt-0.5">
+                Restricted to READ-ONLY mode. Live staff directory and profiles are accessible for viewing. All action buttons (Add, Edit, Submit Request, Delete) are disabled until you Punch-In.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Header & Fast Action Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
         <div>
@@ -319,7 +358,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
               Admin Staff Directory &amp; Duty Management
             </h3>
             <span className="rounded-md bg-blue-100 border border-blue-200 px-2 py-0.5 text-2xs font-extrabold text-[#1E3A8A]">
-              Full CRUD Admin Mode
+              {isAdmin ? 'Full CRUD Admin Mode' : isManager ? 'Manager CRUD 24/7 Mode' : canPerformAction ? 'Supervisor On-Duty Active' : 'Supervisor Read-Only Mode'}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -328,7 +367,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {onOpenPendingApprovals && (
+          {onOpenPendingApprovals && (isAdminOrManager || canPerformAction) && (
             <button
               type="button"
               id="btn-admin-table-pending"
@@ -361,12 +400,23 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
             </button>
           )}
 
-          {onOpenAddUser && (
+          {onOpenAddUser && (isAdminOrManager || canPerformAction) && (
             <button
               type="button"
               id="btn-admin-table-add-user"
-              onClick={onOpenAddUser}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-blue-900 text-white text-xs font-bold shadow-xs transition-colors"
+              onClick={() => {
+                if (isSupervisor && !canPerformAction) {
+                  handleRestrictedAction('add user');
+                  return;
+                }
+                onOpenAddUser();
+              }}
+              disabled={isSupervisor && !canPerformAction}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-white text-xs font-bold shadow-xs transition-colors ${
+                isSupervisor && !canPerformAction
+                  ? 'bg-slate-400 cursor-not-allowed'
+                  : 'bg-[#1E3A8A] hover:bg-blue-900 cursor-pointer'
+              }`}
             >
               <UserPlus className="h-3.5 w-3.5" />
               <span>+ Add User / Staff</span>
@@ -668,9 +718,11 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                         <button
                           type="button"
                           onClick={() => handleInlineStatusToggle(user)}
-                          disabled={!isAdmin}
-                          title="Click to toggle status"
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-extrabold cursor-pointer border transition-colors ${
+                          disabled={!isAdminOrManager}
+                          title={isAdminOrManager ? 'Click to toggle status' : 'Admin or Manager privileges required'}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-extrabold border transition-colors ${
+                            !isAdminOrManager ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
+                          } ${
                             userStatus === 'ACTIVE'
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
                               : userStatus === 'DISABLED'
@@ -710,9 +762,20 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingUser(user)}
-                            title="Edit full user details"
-                            className="p-1.5 rounded-md text-slate-500 hover:text-[#1E3A8A] hover:bg-blue-50 transition-colors cursor-pointer"
+                            onClick={() => {
+                              if (isSupervisor && !canPerformAction) {
+                                handleRestrictedAction('edit user');
+                                return;
+                              }
+                              setEditingUser(user);
+                            }}
+                            disabled={isSupervisor && !canPerformAction}
+                            title={isSupervisor && !canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Edit full user details'}
+                            className={`p-1.5 rounded-md transition-colors ${
+                              isSupervisor && !canPerformAction
+                                ? 'text-slate-300 bg-slate-100 cursor-not-allowed'
+                                : 'text-slate-500 hover:text-[#1E3A8A] hover:bg-blue-50 cursor-pointer'
+                            }`}
                           >
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
@@ -733,14 +796,23 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                             <button
                               type="button"
                               onClick={() => {
+                                if (!canPerformAction) {
+                                  handleRestrictedAction('submit removal request');
+                                  return;
+                                }
                                 if (onRequestRemoval) {
                                   onRequestRemoval(user);
                                 } else {
                                   setStaffForRemoval(user);
                                 }
                               }}
-                              className="inline-flex items-center gap-1 px-2 py-1 text-2xs font-semibold bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-300 rounded transition cursor-pointer"
-                              title="Submit removal request to Admin / Manager"
+                              disabled={!canPerformAction}
+                              className={`inline-flex items-center gap-1 px-2 py-1 text-2xs font-semibold rounded transition ${
+                                !canPerformAction
+                                  ? 'bg-slate-100 text-slate-400 border border-slate-300 cursor-not-allowed opacity-60'
+                                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-300 cursor-pointer'
+                              }`}
+                              title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Submit removal request to Admin / Manager'}
                             >
                               <UserMinus className="w-3.5 h-3.5 text-amber-600" />
                               <span>Request Removal</span>
@@ -1049,6 +1121,8 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
         staffUser={staffForRemoval}
         currentSupervisorId={currentStaffId || 'SUP-001'}
         currentSupervisorName={currentUserName || 'Supervisor'}
+        canPerformAction={canPerformAction}
+        isOnDuty={effectiveIsOnDuty}
         onSubmitRequest={handleRemovalSubmit}
       />
     </div>

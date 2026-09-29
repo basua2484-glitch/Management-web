@@ -16,6 +16,8 @@ interface RegisterStaffModalProps {
     username: string;
     password: string;
     name: string;
+    mobile: string;
+    email?: string;
     role: UserRole;
     assigned_area: string;
     assigned_shift?: string;
@@ -35,6 +37,8 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   onRegister,
 }) => {
   const [name, setName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('123456');
   const [role, setRole] = useState<UserRole>('staff');
@@ -80,13 +84,22 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
     const regUsername = username.trim();
     const regPassword = password.trim();
     const regName = name.trim();
+    const regMobile = mobile.trim();
+    const regEmail = email.trim();
     const regArea = assignedArea.trim() || 'General Ward';
+
+    if (!regMobile) {
+      setErrorWarning('Mobile Number is strictly required for onboarding.');
+      return;
+    }
 
     const result = onRegister({
       staff_id: regUsername,
       username: regUsername,
       password: regPassword,
       name: regName,
+      mobile: regMobile,
+      email: regEmail || undefined,
       role,
       assigned_area: regArea,
       assigned_shift: assignedShift,
@@ -110,6 +123,8 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
 
       // Clear form & close
       setName('');
+      setMobile('');
+      setEmail('');
       setUsername('');
       setPassword('123456');
       setRole('staff');
@@ -223,6 +238,56 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white placeholder:text-white/20 focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
+                  />
+                </div>
+              </div>
+
+              {/* Mobile Number (MANDATORY) & Email ID (OPTIONAL) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label
+                      htmlFor="create-staff-mobile"
+                      className="block font-bold text-2xs uppercase tracking-wider text-white/70"
+                    >
+                      Mobile Number *
+                    </label>
+                    <span className="text-3xs text-rose-400 font-mono font-bold bg-rose-500/10 px-1 rounded border border-rose-500/20">
+                      REQUIRED
+                    </span>
+                  </div>
+                  <input
+                    type="tel"
+                    id="create-staff-mobile"
+                    name="mobile"
+                    required
+                    placeholder="e.g. +91 98765 43210"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value)}
+                    className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white placeholder:text-white/20 focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C] font-mono"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label
+                      htmlFor="create-staff-email"
+                      className="block font-bold text-2xs uppercase tracking-wider text-white/70"
+                    >
+                      Email ID (Optional)
+                    </label>
+                    <span className="text-3xs text-slate-400 font-mono bg-white/5 px-1 rounded">
+                      OPTIONAL
+                    </span>
+                  </div>
+                  <input
+                    type="email"
+                    id="create-staff-email"
+                    name="email"
+                    placeholder="staff@apexcare.org (Optional)"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white placeholder:text-white/20 focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C] font-mono"
                   />
                 </div>
               </div>

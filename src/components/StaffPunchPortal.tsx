@@ -88,9 +88,23 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   onUnauthorizedAttempt,
   isModal = false,
 }) => {
-  // If current logged-in user is staff, lock or default to their staffId
-  const effectiveDefaultId = currentUser?.role === 'staff' && currentUser.staffId
-    ? currentUser.staffId
+  // Universal Operational User Support: Staff, Supervisor, Manager (Universal Attendance Punching)
+  const isSelfPunchUser =
+    currentUser?.role === 'staff' ||
+    currentUser?.role === 'supervisor' ||
+    currentUser?.role === 'manager';
+
+  const userStaffId =
+    currentUser?.staffId ||
+    staff.find(
+      (s) =>
+        (currentUser?.staff_id && s.staffCode?.toLowerCase() === currentUser.staff_id.toLowerCase()) ||
+        (currentUser?.username && s.staffCode?.toLowerCase() === currentUser.username.toLowerCase()) ||
+        s.id === currentUser?.id
+    )?.id;
+
+  const effectiveDefaultId = isSelfPunchUser && userStaffId
+    ? userStaffId
     : initialStaffId;
 
   const [selectedStaffId, setSelectedStaffId] = useState<number>(effectiveDefaultId);
@@ -101,12 +115,12 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
 
   // Sync when initialStaffId or currentUser changes
   useEffect(() => {
-    if (currentUser?.role === 'staff' && currentUser.staffId) {
-      setSelectedStaffId((prev) => (prev === currentUser.staffId ? prev : currentUser.staffId!));
+    if (isSelfPunchUser && userStaffId) {
+      setSelectedStaffId((prev) => (prev === userStaffId ? prev : userStaffId));
     } else if (initialStaffId) {
       setSelectedStaffId((prev) => (prev === initialStaffId ? prev : initialStaffId));
     }
-  }, [initialStaffId, currentUser?.role, currentUser?.staffId]);
+  }, [initialStaffId, isSelfPunchUser, userStaffId]);
 
   // Time formatting helper
   const formatTime12h = (timeStr: string) => {
@@ -135,18 +149,19 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     return `${hours}:${minutes}`;
   };
 
-  // Active staff user resolution:
-  const isStaffLoggedIn = currentUser?.role === 'staff';
+  // Active staff user resolution across all operational roles:
+  const isStaffLoggedIn = isSelfPunchUser;
   const activeStaff = useMemo(() => {
-    if (isStaffLoggedIn && currentUser?.staffId) {
-      return staff.find((s) => s.id === currentUser.staffId) || staff[0] || DEFAULT_STAFF_FALLBACK;
+    if (isSelfPunchUser && userStaffId) {
+      const match = staff.find((s) => s.id === userStaffId);
+      if (match) return match;
     }
     return staff.find((s) => s.id === selectedStaffId) || staff[0] || DEFAULT_STAFF_FALLBACK;
-  }, [isStaffLoggedIn, currentUser?.staffId, staff, selectedStaffId]);
+  }, [isSelfPunchUser, userStaffId, staff, selectedStaffId]);
 
   // Formatted Staff ID from User model staff_id or staffCode HK-%03d
   const formattedStaffId =
-    (isStaffLoggedIn && currentUser?.staff_id)
+    (isSelfPunchUser && currentUser?.staff_id)
       ? currentUser.staff_id
       : (activeStaff.staffCode || `HK-${String(activeStaff.id).padStart(3, '0')}`);
   const assignedArea = activeStaff.department || currentUser?.department || 'General';
@@ -804,7 +819,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
             >
               {staff.map((s, idx) => (
                 <option key={s.staffCode || (s.id ? `portal-s-${s.id}` : `portal-s-${idx}`)} value={s.id}>
-                  {s.name} (HK-{String(s.id).padStart(3, '0')}) - {s.department || 'General'}
+                  {s.name} ({s.staffCode || `HK-${String(s.id).padStart(3, '0')}`}) [{String(s.role || 'STAFF').toUpperCase()}] - {s.department || 'General'}
                 </option>
               ))}
             </select>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Plus,
   Building,
@@ -17,13 +17,28 @@ import {
   UserCheck,
   Radio,
   History,
+  LayoutGrid,
+  Table as TableIcon,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, SupervisorAccessContext } from '../types';
+import type { StaffUser, AttendanceRecord, SupervisorAccessContext, AppUser } from '../types';
 import {
   getLeaveMetricsForDate,
   getSupervisorAccessContext,
   saveSupervisorAccessContext,
+  getStoredUsers,
 } from '../data/mockHousekeepingData';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
+import { RoleWiseLiveDashboard } from './RoleWiseLiveDashboard';
+import {
+  LiveDutyLog,
+  ShiftFilterType,
+  detectCurrentShift,
+  buildLiveDutyLogs,
+} from '../services/dutyDashboardService';
 
 interface LiveAttendanceViewProps {
   selectedDate: string;
@@ -37,7 +52,13 @@ interface LiveAttendanceViewProps {
   onOpenPendingApprovalModal?: () => void;
   currentUserRole?: string;
   currentUserId?: string;
+  currentUserDutyStatus?: 'ON_DUTY' | 'OFF_DUTY' | string;
+  isOnDuty?: boolean;
   onOpenProfileModal?: (staffId: string) => void;
+  activeTenantPrefix?: string;
+  allUsers?: AppUser[];
+  dutyLogs?: LiveDutyLog[];
+  onRefresh?: () => void;
 }
 
 export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
@@ -52,16 +73,30 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   onOpenPendingApprovalModal,
   currentUserRole,
   currentUserId,
+  currentUserDutyStatus,
+  isOnDuty,
   onOpenProfileModal,
+  activeTenantPrefix: propTenantPrefix,
+  allUsers,
+  dutyLogs: propDutyLogs,
+  onRefresh,
 }) => {
-  const isAdmin = (currentUserRole || '').toLowerCase() === 'admin';
-  const isSupervisor = (currentUserRole || '').toLowerCase() === 'supervisor';
+  const roleUpper = (currentUserRole || '').toUpperCase();
+  const isAdmin = roleUpper === 'ADMIN';
+  const isManager = roleUpper === 'MANAGER';
+  const isSupervisor = roleUpper === 'SUPERVISOR';
+  const isAdminOrManager = isAdmin || isManager;
   const effectiveSupervisorId = currentUserId || 'supervisor';
 
   // Supervisor Access Context (Determines if Live updates or Historical view is served)
   const [supervisorContext, setSupervisorContext] = useState<SupervisorAccessContext>(() =>
     getSupervisorAccessContext(effectiveSupervisorId)
   );
+
+  // DUTY STATE GUARD (In App/State Logic):
+  // Check user duty status: const isOnDuty = currentUser.dutyStatus === 'ON_DUTY';
+  const effectiveIsOnDuty = isOnDuty !== undefined ? Boolean(isOnDuty) : (currentUserDutyStatus === 'ON_DUTY' || supervisorContext.isOnDuty);
+  const canPerformAction = canSupervisorAction(roleUpper, effectiveIsOnDuty);
 
   useEffect(() => {
     const handleContextUpdate = (e: any) => {
@@ -84,6 +119,62 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ON_DUTY' | 'OT_ACTIVE' | 'ABSENT'>('ALL');
+  const [activeViewMode, setActiveViewMode] = useState<'role_cards' | 'roster_table'>('role_cards');
+
+  // 1. Dynamic Shift & Role Filtering Logic:
+  // Create filter states: selectedShift (All, Morning, Evening, Night) and activeTenantPrefix.
+  // 4. Real-Time Shift Auto-Detect: Default selectedShift filter automatically based on current system time:
+  //    07:00 - 15:00 -> Morning Shift
+  //    15:00 - 23:00 -> Evening Shift
+  //    23:00 - 07:00 -> Night Shift
+  const [selectedShift, setSelectedShift] = useState<ShiftFilterType>(() => detectCurrentShift());
+  const activeTenantPrefix = useMemo(() => {
+    if (propTenantPrefix && propTenantPrefix.trim()) return propTenantPrefix.trim().toUpperCase();
+    if (typeof localStorage !== 'undefined') {
+      const stored =
+        localStorage.getItem('tenant_id') ||
+        localStorage.getItem('tenantId') ||
+        localStorage.getItem('company_code');
+      if (stored && stored.trim()) return stored.trim().toUpperCase();
+    }
+    return 'APEX';
+  }, [propTenantPrefix]);
+
+  // Master dutyLogs construction
+  const dutyLogs: LiveDutyLog[] = useMemo(() => {
+    if (propDutyLogs && propDutyLogs.length > 0) return propDutyLogs;
+    const availableUsers = allUsers && allUsers.length > 0 ? allUsers : getStoredUsers();
+    return buildLiveDutyLogs({
+      users: availableUsers,
+      staff,
+      records,
+      selectedDate,
+      activeTenantPrefix,
+    });
+  }, [propDutyLogs, allUsers, staff, records, selectedDate, activeTenantPrefix]);
+
+  // Filter logs strictly by logged-in company tenant AND selected shift:
+  const filteredLogs = useMemo(() => {
+    return dutyLogs.filter(
+      (log) =>
+        log.userId.startsWith(activeTenantPrefix) &&
+        (selectedShift === 'ALL' || log.assignedShift === selectedShift)
+    );
+  }, [dutyLogs, activeTenantPrefix, selectedShift]);
+
+  // 2. Role-Based Grouping:
+  // Group the filtered live duty logs by user roles:
+  const managerLogs = useMemo(() => {
+    return filteredLogs.filter((log) => log.role === 'MANAGER');
+  }, [filteredLogs]);
+
+  const supervisorLogs = useMemo(() => {
+    return filteredLogs.filter((log) => log.role === 'SUPERVISOR');
+  }, [filteredLogs]);
+
+  const staffLogs = useMemo(() => {
+    return filteredLogs.filter((log) => log.role === 'STAFF');
+  }, [filteredLogs]);
 
   // Map each active staff member to their record for the selected date
   const dateRecordsMap = new Map<number, AttendanceRecord>();
@@ -161,6 +252,24 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
 
   return (
     <div className="space-y-6" id="live-attendance-overview">
+      {/* Supervisor Off-Duty Banner */}
+      {isSupervisor && !canPerformAction && (
+        <div
+          id="live-attendance-off-duty-banner"
+          className="p-3.5 bg-amber-500/15 border-2 border-amber-500/40 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+              <div className="text-2xs text-amber-800 mt-0.5">
+                Restricted to READ-ONLY mode. Live floor data is accessible for monitoring. All action buttons (Add, Edit, Submit Request, Delete) are disabled until you Punch-In.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Title & Duty Assign Button */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -173,7 +282,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {isAdmin && onOpenPendingApprovalModal && (
+          {isAdminOrManager && onOpenPendingApprovalModal && (
             <button
               type="button"
               id="btn-open-pending-approvals"
@@ -194,7 +303,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
             </button>
           )}
 
-          {isAdmin && onOpenAddUser && (
+          {isAdminOrManager && onOpenAddUser && (
             <button
               type="button"
               id="btn-add-user-modal-trigger"
@@ -221,8 +330,20 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
           <button
             type="button"
             id="btn-assign-duty-modal"
-            onClick={() => onOpenAssignModal()}
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-[#1E3A8A] px-4 py-2 text-sm font-semibold text-white shadow-xs hover:bg-blue-900 transition-colors"
+            onClick={() => {
+              if (isSupervisor && !canPerformAction) {
+                showOffDutyToast();
+                return;
+              }
+              onOpenAssignModal();
+            }}
+            disabled={isSupervisor && !canPerformAction}
+            title={isSupervisor && !canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Duty & Shift Assign Karein'}
+            className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold shadow-xs transition-colors ${
+              isSupervisor && !canPerformAction
+                ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                : 'bg-[#1E3A8A] text-white hover:bg-blue-900 cursor-pointer'
+            }`}
           >
             <Plus className="h-4 w-4" />
             <span>Duty & Shift Assign Karein</span>
@@ -375,17 +496,49 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Search Input */}
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search staff or duty..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-48 sm:w-56 rounded-md border border-slate-300 py-1.5 pl-8 pr-2.5 text-xs text-slate-800 placeholder-slate-400 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
-              />
+            {/* View Mode Switcher */}
+            <div className="inline-flex p-0.5 bg-slate-100 rounded-lg border border-slate-200 text-xs">
+              <button
+                type="button"
+                id="btn-toggle-role-cards"
+                onClick={() => setActiveViewMode('role_cards')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition-all ${
+                  activeViewMode === 'role_cards'
+                    ? 'bg-[#1E3A8A] text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                <span>Role-Wise Live Duty Cards</span>
+              </button>
+              <button
+                type="button"
+                id="btn-toggle-roster-table"
+                onClick={() => setActiveViewMode('roster_table')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition-all ${
+                  activeViewMode === 'roster_table'
+                    ? 'bg-[#1E3A8A] text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <TableIcon className="h-3.5 w-3.5" />
+                <span>Roster Log Table</span>
+              </button>
             </div>
+
+            {/* Search Input (visible in table mode) */}
+            {activeViewMode === 'roster_table' && (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search staff or duty..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-48 sm:w-56 rounded-md border border-slate-300 py-1.5 pl-8 pr-2.5 text-xs text-slate-800 placeholder-slate-400 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
+                />
+              </div>
+            )}
 
             {/* Date Input matching user's template */}
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 rounded-md px-2.5 py-1">
@@ -401,9 +554,30 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
           </div>
         </div>
 
-        {/* Table matching user's template */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse" id="table-live-attendance">
+        {activeViewMode === 'role_cards' ? (
+          <div className="p-4 sm:p-6 bg-slate-50/50">
+            <RoleWiseLiveDashboard
+              selectedDate={selectedDate}
+              onDateChange={onDateChange}
+              activeTenantPrefix={activeTenantPrefix}
+              users={allUsers}
+              staff={staff}
+              records={records}
+              dutyLogs={dutyLogs}
+              onOpenPunchPortal={onOpenPunchPortal}
+              onOpenAssignModal={onOpenAssignModal}
+              onOpenProfileModal={onOpenProfileModal}
+              onOpenAddUser={onOpenAddUser}
+              onRefresh={onRefresh}
+              isSupervisor={isSupervisor}
+              canPerformAction={canPerformAction}
+            />
+          </div>
+        ) : (
+          <>
+            {/* Table matching user's template */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse" id="table-live-attendance">
             <thead className="bg-[#1E293B] text-white text-xs uppercase tracking-wider font-semibold">
               <tr>
                 <th className="px-6 py-3.5">Staff Name</th>
@@ -548,10 +722,19 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            if (isSupervisor && !canPerformAction) {
+                              showOffDutyToast();
+                              return;
+                            }
                             onOpenAssignModal(item.userId);
                           }}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-[#1E3A8A] transition-colors cursor-pointer"
-                          title="Edit Duty Assignment"
+                          disabled={isSupervisor && !canPerformAction}
+                          title={isSupervisor && !canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Edit Duty Assignment'}
+                          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                            isSupervisor && !canPerformAction
+                              ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'
+                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 hover:text-[#1E3A8A] cursor-pointer'
+                          }`}
                         >
                           <Edit2 className="h-3 w-3" />
                           <span>Edit</span>
@@ -570,6 +753,8 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
           <span>Date: <strong>{selectedDate}</strong> • Showing {filteredList.length} staff records</span>
           <span className="italic">Click "Edit Duty" or "Duty & Shift Assign Karein" to update punches</span>
         </div>
+          </>
+        )}
       </div>
     </div>
   );

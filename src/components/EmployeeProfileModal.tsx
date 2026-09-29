@@ -58,6 +58,10 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   isShiftGated = false,
   onActionComplete,
 }) => {
+  // Duty state & role gating: Only Supervisors are subject to off-duty shift-gating. Managers have 24/7 full access.
+  const effectiveIsShiftGated = userRole === 'supervisor' ? isShiftGated : false;
+  const isAdminOrManager = userRole === 'admin' || userRole === 'manager';
+
   // Active tab selection
   const [activeTab, setActiveTab] = useState<'duty' | 'monthly' | 'ot' | 'emergency' | 'actions'>('duty');
 
@@ -149,12 +153,12 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   }, [attendanceList, effectiveDate, numericId, displayStaffCode]);
 
   // Compute Today's Stats
-  const punchInTime = todayRecord?.punchIn || (todayRecord?.sessions?.[0]?.punch_in ? new Date(todayRecord.sessions[0].punch_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '07:00');
+  const punchInTime = todayRecord?.punchIn || (todayRecord?.sessions?.[0]?.punch_in ? new Date(todayRecord.sessions[0].punch_in).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : null);
   const punchOutTime = todayRecord?.punchOut || (todayRecord?.sessions?.find(s => Boolean(s.punch_out))?.punch_out ? new Date(todayRecord.sessions.find(s => Boolean(s.punch_out))!.punch_out!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : null);
   const isActiveOnFloor = Boolean(todayRecord && !punchOutTime);
 
-  const regularHours = todayRecord ? (todayRecord.regularHours ?? todayRecord.regular_hours ?? 8.0) : 8.0;
-  const otHours = todayRecord ? (todayRecord.otHours ?? todayRecord.ot_hours ?? (todayRecord.ot_status === 'APPROVED' ? 1.5 : 0.0)) : 1.5;
+  const regularHours = todayRecord ? (todayRecord.regularHours ?? todayRecord.regular_hours ?? 0.0) : 0.0;
+  const otHours = todayRecord ? (todayRecord.otHours ?? todayRecord.ot_hours ?? (todayRecord.ot_status === 'APPROVED' ? (todayRecord.otHours || 0.0) : 0.0)) : 0.0;
 
   const isEmergencyExitToday = Boolean(
     (todayRecord as any)?.emergency_departure ||
@@ -166,20 +170,24 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
     if (todayRecord?.sessions && todayRecord.sessions.length > 0) {
       return todayRecord.sessions;
     }
-    // Fallback single session
-    return [
-      {
-        id: `sess_fallback_${numericId}`,
-        staff_id: numericId,
-        date: effectiveDate,
-        punch_in: todayRecord?.punchInTimestamp || `${effectiveDate}T07:00:00.000Z`,
-        punch_out: todayRecord?.punchOutTimestamp || null,
-        notes: assignedWard,
-      },
-    ];
+    if (todayRecord?.punchInTimestamp || todayRecord?.punchIn) {
+      return [
+        {
+          id: `sess_${numericId}_${effectiveDate}`,
+          staff_id: numericId,
+          date: effectiveDate,
+          punch_in: todayRecord?.punchInTimestamp || `${effectiveDate}T${todayRecord.punchIn || '07:00'}:00.000Z`,
+          punch_out: todayRecord?.punchOutTimestamp || (todayRecord?.punchOut ? `${effectiveDate}T${todayRecord.punchOut}:00.000Z` : null),
+          notes: assignedWard,
+        },
+      ];
+    }
+    return [];
   }, [todayRecord, numericId, effectiveDate, assignedWard]);
 
-  // Monthly Records
+  // Monthly Records - REAL-TIME PUNCH ONLY RULE:
+  // Strictly display only entries created from actual Punch-In/Punch-Out events or manual Admin overrides.
+  // Any auto-generating mock attendance loop (e.g. day = 1 <= 15) has been removed.
   const currentMonthPrefix = effectiveDate.slice(0, 7);
   const monthlyRecords = useMemo(() => {
     const recordsForStaff = attendanceList.filter((r) => {
@@ -190,50 +198,21 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       return inMonth && isStaff;
     });
 
-    // If records are sparse, create a solid monthly history array for visual completeness
-    if (recordsForStaff.length < 8) {
-      const generated: AttendanceRecord[] = [...recordsForStaff];
-      const existingDates = new Set(recordsForStaff.map((r) => r.date));
-      const yearMonth = currentMonthPrefix;
-      for (let day = 1; day <= 15; day++) {
-        const dateStr = `${yearMonth}-${day.toString().padStart(2, '0')}`;
-        if (!existingDates.has(dateStr) && dateStr <= effectiveDate) {
-          const isSunday = new Date(dateStr).getDay() === 0;
-          generated.push({
-            id: `gen_att_${numericId}_${dateStr}`,
-            userId: numericId,
-            staff_id: displayStaffCode,
-            date: dateStr,
-            punchIn: isSunday ? null : '07:02',
-            punchOut: isSunday ? null : '15:05',
-            regularHours: isSunday ? 0 : 8.0,
-            otHours: day === 3 || day === 10 ? 2.0 : 0.0,
-            status: isSunday ? 'Weekly Off' : 'Present',
-            notes: isSunday ? 'Scheduled Weekly Rest' : assignedWard,
-          });
-        }
-      }
-      return generated.sort((a, b) => b.date.localeCompare(a.date));
-    }
-
     return recordsForStaff.sort((a, b) => b.date.localeCompare(a.date));
-  }, [attendanceList, currentMonthPrefix, numericId, displayStaffCode, effectiveDate, assignedWard]);
+  }, [attendanceList, currentMonthPrefix, numericId, displayStaffCode]);
 
   const totalPresentDays = useMemo(() => {
-    const presentCount = monthlyRecords.filter(
+    return monthlyRecords.filter(
       (r) => r.status === 'Present' || (r.regularHours || 0) > 0 || (r.regular_hours || 0) > 0
     ).length;
-    return Math.max(presentCount, 14);
   }, [monthlyRecords]);
 
   const totalMonthRegHours = useMemo(() => {
-    const sum = monthlyRecords.reduce((acc, r) => acc + (r.regularHours ?? r.regular_hours ?? 0), 0);
-    return sum > 0 ? sum : totalPresentDays * 8.0;
-  }, [monthlyRecords, totalPresentDays]);
+    return monthlyRecords.reduce((acc, r) => acc + (r.regularHours ?? r.regular_hours ?? 0), 0);
+  }, [monthlyRecords]);
 
   const totalMonthOtHours = useMemo(() => {
-    const sum = monthlyRecords.reduce((acc, r) => acc + (r.otHours ?? r.ot_hours ?? 0), 0);
-    return sum > 0 ? sum : 18.5;
+    return monthlyRecords.reduce((acc, r) => acc + (r.otHours ?? r.ot_hours ?? 0), 0);
   }, [monthlyRecords]);
 
   // Overtime Records
@@ -601,10 +580,12 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                     className={`text-2xs font-bold px-2.5 py-0.5 rounded-full border ${
                       isActiveOnFloor
                         ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                        : 'bg-slate-100 text-slate-700 border-slate-300'
+                        : todayRecord
+                        ? 'bg-slate-100 text-slate-700 border-slate-300'
+                        : 'bg-slate-100 text-slate-500 border-slate-200'
                     }`}
                   >
-                    {isActiveOnFloor ? 'ON DUTY (Active)' : 'DUTY COMPLETED'}
+                    {isActiveOnFloor ? 'ON DUTY (Active)' : todayRecord ? 'DUTY COMPLETED' : 'OFF DUTY'}
                   </span>
                 </div>
 
@@ -612,14 +593,14 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                   <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
                     <span className="text-3xs text-slate-500 font-semibold uppercase block">Punch In</span>
                     <span className="font-mono font-bold text-slate-900 text-sm mt-0.5 block">
-                      {formatTimeTo12hStr(punchInTime)}
+                      {punchInTime ? formatTimeTo12hStr(punchInTime) : '--:--'}
                     </span>
                   </div>
 
                   <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
                     <span className="text-3xs text-slate-500 font-semibold uppercase block">Punch Out</span>
                     <span className="font-mono font-bold text-slate-900 text-sm mt-0.5 block">
-                      {punchOutTime ? formatTimeTo12hStr(punchOutTime) : 'Floor Active'}
+                      {punchOutTime ? formatTimeTo12hStr(punchOutTime) : (todayRecord ? 'Floor Active' : '--:--')}
                     </span>
                   </div>
 
@@ -643,32 +624,38 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                   <span className="text-2xs font-bold text-slate-500 uppercase tracking-wider block mb-2">
                     Shift Punch Sessions ({activeSessionsList.length})
                   </span>
-                  <div className="space-y-1.5">
-                    {activeSessionsList.map((session, idx) => (
-                      <div
-                        key={session.id || idx}
-                        className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-mono"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-600 bg-white px-1.5 py-0.5 rounded border border-slate-200 text-2xs">
-                            #{idx + 1}
-                          </span>
-                          <span className="text-slate-800 font-semibold">
-                            {formatTimeTo12hStr(session.punch_in)} &rarr;{' '}
-                            {session.punch_out ? formatTimeTo12hStr(session.punch_out) : 'Current Active'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-3xs text-slate-500">{session.notes || assignedWard}</span>
-                          {!session.punch_out && (
-                            <span className="text-3xs font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
-                              Live
+                  {activeSessionsList.length === 0 ? (
+                    <div className="text-center py-4 text-slate-400 text-xs italic bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+                      No shift punch sessions recorded today
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {activeSessionsList.map((session, idx) => (
+                        <div
+                          key={session.id || idx}
+                          className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-mono"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-600 bg-white px-1.5 py-0.5 rounded border border-slate-200 text-2xs">
+                              #{idx + 1}
                             </span>
-                          )}
+                            <span className="text-slate-800 font-semibold">
+                              {formatTimeTo12hStr(session.punch_in)} &rarr;{' '}
+                              {session.punch_out ? formatTimeTo12hStr(session.punch_out) : 'Current Active'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-3xs text-slate-500">{session.notes || assignedWard}</span>
+                            {!session.punch_out && (
+                              <span className="text-3xs font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+                                Live
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -693,57 +680,69 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                   <span className="text-3xs text-slate-500 font-bold uppercase block">Reliability</span>
                   <span className="font-bold text-blue-700 text-base mt-0.5 block">
-                    {Math.min(100, Math.round((totalPresentDays / 26) * 100))}%
+                    {totalPresentDays === 0 ? '0%' : `${Math.min(100, Math.round((totalPresentDays / 26) * 100))}%`}
                   </span>
                 </div>
               </div>
 
-              {/* Monthly Daily Breakdown Table */}
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100/70 border-b border-slate-200 text-2xs font-bold uppercase text-slate-600 tracking-wider">
-                      <th className="py-2.5 px-3">Date</th>
-                      <th className="py-2.5 px-3">Shift</th>
-                      <th className="py-2.5 px-3">In &rarr; Out Times</th>
-                      <th className="py-2.5 px-3 text-center">Regular</th>
-                      <th className="py-2.5 px-3 text-center">OT Hours</th>
-                      <th className="py-2.5 px-3 text-right">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {monthlyRecords.slice(0, 15).map((rec, idx) => (
-                      <tr key={rec.id ? `mrec-${rec.id}` : `mrec-${rec.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{rec.date}</td>
-                        <td className="py-2.5 px-3 text-2xs text-slate-600">{rec.shift_name || assignedShift}</td>
-                        <td className="py-2.5 px-3 font-mono text-2xs">
-                          {rec.punchIn ? formatTimeTo12hStr(rec.punchIn) : '--:--'} &rarr;{' '}
-                          {rec.punchOut ? formatTimeTo12hStr(rec.punchOut) : 'Active'}
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-mono font-semibold text-emerald-700">
-                          {(rec.regularHours ?? rec.regular_hours ?? 8.0).toFixed(1)}h
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-mono font-bold text-amber-600">
-                          {(rec.otHours ?? rec.ot_hours ?? 0.0).toFixed(1)}h
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <span
-                            className={`text-3xs font-bold px-2 py-0.5 rounded-full ${
-                              rec.status === 'Present'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : rec.status === 'Weekly Off'
-                                ? 'bg-purple-100 text-purple-800'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}
-                          >
-                            {rec.status || 'Present'}
-                          </span>
-                        </td>
+              {/* Monthly Daily Breakdown Table - REAL-TIME PUNCH ONLY */}
+              {monthlyRecords.length === 0 ? (
+                <div className="py-12 px-4 text-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50" id="empty-monthly-attendance">
+                  <Clock className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    No Attendance Records Found
+                  </h5>
+                  <p className="text-2xs text-slate-400 mt-1 max-w-sm mx-auto">
+                    This user has no attendance logs recorded yet. Entries will only be created from actual Punch-In / Punch-Out events or manual Admin overrides.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100/70 border-b border-slate-200 text-2xs font-bold uppercase text-slate-600 tracking-wider">
+                        <th className="py-2.5 px-3">Date</th>
+                        <th className="py-2.5 px-3">Shift</th>
+                        <th className="py-2.5 px-3">In &rarr; Out Times</th>
+                        <th className="py-2.5 px-3 text-center">Regular</th>
+                        <th className="py-2.5 px-3 text-center">OT Hours</th>
+                        <th className="py-2.5 px-3 text-right">Status</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {monthlyRecords.slice(0, 15).map((rec, idx) => (
+                        <tr key={rec.id ? `mrec-${rec.id}` : `mrec-${rec.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{rec.date}</td>
+                          <td className="py-2.5 px-3 text-2xs text-slate-600">{rec.shift_name || assignedShift}</td>
+                          <td className="py-2.5 px-3 font-mono text-2xs">
+                            {rec.punchIn ? formatTimeTo12hStr(rec.punchIn) : '--:--'} &rarr;{' '}
+                            {rec.punchOut ? formatTimeTo12hStr(rec.punchOut) : 'Active'}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-semibold text-emerald-700">
+                            {(rec.regularHours ?? rec.regular_hours ?? 0.0).toFixed(1)}h
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-amber-600">
+                            {(rec.otHours ?? rec.ot_hours ?? 0.0).toFixed(1)}h
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <span
+                              className={`text-3xs font-bold px-2 py-0.5 rounded-full ${
+                                rec.status === 'Present'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : rec.status === 'Weekly Off'
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {rec.status || 'Present'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -769,46 +768,58 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
               </div>
 
               {/* OT Records Table */}
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100/70 border-b border-slate-200 text-2xs font-bold uppercase text-slate-600 tracking-wider">
-                      <th className="py-2.5 px-3">Date</th>
-                      <th className="py-2.5 px-3">Department / Ward</th>
-                      <th className="py-2.5 px-3">Shift Type</th>
-                      <th className="py-2.5 px-3 text-center">OT Hours</th>
-                      <th className="py-2.5 px-3">Status</th>
-                      <th className="py-2.5 px-3">Authorized By</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {staffOtRecords.map((ot, idx) => (
-                      <tr key={ot.id ? `ot-${ot.id}` : `ot-${ot.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{ot.date}</td>
-                        <td className="py-2.5 px-3 font-semibold text-slate-800">{ot.department}</td>
-                        <td className="py-2.5 px-3 text-2xs text-slate-600">{ot.type}</td>
-                        <td className="py-2.5 px-3 text-center font-mono font-bold text-amber-600">
-                          +{ot.hours.toFixed(1)}h
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span
-                            className={`text-3xs font-bold px-2 py-0.5 rounded-full ${
-                              ot.status === 'APPROVED'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : ot.status === 'REJECTED'
-                                ? 'bg-rose-100 text-rose-800'
-                                : 'bg-amber-100 text-amber-800'
-                            }`}
-                          >
-                            {ot.status}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-2xs text-slate-500">{ot.authorizedBy}</td>
+              {staffOtRecords.length === 0 ? (
+                <div className="py-10 px-4 text-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50" id="empty-ot-records">
+                  <Flame className="h-7 w-7 text-slate-300 mx-auto mb-1.5" />
+                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    No Attendance Records Found
+                  </h5>
+                  <p className="text-2xs text-slate-400 mt-1 max-w-xs mx-auto">
+                    No overtime hours have been logged for this staff member yet.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100/70 border-b border-slate-200 text-2xs font-bold uppercase text-slate-600 tracking-wider">
+                        <th className="py-2.5 px-3">Date</th>
+                        <th className="py-2.5 px-3">Department / Ward</th>
+                        <th className="py-2.5 px-3">Shift Type</th>
+                        <th className="py-2.5 px-3 text-center">OT Hours</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Authorized By</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {staffOtRecords.map((ot, idx) => (
+                        <tr key={ot.id ? `ot-${ot.id}` : `ot-${ot.date}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="py-2.5 px-3 font-mono text-2xs font-bold text-slate-800">{ot.date}</td>
+                          <td className="py-2.5 px-3 font-semibold text-slate-800">{ot.department}</td>
+                          <td className="py-2.5 px-3 text-2xs text-slate-600">{ot.type}</td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-amber-600">
+                            +{ot.hours.toFixed(1)}h
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`text-3xs font-bold px-2 py-0.5 rounded-full ${
+                                ot.status === 'APPROVED'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : ot.status === 'REJECTED'
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {ot.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-2xs text-slate-500">{ot.authorizedBy}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -871,7 +882,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
           {activeTab === 'actions' && (
             <div className="mt-5 space-y-4 animate-in fade-in duration-200">
               {/* Shift-Gating Warning Banner if Supervisor is Off-Duty */}
-              {isShiftGated && (
+              {effectiveIsShiftGated && (
                 <div
                   id="profile-shift-gating-banner"
                   className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 flex items-start gap-3 shadow-xs"
@@ -893,16 +904,16 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                 <button
                   type="button"
                   id="btn-profile-assign-reliever"
-                  disabled={isShiftGated}
+                  disabled={effectiveIsShiftGated}
                   onClick={() => setActionPanel(actionPanel === 'reliever' ? 'none' : 'reliever')}
                   className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                    isShiftGated
+                    effectiveIsShiftGated
                       ? 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
                       : actionPanel === 'reliever'
                       ? 'bg-blue-800 text-white cursor-pointer shadow-xs'
                       : 'bg-[#1E3A8A] text-white hover:bg-blue-900 cursor-pointer shadow-xs'
                   }`}
-                  title={isShiftGated ? 'Locked: Supervisor is Off-Duty' : 'Assign reliever duty'}
+                  title={effectiveIsShiftGated ? 'Locked: Supervisor is Off-Duty' : 'Assign reliever duty'}
                 >
                   <ArrowRightLeft className="h-3.5 w-3.5" />
                   <span>Assign Reliever Duty</span>
@@ -911,22 +922,22 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                 <button
                   type="button"
                   id="btn-profile-change-ward"
-                  disabled={isShiftGated}
+                  disabled={effectiveIsShiftGated}
                   onClick={() => setActionPanel(actionPanel === 'ward' ? 'none' : 'ward')}
                   className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                    isShiftGated
+                    effectiveIsShiftGated
                       ? 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
                       : actionPanel === 'ward'
                       ? 'bg-black text-white cursor-pointer shadow-xs'
                       : 'bg-slate-800 text-white hover:bg-slate-900 cursor-pointer shadow-xs'
                   }`}
-                  title={isShiftGated ? 'Locked: Supervisor is Off-Duty' : 'Change assigned ward'}
+                  title={effectiveIsShiftGated ? 'Locked: Supervisor is Off-Duty' : 'Change assigned ward'}
                 >
                   <Building className="h-3.5 w-3.5" />
                   <span>Change Assigned Ward</span>
                 </button>
 
-                {userRole === 'admin' && (
+                {isAdminOrManager && (
                   <button
                     type="button"
                     id="btn-profile-reset-password"
@@ -938,7 +949,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                     }`}
                   >
                     <KeyRound className="h-3.5 w-3.5" />
-                    <span>Reset Password (Admin)</span>
+                    <span>Reset Password ({userRole === 'admin' ? 'Admin' : 'Manager'})</span>
                   </button>
                 )}
               </div>

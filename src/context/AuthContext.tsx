@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { AppUser } from '../types';
-import { getStoredUsers, getStoredCurrentUser, saveStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getStoredUsers, getStoredCurrentUser, saveStoredCurrentUser, getSupervisorDutyState } from '../data/mockHousekeepingData';
 import { handleLogin as authServiceLogin, handleLogout as authServiceLogout } from '../services/auth';
 import { auth } from '../firebase';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
@@ -13,6 +13,8 @@ interface AuthContextType {
   tenantId: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isOnDuty: boolean;
+  dutyStatus: 'ON_DUTY' | 'OFF_DUTY';
   login: (
     staffId: string,
     password: string,
@@ -34,7 +36,8 @@ function isSameUser(a: AppUser | null, b: AppUser | null): boolean {
     a.role === b.role &&
     a.staff_id === b.staff_id &&
     a.name === b.name &&
-    a.is_approved === b.is_approved
+    a.is_approved === b.is_approved &&
+    a.dutyStatus === b.dutyStatus
   );
 }
 
@@ -216,6 +219,16 @@ function resolveUserProfile(
     if (userProfile.role === 'staff' && !userProfile.supervisorId) {
       userProfile.supervisorId = '102';
     }
+    // Duty Status normalization
+    if (!userProfile.dutyStatus) {
+      if (roleUpper === 'SUPERVISOR') {
+        const supDuty = getSupervisorDutyState(userProfile.staff_id || userProfile.username);
+        userProfile.dutyStatus = supDuty.isPunchedIn ? 'ON_DUTY' : 'OFF_DUTY';
+      } else {
+        userProfile.dutyStatus = 'ON_DUTY';
+      }
+    }
+    userProfile.isOnDuty = userProfile.dutyStatus === 'ON_DUTY';
   }
 
   // Ensure current user is saved in storage for components that inspect it
@@ -347,6 +360,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('auth-state-change', restoreAuth);
+    window.addEventListener('supervisor-duty-punch-changed', restoreAuth);
 
     return () => {
       if (typeof unsubscribeFirebase === 'function') {
@@ -354,6 +368,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('auth-state-change', restoreAuth);
+      window.removeEventListener('supervisor-duty-punch-changed', restoreAuth);
     };
   }, [restoreAuth]);
 
@@ -437,6 +452,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     []
   );
 
+  const isOnDuty = user?.dutyStatus === 'ON_DUTY' || Boolean(user?.isOnDuty);
+  const dutyStatus: 'ON_DUTY' | 'OFF_DUTY' = isOnDuty ? 'ON_DUTY' : 'OFF_DUTY';
+
   const value = React.useMemo<AuthContextType>(
     () => ({
       user,
@@ -445,11 +463,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       tenantId: user?.tenant_id || user?.tenantId || tenantId,
       isAuthenticated: Boolean(token && role),
       isLoading,
+      isOnDuty,
+      dutyStatus,
       login,
       logout,
       refreshAuth: restoreAuth,
     }),
-    [user, token, role, tenantId, isLoading, login, logout, restoreAuth]
+    [user, token, role, tenantId, isLoading, isOnDuty, dutyStatus, login, logout, restoreAuth]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

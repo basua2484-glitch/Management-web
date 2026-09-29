@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -95,6 +95,7 @@ import { AdminStaffTable } from './AdminStaffTable';
 import { StaffVault } from './StaffVault';
 import { AdminVaultModal } from './AdminVaultModal';
 import { StaffRequestModal } from './StaffRequestModal';
+import { getEmptyInitialAttendanceState } from '../services/userService';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { LeaveManagementView } from './LeaveManagementView';
 import { EmployeeProfileModal } from './EmployeeProfileModal';
@@ -102,6 +103,11 @@ import { GeofenceSettingsPanel } from './GeofenceSettingsPanel';
 import { createPasswordHash } from '../services/vaultService';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 export interface DashboardPageProps {
   defaultTab?: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence';
@@ -132,6 +138,22 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const isStaff = userRole === 'staff';
   const isAdminOrManager = isAdmin || isManager;
   const isElevatedRole = isAdmin || isManager || isSupervisor;
+
+  // DUTY STATE GUARD (In App/State Logic):
+  // Check user duty status: const isOnDuty = currentUser.dutyStatus === 'ON_DUTY';
+  // Supervisor Action Guard Function:
+  // const canSupervisorAction = (role, isOnDuty) => {
+  //   if (role === 'ADMIN' || role === 'MANAGER') return true; // Always allowed
+  //   if (role === 'SUPERVISOR') return isOnDuty; // Only allowed when On-Duty
+  //   return false;
+  // };
+  const isOnDuty = currentUser?.dutyStatus ? currentUser.dutyStatus === 'ON_DUTY' : Boolean(currentUser?.isOnDuty ?? true);
+  const canPerformSupervisorAction = canSupervisorAction(userRole, isOnDuty);
+
+  const handleRestrictedActionAttempt = (actionName?: string) => {
+    addFlash(OFF_DUTY_RESTRICTION_MESSAGE, 'warning');
+    showOffDutyToast();
+  };
 
   // Active tenant prefix resolution for strict tenant isolation
   const activeTenantPrefix = useMemo(() => {
@@ -170,6 +192,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     };
     window.addEventListener('leave-data-updated', handleLeaveUpdate);
     return () => window.removeEventListener('leave-data-updated', handleLeaveUpdate);
+  }, []);
+
+  useEffect(() => {
+    const handleRestrictedEvent = (e: any) => {
+      addFlash(e?.detail?.message || OFF_DUTY_RESTRICTION_MESSAGE, 'warning');
+    };
+    window.addEventListener('off-duty-action-restricted', handleRestrictedEvent);
+    return () => window.removeEventListener('off-duty-action-restricted', handleRestrictedEvent);
   }, []);
 
   const pendingLeavesCount = useMemo(() => {
@@ -389,6 +419,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     saveStoredAttendance(updatedRecords);
   };
 
+  const handleLiveAttendanceRefresh = useCallback(() => {
+    setRecords(getStoredAttendance());
+    setUsers(getStoredUsers());
+    setStaff(getStoredStaff());
+  }, []);
+
   // Month formatting for Monthly Report
   const monthName = useMemo(() => {
     const d = new Date(year, month - 1, 1);
@@ -578,6 +614,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       staffCode: autoStaffCode,
       tenant_id: activeTenantId,
       company_prefix: companyPrefix,
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
     };
     const updatedStaff = [...staff, newMember];
     handleSaveStaff(updatedStaff);
@@ -616,6 +656,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         is_approved: true,
         staffId: newId,
         assigned_area: newMember.department,
+        attendanceLogs: [],
+        presentDays: 0,
+        regularHours: 0,
+        overtimeHours: 0,
       };
       const updatedUsers = [...users, linkedUser];
       setUsers(updatedUsers);
@@ -630,6 +674,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleOpenAssignModal = (staffId?: number) => {
+    if (isSupervisor && !canPerformSupervisorAction) {
+      handleRestrictedActionAttempt('open duty assignment');
+      return;
+    }
     setDutyModalStaffId(staffId || null);
     setIsDutyModalOpen(true);
   };
@@ -638,6 +686,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     recordOrData: AttendanceRecord | { staffId: number; department: string; shift: string },
     updatedDutyArea?: string
   ) => {
+    if (isSupervisor && !canPerformSupervisorAction) {
+      handleRestrictedActionAttempt('save duty assignment');
+      return;
+    }
     if ('userId' in recordOrData) {
       handleSavePunchRecord(recordOrData);
       if (updatedDutyArea) {
@@ -756,8 +808,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   // Full Admin User & Duty Allocation CRUD Handlers
   const handleUpdateUser = (updatedUser: AppUser) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required to modify user profiles.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required to modify user profiles.', 'danger');
       return;
     }
     const updatedUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
@@ -815,6 +867,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleDeleteUser = async (userId: number) => {
+    if (isSupervisor && !canPerformSupervisorAction) {
+      handleRestrictedActionAttempt('delete user');
+      return;
+    }
     const target = users.find((u) => u.id === userId);
     if (!target) return;
 
@@ -896,8 +952,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleUpdateUserStatus = (userId: number, newStatus: 'ACTIVE' | 'DISABLED') => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required to toggle account status.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required to toggle account status.', 'danger');
       return;
     }
     const updatedUsers = users.map((u) => (u.id === userId ? { ...u, status: newStatus } : u));
@@ -913,8 +969,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   // Staff Joining Request Handlers
   const handleApproveStaffRequest = (requestId: number, assignedShift?: string) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required for staff joining approvals.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required for staff joining approvals.', 'danger');
       return;
     }
     const result = approveStaffRequest(requestId, assignedShift);
@@ -945,8 +1001,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleRejectStaffRequest = (requestId: number) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required for staff joining rejections.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required for staff joining rejections.', 'danger');
       return;
     }
     const result = rejectStaffRequest(requestId);
@@ -960,6 +1016,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     proposed_shift: string;
     requested_by: string;
   }) => {
+    if (isSupervisor && !canPerformSupervisorAction) {
+      handleRestrictedActionAttempt('submit staff request');
+      return;
+    }
     createStaffRequest(data);
     setStaffRequests(getStoredStaffRequests());
     addFlash(`Staff request for ${data.candidate_name} submitted successfully.`, 'success');
@@ -967,8 +1027,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   // Overtime (OT) Request Handlers
   const handleApproveOtRequest = (allocationId: number) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required for overtime approvals.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required for overtime approvals.', 'danger');
       return;
     }
     const result = approveDutyOtRequest(allocationId, currentUser?.staff_id || currentUser?.username || 'SYSTEM');
@@ -978,8 +1038,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   };
 
   const handleRejectOtRequest = (allocationId: number) => {
-    if (!isAdmin) {
-      addFlash('Unauthorized: Admin role required for overtime rejections.', 'danger');
+    if (!isAdminOrManager) {
+      addFlash('Unauthorized: Admin or Manager authorization required for overtime rejections.', 'danger');
       return;
     }
     const result = rejectDutyOtRequest(allocationId, currentUser?.staff_id || currentUser?.username || 'SYSTEM');
@@ -1029,6 +1089,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       status: 'PENDING',
       is_approved: false, // Security Check for Self-Signup
       assigned_area: 'Unassigned',
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
     };
 
     const updatedUsers = [...users, newUser];
@@ -1049,7 +1113,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     assignedRole: UserRole = 'staff',
     assignedArea: string = 'General Wards'
   ) => {
-    if (!isAdmin) {
+    if (!isAdminOrManager) {
       addFlash('Aapko is section ko access karne ki permission nahi hai.', 'danger');
       return;
     }
@@ -1072,6 +1136,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         shift: 'Morning',
         hourlyRate: 15,
         active: true,
+        attendanceLogs: [],
+        presentDays: 0,
+        regularHours: 0,
+        overtimeHours: 0,
       };
       const updatedStaff = [...staff, newStaffMember];
       setStaff(updatedStaff);
@@ -1112,6 +1180,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     username: string;
     password: string;
     name: string;
+    mobile?: string;
+    email?: string;
     role: UserRole;
     assigned_area: string;
     assigned_shift?: string;
@@ -1169,6 +1239,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       raw_password_vault: pwd,
       name: data.name.trim(),
       full_name: data.name.trim(),
+      mobile: data.mobile ? data.mobile.trim() : undefined,
+      phone: data.mobile ? data.mobile.trim() : undefined,
+      email: data.email && data.email.trim() ? data.email.trim() : undefined,
       role: data.role || 'staff',
       duty_type: dutyType,
       fixed_department: fixedDept,
@@ -1179,37 +1252,47 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       is_approved: true,
       assigned_area: isTemp && tempDept ? tempDept : fixedDept,
       department: isTemp && tempDept ? tempDept : fixedDept,
-      staffId: data.role === 'staff' ? newStaffId : undefined,
+      staffId: newStaffId,
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
     };
 
     const updatedUsers = [...users, newAppUser];
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
-    if (data.role === 'staff') {
-      const shiftNamed: 'Morning' | 'Evening' | 'Night' =
-        shiftVal === '11-7' ? 'Night' : shiftVal === '3-11' ? 'Evening' : 'Morning';
-      const newStaffUser: StaffUser = {
-        id: newStaffId,
-        staffCode: chosenStaffId,
-        tenant_id: activeTenantId,
-        company_prefix: companyPrefix,
-        name: data.name.trim(),
-        role: 'staff',
-        dutyType,
-        fixedDepartment: fixedDept,
-        isTempReliever: isTemp,
-        tempDepartment: tempDept ?? null,
-        department: isTemp && tempDept ? tempDept : fixedDept,
-        shift: shiftNamed,
-        hourlyRate: 15,
-        active: true,
-      };
-      const updatedStaff = [...staff, newStaffUser];
-      setStaff(updatedStaff);
-      saveStoredStaff(updatedStaff);
-      saveStaffToLiveDb(newStaffUser).catch(console.warn);
-    }
+    // Universal Roster: Add all operational roles (staff, supervisor, manager) to staff list for punch kiosk & attendance
+    const shiftNamed: 'Morning' | 'Evening' | 'Night' =
+      shiftVal === '11-7' ? 'Night' : shiftVal === '3-11' ? 'Evening' : 'Morning';
+    const newStaffUser: StaffUser = {
+      id: newStaffId,
+      staffCode: chosenStaffId,
+      tenant_id: activeTenantId,
+      company_prefix: companyPrefix,
+      name: data.name.trim(),
+      mobile: data.mobile ? data.mobile.trim() : undefined,
+      phone: data.mobile ? data.mobile.trim() : undefined,
+      email: data.email && data.email.trim() ? data.email.trim() : undefined,
+      role: (data.role as any) || 'staff',
+      dutyType,
+      fixedDepartment: fixedDept,
+      isTempReliever: isTemp,
+      tempDepartment: tempDept ?? null,
+      department: isTemp && tempDept ? tempDept : fixedDept,
+      shift: shiftNamed,
+      hourlyRate: 15,
+      active: true,
+      attendanceLogs: [],
+      presentDays: 0,
+      regularHours: 0,
+      overtimeHours: 0,
+    };
+    const updatedStaff = [...staff, newStaffUser];
+    setStaff(updatedStaff);
+    saveStoredStaff(updatedStaff);
+    saveStaffToLiveDb(newStaffUser).catch(console.warn);
 
     saveUserToLiveDb(newAppUser).catch(console.warn);
     window.dispatchEvent(new Event('staff-data-updated'));
@@ -1996,6 +2079,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               currentUserId={currentUser?.id}
               currentStaffId={currentUser?.staff_id || currentUser?.username}
               currentUserName={currentUser?.name || currentUser?.full_name}
+              currentUserDutyStatus={currentUser?.dutyStatus || (isOnDuty ? 'ON_DUTY' : 'OFF_DUTY')}
+              isOnDuty={isOnDuty}
               onUpdateUser={handleUpdateUser}
               onDeleteUser={handleDeleteUser}
               onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
@@ -2294,7 +2379,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 onOpenPendingApprovalModal={() => setIsPendingModalOpen(true)}
                 currentUserRole={userRole}
                 currentUserId={currentUser?.username || String(currentUser?.id || 'supervisor')}
+                currentUserDutyStatus={currentUser?.dutyStatus || (isOnDuty ? 'ON_DUTY' : 'OFF_DUTY')}
+                isOnDuty={isOnDuty}
                 onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+                activeTenantPrefix={activeTenantPrefix}
+                allUsers={users}
+                onRefresh={handleLiveAttendanceRefresh}
               />
             ) : (
               <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
@@ -2345,6 +2435,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         selectedDate={selectedLiveDate}
         initialStaffId={dutyModalStaffId}
         onSaveAssignment={handleSaveDutyAssignment}
+        currentUserRole={userRole}
+        isOnDuty={isOnDuty}
+        canPerformAction={canPerformSupervisorAction}
       />
 
       {/* Google Sheets Modal */}
@@ -2461,6 +2554,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         isOpen={isStaffRequestModalOpen}
         onClose={() => setIsStaffRequestModalOpen(false)}
         currentUserStaffId={currentUser?.staff_id || currentUser?.username || 'STAFF'}
+        currentUserRole={userRole}
+        isOnDuty={isOnDuty}
+        canPerformAction={canPerformSupervisorAction}
         onSubmitRequest={handleCreateStaffRequest}
       />
 
@@ -2478,6 +2574,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           onClose={() => setProfileModalStaffId(null)}
           userRole={userRole === 'admin' ? 'admin' : userRole === 'manager' ? 'manager' : 'supervisor'}
           selectedDate={selectedLiveDate}
+          isShiftGated={userRole === 'supervisor' ? !canPerformSupervisorAction : false}
           onActionComplete={() => {
             setUsers(getStoredUsers());
             setStaff(getStoredStaff());

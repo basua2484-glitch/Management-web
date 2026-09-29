@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
-import { X, Check, Clock, Building, User, Calendar, ShieldAlert } from 'lucide-react';
+import { X, Check, Clock, Building, User, Calendar, ShieldAlert, Lock, AlertCircle } from 'lucide-react';
 import type { StaffUser, AttendanceRecord } from '../types';
 import { SHIFTS, process_shift_attendance } from '../utils/attendanceCalculator';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 interface DutyAssignmentModalProps {
   isOpen: boolean;
@@ -10,6 +15,10 @@ interface DutyAssignmentModalProps {
   selectedDate: string;
   onSaveAssignment: (record: AttendanceRecord, updatedDutyArea?: string) => void;
   initialStaffId?: number | null;
+  currentUserRole?: string;
+  isOnDuty?: boolean;
+  isShiftGated?: boolean;
+  canPerformAction?: boolean;
 }
 
 export const DUTY_AREAS = [
@@ -32,6 +41,10 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   selectedDate,
   onSaveAssignment,
   initialStaffId,
+  currentUserRole,
+  isOnDuty,
+  isShiftGated,
+  canPerformAction,
 }) => {
   const [dutyType, setDutyType] = useState<'FIXED' | 'PERMANENT_RELIEVER' | 'TEMP_RELIEVER'>('FIXED');
   const [isTempReliever, setIsTempReliever] = useState<boolean>(false);
@@ -48,6 +61,15 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   const [notes, setNotes] = useState<string>('');
 
   if (!isOpen) return null;
+
+  const roleUpper = (currentUserRole || '').toUpperCase();
+  const effectiveAllowed =
+    canPerformAction !== undefined
+      ? canPerformAction
+      : isShiftGated !== undefined
+      ? !isShiftGated
+      : canSupervisorAction(roleUpper || 'SUPERVISOR', isOnDuty ?? true);
+  const isRestricted = !effectiveAllowed;
 
   const handlePunchTimes = (inVal: string, outVal: string, shiftName?: string) => {
     setPunchIn(inVal);
@@ -81,6 +103,10 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRestricted) {
+      showOffDutyToast();
+      return;
+    }
     const isPresent = status === 'Present' || status === 'Half Day';
     let assignedDate = date;
     let finalReg = regularHours;
@@ -159,6 +185,21 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
 
         {/* Modal Body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4 text-sm">
+          {isRestricted && (
+            <div
+              id="duty-modal-off-duty-banner"
+              className="p-3 bg-amber-500/15 border border-amber-500/50 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 shadow-2xs"
+            >
+              <Lock className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                <div className="text-2xs text-amber-800 mt-0.5">
+                  Duty logging and shift assignments are locked in read-only mode until you punch in on the supervisor terminal.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Staff Member & Date */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
@@ -391,7 +432,13 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#1E3A8A] px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-blue-900"
+              disabled={isRestricted}
+              title={isRestricted ? OFF_DUTY_RESTRICTION_MESSAGE : 'Duty & Shift Assign Karein'}
+              className={`inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-semibold shadow-xs transition ${
+                isRestricted
+                  ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                  : 'bg-[#1E3A8A] text-white hover:bg-blue-900 cursor-pointer'
+              }`}
             >
               <Check className="h-4 w-4" />
               <span>Duty & Shift Assign Karein</span>

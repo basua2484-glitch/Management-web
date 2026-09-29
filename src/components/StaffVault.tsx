@@ -18,6 +18,9 @@ import {
 import type { AppUser, UserRole, UserStatus, DutyType } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
 import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
+import { getEmptyInitialAttendanceState, type InitialAttendanceState } from '../services/userService';
+
+export { getEmptyInitialAttendanceState, type InitialAttendanceState };
 
 export interface StaffVaultProps {
   users?: AppUser[];

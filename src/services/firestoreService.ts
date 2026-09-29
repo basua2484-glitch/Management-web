@@ -103,8 +103,9 @@ export interface MasterAdminRegistrationData {
   companyName: string; // Company/Tenant Name
   fullName: string;
   password: string;
-  email?: string;
+  mobile?: string;
   phone?: string;
+  email?: string;
   department?: string;
   siteId?: string;
   securityPasskey?: string;
@@ -276,6 +277,9 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
     full_name: data.fullName.trim(),
     name: data.fullName.trim(),
     role: 'admin',
+    mobile: data.mobile || data.phone || '',
+    phone: data.phone || data.mobile || '',
+    email: data.email || undefined,
     duty_type: 'FIXED',
     fixed_department: data.department || 'Hospital Executive Operations',
     assigned_shift: '7-3',
@@ -311,8 +315,9 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
       // b) Create user doc with tenant_id
       await setDoc(doc(db, COLLECTIONS.USERS, rootAdminId.toLowerCase()), {
         ...adminUser,
-        email: data.email || `${rootAdminId.toLowerCase()}@${companyPrefix.toLowerCase()}.org`,
-        phone: data.phone || '+91-9876543210',
+        email: data.email || null,
+        phone: data.mobile || data.phone || null,
+        mobile: data.mobile || data.phone || null,
         createdAt: new Date().toISOString(),
       });
 
@@ -760,12 +765,20 @@ export const fetchStaffAttendanceLogs = async (staffId: string) => {
   // Filter out any fallback mock records if staffId does not match exactly
   const strictRecords = rawRecords.filter((doc: any) => doc.staff_id === staffId);
 
+  const totalPresent = strictRecords.filter((r: any) => r.status === 'PRESENT' || r.status === 'Present').length;
+  const totalReg = strictRecords.reduce((acc: number, r: any) => acc + (Number(r.regularHours || r.regular_hours) || 0), 0);
+  const totalOt = strictRecords.reduce((acc: number, r: any) => acc + (Number(r.overtimeHours || r.overtime_hours || r.otHours) || 0), 0);
+
   return {
     monthlyRecords: strictRecords,
-    totalPresentDays: strictRecords.filter((r: any) => r.status === 'PRESENT').length,
-    totalRegularHours: strictRecords.reduce((acc: number, r: any) => acc + (Number(r.regularHours || r.regular_hours) || 0), 0),
-    totalOvertimeHours: strictRecords.reduce((acc: number, r: any) => acc + (Number(r.overtimeHours || r.overtime_hours) || 0), 0),
-    otRecords: strictRecords.filter((r: any) => (r.overtimeHours || r.overtime_hours || 0) > 0)
+    attendanceLogs: strictRecords,
+    presentDays: totalPresent,
+    regularHours: totalReg,
+    overtimeHours: totalOt,
+    totalPresentDays: totalPresent,
+    totalRegularHours: totalReg,
+    totalOvertimeHours: totalOt,
+    otRecords: strictRecords.filter((r: any) => (r.overtimeHours || r.overtime_hours || r.otHours || 0) > 0)
   };
 };
 
@@ -1312,3 +1325,75 @@ export function subscribeToGeofenceSettings(
     return () => {};
   }
 }
+
+/**
+ * Universal Password Reset function for Magic Email Reset & Staff Recovery
+ * Updates:
+ * 1. localStorage 'housekeeping_users'
+ * 2. localStorage 'hk_auth_users_v2' (getStoredUsers/saveStoredUsers)
+ * 3. Firestore live users collection
+ */
+export async function resetUserPasswordInDb(staffIdOrUsername: string, newPassword: string): Promise<boolean> {
+  const cleanId = staffIdOrUsername.trim().toLowerCase();
+  const passwordHash = createPasswordHash(newPassword);
+
+  // 1. Update in localStorage housekeeping_users
+  try {
+    const raw = localStorage.getItem('housekeeping_users');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const updated = parsed.map((u: any) => {
+        const uId = (u.id || u.staff_id || u.username || '').toLowerCase();
+        if (uId === cleanId || uId.replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, '')) {
+          return {
+            ...u,
+            password: newPassword,
+            raw_password_vault: newPassword,
+            password_hash: passwordHash,
+          };
+        }
+        return u;
+      });
+      localStorage.setItem('housekeeping_users', JSON.stringify(updated));
+    }
+  } catch (err) {
+    console.warn('Error updating housekeeping_users password:', err);
+  }
+
+  // 2. Update in getStoredUsers()
+  try {
+    const appUsers = getStoredUsers();
+    const updated = appUsers.map((u) => {
+      const uId = (u.staff_id || u.username || String(u.id)).toLowerCase();
+      if (uId === cleanId || uId.replace(/[-_\s]/g, '') === cleanId.replace(/[-_\s]/g, '')) {
+        return {
+          ...u,
+          password: newPassword,
+          raw_password_vault: newPassword,
+          password_hash: passwordHash,
+        };
+      }
+      return u;
+    });
+    saveStoredUsers(updated);
+  } catch (err) {
+    console.warn('Error updating app users password:', err);
+  }
+
+  // 3. Update in Firestore if connected
+  if (db) {
+    try {
+      await updateDoc(doc(db, COLLECTIONS.USERS, cleanId), {
+        password: newPassword,
+        raw_password_vault: newPassword,
+        password_hash: passwordHash,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (dbErr) {
+      console.warn('Firestore password update notice (local stores updated):', dbErr);
+    }
+  }
+
+  return true;
+}
+

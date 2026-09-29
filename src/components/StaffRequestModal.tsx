@@ -1,12 +1,20 @@
 import React, { useState } from 'react';
-import { X, UserPlus, Building, Clock, UserCheck, ShieldCheck } from 'lucide-react';
+import { X, UserPlus, Building, Clock, UserCheck, ShieldCheck, Lock, AlertCircle } from 'lucide-react';
 import { DUTY_AREAS } from '../data/mockHousekeepingData';
 import type { StaffRequest } from '../types';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 interface StaffRequestModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUserStaffId?: string;
+  currentUserRole?: string;
+  isOnDuty?: boolean;
+  canPerformAction?: boolean;
   onSubmitRequest: (data: {
     candidate_name: string;
     proposed_area: string;
@@ -19,6 +27,9 @@ export const StaffRequestModal: React.FC<StaffRequestModalProps> = ({
   isOpen,
   onClose,
   currentUserStaffId = '',
+  currentUserRole,
+  isOnDuty,
+  canPerformAction,
   onSubmitRequest,
 }) => {
   const [candidateName, setCandidateName] = useState('');
@@ -29,8 +40,20 @@ export const StaffRequestModal: React.FC<StaffRequestModalProps> = ({
 
   if (!isOpen) return null;
 
+  const roleUpper = (currentUserRole || 'SUPERVISOR').toUpperCase();
+  const effectiveAllowed =
+    canPerformAction !== undefined
+      ? canPerformAction
+      : canSupervisorAction(roleUpper, isOnDuty ?? true);
+  const isRestricted = !effectiveAllowed;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRestricted) {
+      showOffDutyToast();
+      setError(OFF_DUTY_RESTRICTION_MESSAGE);
+      return;
+    }
     if (!candidateName.trim()) {
       setError('Candidate full name is required');
       return;
@@ -93,6 +116,21 @@ export const StaffRequestModal: React.FC<StaffRequestModalProps> = ({
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="p-5 space-y-4">
+            {isRestricted && (
+              <div
+                id="staff-request-modal-off-duty-banner"
+                className="p-3 bg-amber-500/15 border border-amber-500/50 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 shadow-2xs"
+              >
+                <Lock className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                  <div className="text-2xs text-amber-800 mt-0.5">
+                    Submitting staff joining requests is locked in read-only mode until you punch in on the supervisor terminal.
+                  </div>
+                </div>
+              </div>
+            )}
+
             {error && (
               <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700">
                 {error}
@@ -199,7 +237,13 @@ export const StaffRequestModal: React.FC<StaffRequestModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-lg bg-[#1E3A8A] hover:bg-[#1e3470] text-xs font-bold text-white shadow-xs transition-colors flex items-center gap-1.5"
+                disabled={isRestricted}
+                title={isRestricted ? OFF_DUTY_RESTRICTION_MESSAGE : 'Submit Request'}
+                className={`px-4 py-2 rounded-lg text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5 ${
+                  isRestricted
+                    ? 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                    : 'bg-[#1E3A8A] hover:bg-[#1e3470] text-white cursor-pointer'
+                }`}
               >
                 <UserCheck className="h-4 w-4" />
                 Submit Request

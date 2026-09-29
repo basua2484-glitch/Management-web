@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Clock,
@@ -31,8 +31,12 @@ import {
   AlertTriangle,
   Flame,
   X,
+  UserMinus,
+  LayoutGrid,
+  Table as TableIcon,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { RoleWiseLiveDashboard } from '../components/RoleWiseLiveDashboard';
 import {
   getStoredUsers,
   getStoredAttendance,
@@ -50,9 +54,11 @@ import {
   approveEmergencyRecall,
   getStoredEmergencyRecalls,
   getTodayIso,
+  createRemovalRequest,
 } from '../data/mockHousekeepingData';
 import type { AppUser, AttendanceRecord, DutyAllocation, StaffUser, EmergencyRecallAlert } from '../types';
 import { DutyAssignmentModal } from '../components/DutyAssignmentModal';
+import { RemovalRequestModal } from '../components/RemovalRequestModal';
 import { EmployeeProfileModal } from '../components/EmployeeProfileModal';
 import { GeofenceRejectionModal } from '../components/GeofenceRejectionModal';
 import { GpsHardwareAlertModal } from '../components/GpsHardwareAlertModal';
@@ -66,6 +72,11 @@ import {
   type GeofenceVerificationResult,
 } from '../utils/geofence';
 import { formatTimeTo12hStr, SHIFTS } from '../utils/attendanceCalculator';
+import {
+  canSupervisorAction,
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 export const SupervisorDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -81,10 +92,20 @@ export const SupervisorDashboard: React.FC = () => {
   const [dutyAllocations, setDutyAllocations] = useState<DutyAllocation[]>(() => getStoredDutyAllocations());
   const [emergencyRecalls, setEmergencyRecalls] = useState<EmergencyRecallAlert[]>(() => getStoredEmergencyRecalls());
 
+  // Navigation tab state: Live Floor & Dashboards vs Archived History
+  const [viewTab, setViewTab] = useState<'live' | 'history'>('live');
+
   // Supervisor On-Duty Punch State
   const [dutyState, setDutyState] = useState<SupervisorDutyState>(() =>
     getSupervisorDutyState(effectiveSupervisorId, selectedDate)
   );
+
+  // DUTY STATE GUARD (In App/State Logic):
+  // Check user duty status: const isOnDuty = currentUser.dutyStatus === 'ON_DUTY';
+  const currentUser = authUser;
+  const isOnDuty = currentUser?.dutyStatus ? currentUser.dutyStatus === 'ON_DUTY' : dutyState.isPunchedIn;
+  const canPerformAction = canSupervisorAction(authRole || currentUser?.role || 'SUPERVISOR', isOnDuty);
+
   const [isLocatingDuty, setIsLocatingDuty] = useState(false);
   const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
 
@@ -102,6 +123,23 @@ export const SupervisorDashboard: React.FC = () => {
   // Search & Filter state for Live Staff
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ON_DUTY' | 'OT_ACTIVE' | 'ABSENT'>('ALL');
+  const [liveViewMode, setLiveViewMode] = useState<'cards' | 'table'>('cards');
+
+  const activeTenantPrefix = useMemo(() => {
+    if (authUser?.company_prefix) return authUser.company_prefix.trim().toUpperCase();
+    if (authUser?.tenant_id) return authUser.tenant_id.trim().toUpperCase();
+    const staffId = authUser?.staff_id || authUser?.username || '';
+    const match = String(staffId).match(/^([A-Za-z0-9]+)-/);
+    if (match && match[1]) return match[1].toUpperCase();
+    if (typeof localStorage !== 'undefined') {
+      const stored =
+        localStorage.getItem('tenant_id') ||
+        localStorage.getItem('tenantId') ||
+        localStorage.getItem('company_code');
+      if (stored && stored.trim()) return stored.trim().toUpperCase();
+    }
+    return 'APEX';
+  }, [authUser]);
 
   // Reliever Assignment Modal state
   const [isRelieverModalOpen, setIsRelieverModalOpen] = useState(false);
@@ -126,13 +164,27 @@ export const SupervisorDashboard: React.FC = () => {
   // Feedback notifications
   const [feedback, setFeedback] = useState<{ type: 'success' | 'warning' | 'info'; text: string } | null>(null);
 
+  // Staff Removal Request Modal State
+  const [staffForRemoval, setStaffForRemoval] = useState<AppUser | null>(null);
+
+  // Staff Verification tracking state (staffCode -> verification timestamp)
+  const [verifiedStaffCodes, setVerifiedStaffCodes] = useState<Record<string, string>>({});
+
+  // Direct Duty Log Modal State
+  const [isDutyLogModalOpen, setIsDutyLogModalOpen] = useState(false);
+  const [selectedStaffForDutyLog, setSelectedStaffForDutyLog] = useState<number | null>(null);
+
+  const handleLiveRefresh = useCallback(() => {
+    setRecords(getStoredAttendance());
+    setDutyAllocations(getStoredDutyAllocations());
+    setUsers(getStoredUsers());
+    setEmergencyRecalls(getStoredEmergencyRecalls());
+  }, []);
+
   // Sync data on window events
   useEffect(() => {
     const handleUpdate = () => {
-      setRecords(getStoredAttendance());
-      setDutyAllocations(getStoredDutyAllocations());
-      setUsers(getStoredUsers());
-      setEmergencyRecalls(getStoredEmergencyRecalls());
+      handleLiveRefresh();
     };
 
     const handleDutyPunch = (e: any) => {
@@ -149,6 +201,14 @@ export const SupervisorDashboard: React.FC = () => {
     window.addEventListener('supervisor-duty-punch-changed', handleDutyPunch);
     window.addEventListener('storage', handleUpdate);
 
+    const handleRestrictedEvent = (e: any) => {
+      setFeedback({
+        type: 'warning',
+        text: e?.detail?.message || OFF_DUTY_RESTRICTION_MESSAGE,
+      });
+    };
+    window.addEventListener('off-duty-action-restricted', handleRestrictedEvent);
+
     return () => {
       window.removeEventListener('attendance-updated', handleUpdate);
       window.removeEventListener('ot-requests-updated', handleUpdate);
@@ -156,9 +216,18 @@ export const SupervisorDashboard: React.FC = () => {
       window.removeEventListener('emergency-recall-dispatched', handleUpdate);
       window.removeEventListener('continuous-ot-assigned', handleUpdate);
       window.removeEventListener('supervisor-duty-punch-changed', handleDutyPunch);
+      window.removeEventListener('off-duty-action-restricted', handleRestrictedEvent);
       window.removeEventListener('storage', handleUpdate);
     };
   }, [effectiveSupervisorId]);
+
+  const handleRestrictedActionAttempt = () => {
+    setFeedback({
+      type: 'warning',
+      text: OFF_DUTY_RESTRICTION_MESSAGE,
+    });
+    showOffDutyToast();
+  };
 
   // Handle Supervisor Duty Punch In / Punch Out
   const handleToggleSupervisorDuty = async () => {
@@ -284,11 +353,8 @@ export const SupervisorDashboard: React.FC = () => {
 
   // Handle OT Approval
   const handleApproveOt = (allocationId: number) => {
-    if (!dutyState.isPunchedIn) {
-      setFeedback({
-        type: 'warning',
-        text: 'Action restricted: You must Punch In on duty to approve active overtime requests.',
-      });
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
       return;
     }
 
@@ -304,11 +370,8 @@ export const SupervisorDashboard: React.FC = () => {
 
   // Handle OT Rejection
   const handleRejectOt = (allocationId: number) => {
-    if (!dutyState.isPunchedIn) {
-      setFeedback({
-        type: 'warning',
-        text: 'Action restricted: You must Punch In on duty to manage overtime requests.',
-      });
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
       return;
     }
 
@@ -321,14 +384,48 @@ export const SupervisorDashboard: React.FC = () => {
     });
   };
 
+  // Supervisor Staff Verification Action
+  const handleVerifyStaff = (staffCode: string, staffName: string) => {
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
+      return;
+    }
+    const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setVerifiedStaffCodes((prev) => ({ ...prev, [staffCode]: timeNow }));
+    setFeedback({
+      type: 'success',
+      text: `Staff Verification recorded: ${staffName} (${staffCode}) verified active on duty floor at ${timeNow}.`,
+    });
+  };
+
+  // Supervisor Removal Request Submission Handler
+  const handleRemovalSubmit = (data: {
+    user_id: number;
+    staff_id: string;
+    staff_name: string;
+    role: string;
+    department?: string;
+    reason: string;
+    requested_by: string;
+    requested_by_name: string;
+  }) => {
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
+      return;
+    }
+    createRemovalRequest(data);
+    setFeedback({
+      type: 'success',
+      text: `Staff Removal Request for ${data.staff_name} (${data.staff_id}) submitted successfully to Admin / Manager queue.`,
+    });
+    setStaffForRemoval(null);
+  };
+
   // Handle Dispatch Emergency Recall
   const handleDispatchRecall = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dutyState.isPunchedIn) {
-      setFeedback({
-        type: 'warning',
-        text: 'Action restricted: You must Punch In on duty to dispatch emergency recall alerts.',
-      });
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
       return;
     }
 
@@ -362,11 +459,8 @@ export const SupervisorDashboard: React.FC = () => {
 
   // Handle Approve Emergency Recall Pure OT
   const handleApproveRecallOt = (alertId: string) => {
-    if (!dutyState.isPunchedIn) {
-      setFeedback({
-        type: 'warning',
-        text: 'Action restricted: You must Punch In on duty to authorize emergency recall overtime.',
-      });
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
       return;
     }
 
@@ -386,11 +480,8 @@ export const SupervisorDashboard: React.FC = () => {
   // Handle Assign Continuous Extended OT
   const handleAssignContinuousOt = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dutyState.isPunchedIn) {
-      setFeedback({
-        type: 'warning',
-        text: 'Action restricted: You must Punch In on duty to assign continuous overtime shifts.',
-      });
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
       return;
     }
 
@@ -493,6 +584,11 @@ export const SupervisorDashboard: React.FC = () => {
 
   // Save reliever assignment from modal
   const handleSaveDutyAssignment = (rec: AttendanceRecord, updatedArea?: string) => {
+    if (!canPerformAction) {
+      handleRestrictedActionAttempt();
+      return;
+    }
+
     const updated = records.map((r) => (r.id === rec.id ? rec : r));
     if (!records.some((r) => r.id === rec.id)) {
       updated.unshift(rec);
@@ -692,12 +788,30 @@ export const SupervisorDashboard: React.FC = () => {
           </div>
 
           {/* Off-Duty Notice if Punched Out */}
-          {!dutyState.isPunchedIn && (
-            <div className="mt-4 p-3 bg-amber-500/15 border border-amber-500/30 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
-              <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
-              <div>
-                <b className="font-bold">Notice to Supervisor:</b> You are currently in Off-Duty state. Live operational controls, reliever allocation actions, and real-time overtime approval buttons are locked. You may inspect past shift history below, or click <b>"Punch In for Shift"</b> to resume active on-duty supervision.
+          {!isOnDuty && (
+            <div
+              id="supervisor-off-duty-banner"
+              className="mt-4 p-3.5 bg-amber-500/15 border border-amber-500/40 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                  <div className="text-2xs text-amber-800 mt-0.5">
+                    Live operational controls, reliever allocation actions, and real-time overtime approval buttons are locked in READ-ONLY mode.
+                  </div>
+                </div>
               </div>
+              <button
+                type="button"
+                id="btn-banner-punch-in-quick"
+                onClick={handleToggleSupervisorDuty}
+                disabled={isLocatingDuty}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-2xs rounded-lg flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer shadow-2xs"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                <span>Punch In for Shift</span>
+              </button>
             </div>
           )}
         </section>
@@ -726,12 +840,98 @@ export const SupervisorDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* 3. CONDITIONAL WORKSPACE: IF ON-DUTY (LIVE TOOLS + OT APPROVALS) VS OFF-DUTY (READ-ONLY HISTORY) */}
-        {dutyState.isPunchedIn ? (
-          /* =========================================================================
-             ON-DUTY WORKSPACE: LIVE STAFF STATUS, RELIEVER TOOLS, AND OT APPROVALS
-             ========================================================================= */
+        {/* View Mode Switcher: Live Operations vs Archived History */}
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="tab-supervisor-live"
+              onClick={() => setViewTab('live')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                viewTab === 'live'
+                  ? 'bg-[#1E3A8A] text-white shadow-xs'
+                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Live Operations &amp; Floor Roster</span>
+              {!canPerformAction && (
+                <span className="text-3xs bg-amber-400 text-amber-950 font-extrabold px-1.5 py-0.5 rounded-full uppercase ml-1">
+                  Read-Only Mode
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              id="tab-supervisor-history"
+              onClick={() => setViewTab('history')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                viewTab === 'history'
+                  ? 'bg-[#1E3A8A] text-white shadow-xs'
+                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <History className="h-3.5 w-3.5" />
+              <span>Archived Shift Logs</span>
+            </button>
+          </div>
+
+          <div className="text-2xs font-mono font-semibold">
+            {canPerformAction ? (
+              <span className="text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>ON-DUTY (Full Operational Access)</span>
+              </span>
+            ) : (
+              <span className="text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 flex items-center gap-1.5">
+                <Lock className="h-3 w-3 text-amber-600" />
+                <span>OFF-DUTY (Restricted Read-Only Mode)</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* 3. WORKSPACE: LIVE (ACCESSIBLE IN FULL OR READ-ONLY) VS ARCHIVE */}
+        {viewTab === 'live' ? (
           <div className="space-y-6">
+            {/* Dedicated Off-Duty Restriction Banner when viewing in Read-Only Mode */}
+            {!canPerformAction && (
+              <div
+                id="supervisor-readonly-mode-banner"
+                className="p-4 bg-amber-500/15 border-2 border-amber-500/50 rounded-2xl text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs animate-in fade-in"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-800 flex items-center justify-center shrink-0 border border-amber-500/40">
+                    <Lock className="h-5 w-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xs font-extrabold uppercase tracking-wider text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded border border-amber-300">
+                        READ-ONLY MODE
+                      </span>
+                      <span className="text-xs font-bold text-amber-950">Supervisor Status: Off-Duty</span>
+                    </div>
+                    <p className="text-xs text-amber-950 font-bold mt-1">
+                      Action Restricted: You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                    </p>
+                    <p className="text-2xs text-amber-800 mt-0.5">
+                      Live data and floor status are accessible for monitoring. All action buttons (Add, Edit, Submit Request, Delete) are disabled until punched in.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  id="btn-banner-punch-in"
+                  onClick={handleToggleSupervisorDuty}
+                  disabled={isLocatingDuty}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center gap-2 transition cursor-pointer shadow-sm shrink-0"
+                >
+                  <LogIn className="h-4 w-4" />
+                  <span>Punch In for Shift</span>
+                </button>
+              </div>
+            )}
+
             {/* Active OT Approvals Section */}
             <section
               id="supervisor-active-ot-approvals"
@@ -791,16 +991,40 @@ export const SupervisorDashboard: React.FC = () => {
                         <div className="flex items-center gap-2 pt-2 border-t border-amber-200/60">
                           <button
                             type="button"
-                            onClick={() => handleApproveOt(alloc.id)}
-                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-2xs font-bold flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                            onClick={() => {
+                              if (!canPerformAction) {
+                                handleRestrictedActionAttempt();
+                                return;
+                              }
+                              handleApproveOt(alloc.id);
+                            }}
+                            disabled={!canPerformAction}
+                            title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : `Approve OT (+${alloc.ot_requested_hours}h)`}
+                            className={`flex-1 py-1.5 rounded-lg text-2xs font-bold flex items-center justify-center gap-1 transition-colors ${
+                              canPerformAction
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer'
+                                : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                            }`}
                           >
                             <ThumbsUp className="h-3.5 w-3.5" />
                             <span>Approve OT (+{alloc.ot_requested_hours}h)</span>
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleRejectOt(alloc.id)}
-                            className="py-1.5 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-2xs font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                            onClick={() => {
+                              if (!canPerformAction) {
+                                handleRestrictedActionAttempt();
+                                return;
+                              }
+                              handleRejectOt(alloc.id);
+                            }}
+                            disabled={!canPerformAction}
+                            title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Reject'}
+                            className={`py-1.5 px-3 rounded-lg text-2xs font-bold flex items-center justify-center gap-1 transition-colors ${
+                              canPerformAction
+                                ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                            }`}
                           >
                             <ThumbsDown className="h-3.5 w-3.5" />
                             <span>Reject</span>
@@ -834,8 +1058,20 @@ export const SupervisorDashboard: React.FC = () => {
                 <button
                   type="button"
                   id="btn-open-dispatch-recall-modal"
-                  onClick={() => setIsRecallModalOpen(true)}
-                  className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                  onClick={() => {
+                    if (!canPerformAction) {
+                      handleRestrictedActionAttempt();
+                      return;
+                    }
+                    setIsRecallModalOpen(true);
+                  }}
+                  disabled={!canPerformAction}
+                  title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Dispatch Emergency Recall'}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                    canPerformAction
+                      ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-xs cursor-pointer'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                  }`}
                 >
                   <AlertTriangle className="h-4 w-4" />
                   <span>Dispatch Emergency Recall</span>
@@ -906,8 +1142,20 @@ export const SupervisorDashboard: React.FC = () => {
                               <button
                                 type="button"
                                 id={`btn-approve-recall-${alert.id}`}
-                                onClick={() => handleApproveRecallOt(alert.id)}
-                                className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-2xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                                onClick={() => {
+                                  if (!canPerformAction) {
+                                    handleRestrictedActionAttempt();
+                                    return;
+                                  }
+                                  handleApproveRecallOt(alert.id);
+                                }}
+                                disabled={!canPerformAction}
+                                title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Authorize 100% Pure OT (Max 8.0h Cap)'}
+                                className={`w-full py-1.5 rounded-lg text-2xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                                  canPerformAction
+                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer'
+                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                                }`}
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 <span>Authorize 100% Pure OT (Max 8.0h Cap)</span>
@@ -950,8 +1198,20 @@ export const SupervisorDashboard: React.FC = () => {
                   <button
                     type="button"
                     id="btn-open-continuous-ot-modal"
-                    onClick={() => setIsContinuousOtModalOpen(true)}
-                    className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    onClick={() => {
+                      if (!canPerformAction) {
+                        handleRestrictedActionAttempt();
+                        return;
+                      }
+                      setIsContinuousOtModalOpen(true);
+                    }}
+                    disabled={!canPerformAction}
+                    title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Assign Continuous Extended OT'}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                      canPerformAction
+                        ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-xs cursor-pointer'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                    }`}
                   >
                     <Timer className="h-4 w-4" />
                     <span>Assign Continuous Extended OT</span>
@@ -959,8 +1219,20 @@ export const SupervisorDashboard: React.FC = () => {
                   <button
                     type="button"
                     id="btn-open-reliever-modal"
-                    onClick={() => setIsRelieverModalOpen(true)}
-                    className="px-3.5 py-1.5 bg-[#1E3A8A] hover:bg-blue-800 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    onClick={() => {
+                      if (!canPerformAction) {
+                        handleRestrictedActionAttempt();
+                        return;
+                      }
+                      setIsRelieverModalOpen(true);
+                    }}
+                    disabled={!canPerformAction}
+                    title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Allocate Reliever to Ward'}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                      canPerformAction
+                        ? 'bg-[#1E3A8A] hover:bg-blue-800 text-white shadow-xs cursor-pointer'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                    }`}
                   >
                     <PlusCircle className="h-4 w-4" />
                     <span>Allocate Reliever to Ward</span>
@@ -985,10 +1257,20 @@ export const SupervisorDashboard: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => {
+                          if (!canPerformAction) {
+                            handleRestrictedActionAttempt();
+                            return;
+                          }
                           setSelectedStaffForReliever(reliever.id);
                           setIsRelieverModalOpen(true);
                         }}
-                        className="text-3xs bg-white text-purple-800 border border-purple-300 font-bold px-2 py-1 rounded-lg hover:bg-purple-100 transition-colors"
+                        disabled={!canPerformAction}
+                        title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Re-allocate reliever'}
+                        className={`text-3xs font-bold px-2 py-1 rounded-lg border transition-colors ${
+                          canPerformAction
+                            ? 'bg-white text-purple-800 border-purple-300 hover:bg-purple-100 cursor-pointer'
+                            : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                        }`}
                       >
                         Re-allocate
                       </button>
@@ -1008,39 +1290,94 @@ export const SupervisorDashboard: React.FC = () => {
                   <p className="text-3xs text-slate-500">Real-time attendance, active shifts, and punch-in timestamps</p>
                 </div>
 
-                {/* Filters */}
+                {/* Filters & View Switcher */}
                 <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
-                  <div className="relative flex-1 sm:w-48">
-                    <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Search staff, code, ward..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:border-blue-600"
-                    />
+                  {/* View Mode Switcher */}
+                  <div className="inline-flex p-0.5 bg-slate-100 rounded-lg border border-slate-200 text-2xs font-bold">
+                    <button
+                      type="button"
+                      id="btn-sup-view-cards"
+                      onClick={() => setLiveViewMode('cards')}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
+                        liveViewMode === 'cards'
+                          ? 'bg-[#1E3A8A] text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <LayoutGrid className="h-3 w-3" />
+                      <span>Role Cards</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-sup-view-table"
+                      onClick={() => setLiveViewMode('table')}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
+                        liveViewMode === 'table'
+                          ? 'bg-[#1E3A8A] text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <TableIcon className="h-3 w-3" />
+                      <span>Table</span>
+                    </button>
                   </div>
 
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-2xs font-semibold">
-                    {(['ALL', 'ON_DUTY', 'OT_ACTIVE', 'ABSENT'] as const).map((filter) => (
-                      <button
-                        key={filter}
-                        type="button"
-                        onClick={() => setStatusFilter(filter)}
-                        className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                          statusFilter === filter ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'text-slate-500'
-                        }`}
-                      >
-                        {filter.replace('_', ' ')}
-                      </button>
-                    ))}
-                  </div>
+                  {liveViewMode === 'table' && (
+                    <>
+                      <div className="relative flex-1 sm:w-48">
+                        <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          placeholder="Search staff, code, ward..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:border-blue-600"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-2xs font-semibold">
+                        {(['ALL', 'ON_DUTY', 'OT_ACTIVE', 'ABSENT'] as const).map((filter) => (
+                          <button
+                            key={filter}
+                            type="button"
+                            onClick={() => setStatusFilter(filter)}
+                            className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                              statusFilter === filter ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'text-slate-500'
+                            }`}
+                          >
+                            {filter.replace('_', ' ')}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
-              {/* Table */}
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-left text-xs border-collapse">
+              {liveViewMode === 'cards' ? (
+                <div className="pt-2">
+                  <RoleWiseLiveDashboard
+                    selectedDate={selectedDate}
+                    onDateChange={setSelectedDate}
+                    activeTenantPrefix={activeTenantPrefix}
+                    users={users}
+                    staff={enrichedStaffRoster}
+                    records={records}
+                    onOpenProfileModal={(code) => setSelectedProfileStaffId(code)}
+                    onOpenPunchPortal={() => setIsDutyLogModalOpen(true)}
+                    onOpenAssignModal={(id) => {
+                      if (id) setSelectedStaffForReliever(id);
+                      setIsRelieverModalOpen(true);
+                    }}
+                    onRefresh={handleLiveRefresh}
+                    isSupervisor={true}
+                    canPerformAction={canPerformAction}
+                  />
+                </div>
+              ) : (
+                /* Table */
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-2xs font-bold uppercase text-slate-500 tracking-wider">
                       <th className="py-2.5 px-3">Staff Member</th>
@@ -1124,23 +1461,115 @@ export const SupervisorDashboard: React.FC = () => {
                           <span className="font-bold text-amber-600">{staff.otHours}h</span>
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedProfileStaffId(staff.staffCode);
-                            }}
-                            className="inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded bg-blue-50 text-[#1E3A8A] hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
-                            title="Inspect full profile, assign reliever duty or change ward"
-                          >
-                            Profile
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            {/* Staff Verification Action */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canPerformAction) {
+                                  handleRestrictedActionAttempt();
+                                  return;
+                                }
+                                handleVerifyStaff(staff.staffCode, staff.name);
+                              }}
+                              disabled={!canPerformAction}
+                              title={
+                                !canPerformAction
+                                  ? OFF_DUTY_RESTRICTION_MESSAGE
+                                  : verifiedStaffCodes[staff.staffCode]
+                                  ? `Verified active at ${verifiedStaffCodes[staff.staffCode]}`
+                                  : 'Perform Staff Verification on floor'
+                              }
+                              className={`inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded transition-colors ${
+                                verifiedStaffCodes[staff.staffCode]
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : !canPerformAction
+                                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 cursor-pointer'
+                              }`}
+                            >
+                              <UserCheck className="h-3 w-3" />
+                              <span>{verifiedStaffCodes[staff.staffCode] ? 'Verified' : 'Verify'}</span>
+                            </button>
+
+                            {/* Direct Duty Log Action */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canPerformAction) {
+                                  handleRestrictedActionAttempt();
+                                  return;
+                                }
+                                setSelectedStaffForDutyLog(staff.id);
+                                setIsDutyLogModalOpen(true);
+                              }}
+                              disabled={!canPerformAction}
+                              title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Create or edit duty log'}
+                              className={`inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded transition-colors ${
+                                !canPerformAction
+                                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 cursor-pointer'
+                              }`}
+                            >
+                              <Clock className="h-3 w-3" />
+                              <span>Duty Log</span>
+                            </button>
+
+                            {/* Staff Removal Request Action */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!canPerformAction) {
+                                  handleRestrictedActionAttempt();
+                                  return;
+                                }
+                                const matchedUser = users.find(
+                                  (u) => u.id === staff.id || (u.staff_id && u.staff_id === staff.staffCode)
+                                ) || {
+                                  id: staff.id,
+                                  staff_id: staff.staffCode,
+                                  username: staff.staffCode,
+                                  name: staff.name,
+                                  role: 'staff',
+                                  status: 'ACTIVE',
+                                };
+                                setStaffForRemoval(matchedUser as AppUser);
+                              }}
+                              disabled={!canPerformAction}
+                              title={!canPerformAction ? OFF_DUTY_RESTRICTION_MESSAGE : 'Submit removal request to Admin / Manager'}
+                              className={`inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded transition-colors ${
+                                !canPerformAction
+                                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer'
+                              }`}
+                            >
+                              <UserMinus className="h-3 w-3" />
+                              <span>Remove</span>
+                            </button>
+
+                            {/* Profile Drill-Down Modal */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedProfileStaffId(staff.staffCode);
+                              }}
+                              className="inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded bg-blue-50 text-[#1E3A8A] hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                              title="Inspect full profile, assign reliever duty or change ward"
+                            >
+                              Profile
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            )}
             </section>
           </div>
         ) : (
@@ -1239,59 +1668,67 @@ export const SupervisorDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {records
-                      .filter((r) => r.date === selectedDate)
-                      .slice(0, 15)
-                      .map((rec, idx) => {
-                        const staff = staffList.find((s) => s.id === rec.userId);
-                        const staffCode = staff?.staffCode || rec.staff_id;
-                        return (
-                          <tr
-                            key={rec.id ? `archive-rec-${rec.id}` : `archive-rec-${rec.date}-${idx}`}
-                            id={`row-archive-staff-${rec.id}`}
-                            onClick={() => {
-                              if (staffCode) setSelectedProfileStaffId(staffCode);
-                            }}
-                            className="hover:bg-blue-50/60 transition-colors cursor-pointer group"
-                            title="Click to view complete employee profile and historical records"
-                          >
-                            <td className="py-2.5 px-3 font-mono text-2xs text-slate-500">{rec.date}</td>
-                            <td className="py-2.5 px-3">
-                              <div className="font-bold text-slate-900 group-hover:text-[#1E3A8A] transition-colors">
-                                {staff?.name || rec.staff_id || 'Staff'}
-                              </div>
-                              <div className="text-2xs font-mono text-slate-400">
-                                {staff?.staffCode || rec.staff_id}
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-3 text-slate-700">{rec.notes || staff?.department || 'Ward'}</td>
-                            <td className="py-2.5 px-3 font-mono text-2xs">
-                              {rec.punchIn ? formatTimeTo12hStr(rec.punchIn) : '--:--'} &rarr;{' '}
-                              {rec.punchOut ? formatTimeTo12hStr(rec.punchOut) : '--:--'}
-                            </td>
-                            <td className="py-2.5 px-3 font-mono font-bold text-slate-700">{rec.regularHours}h</td>
-                            <td className="py-2.5 px-3 font-mono font-bold text-amber-700">{rec.otHours}h</td>
-                            <td className="py-2.5 px-3">
-                              <span className="px-2 py-0.5 rounded-full text-2xs font-semibold bg-slate-100 text-slate-600">
-                                {rec.status || 'Archived'}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3 text-right">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (staffCode) setSelectedProfileStaffId(staffCode);
-                                }}
-                                className="inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded bg-blue-50 text-[#1E3A8A] hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
-                                title="Open full Employee Profile drill-down modal"
-                              >
-                                Profile
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {records.filter((r) => r.date === selectedDate).length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-8 text-center text-slate-400 font-medium">
+                          No Attendance Records Found
+                        </td>
+                      </tr>
+                    ) : (
+                      records
+                        .filter((r) => r.date === selectedDate)
+                        .slice(0, 15)
+                        .map((rec, idx) => {
+                          const staff = staffList.find((s) => s.id === rec.userId);
+                          const staffCode = staff?.staffCode || rec.staff_id;
+                          return (
+                            <tr
+                              key={rec.id ? `archive-rec-${rec.id}` : `archive-rec-${rec.date}-${idx}`}
+                              id={`row-archive-staff-${rec.id}`}
+                              onClick={() => {
+                                if (staffCode) setSelectedProfileStaffId(staffCode);
+                              }}
+                              className="hover:bg-blue-50/60 transition-colors cursor-pointer group"
+                              title="Click to view complete employee profile and historical records"
+                            >
+                              <td className="py-2.5 px-3 font-mono text-2xs text-slate-500">{rec.date}</td>
+                              <td className="py-2.5 px-3">
+                                <div className="font-bold text-slate-900 group-hover:text-[#1E3A8A] transition-colors">
+                                  {staff?.name || rec.staff_id || 'Staff'}
+                                </div>
+                                <div className="text-2xs font-mono text-slate-400">
+                                  {staff?.staffCode || rec.staff_id}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-700">{rec.notes || staff?.department || 'Ward'}</td>
+                              <td className="py-2.5 px-3 font-mono text-2xs">
+                                {rec.punchIn ? formatTimeTo12hStr(rec.punchIn) : '--:--'} &rarr;{' '}
+                                {rec.punchOut ? formatTimeTo12hStr(rec.punchOut) : '--:--'}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono font-bold text-slate-700">{rec.regularHours}h</td>
+                              <td className="py-2.5 px-3 font-mono font-bold text-amber-700">{rec.otHours}h</td>
+                              <td className="py-2.5 px-3">
+                                <span className="px-2 py-0.5 rounded-full text-2xs font-semibold bg-slate-100 text-slate-600">
+                                  {rec.status || 'Archived'}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (staffCode) setSelectedProfileStaffId(staffCode);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-2xs font-semibold px-2 py-1 rounded bg-blue-50 text-[#1E3A8A] hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                                  title="Open full Employee Profile drill-down modal"
+                                >
+                                  Profile
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1342,6 +1779,25 @@ export const SupervisorDashboard: React.FC = () => {
         staff={staffList}
         selectedDate={selectedDate}
         initialStaffId={selectedStaffForReliever}
+        currentUserRole="SUPERVISOR"
+        isOnDuty={isOnDuty}
+        canPerformAction={canPerformAction}
+        onSaveAssignment={handleSaveDutyAssignment}
+      />
+
+      {/* Direct Staff Duty Log Modal */}
+      <DutyAssignmentModal
+        isOpen={isDutyLogModalOpen}
+        onClose={() => {
+          setIsDutyLogModalOpen(false);
+          setSelectedStaffForDutyLog(null);
+        }}
+        staff={staffList}
+        selectedDate={selectedDate}
+        initialStaffId={selectedStaffForDutyLog}
+        currentUserRole="SUPERVISOR"
+        isOnDuty={isOnDuty}
+        canPerformAction={canPerformAction}
         onSaveAssignment={handleSaveDutyAssignment}
       />
 
@@ -1602,7 +2058,7 @@ export const SupervisorDashboard: React.FC = () => {
           onClose={() => setSelectedProfileStaffId(null)}
           userRole="supervisor"
           selectedDate={selectedDate}
-          isShiftGated={!dutyState.isPunchedIn}
+          isShiftGated={!canPerformAction}
           onActionComplete={() => {
             setUsers(getStoredUsers());
             setRecords(getStoredAttendance());
@@ -1610,6 +2066,18 @@ export const SupervisorDashboard: React.FC = () => {
           }}
         />
       )}
+
+      {/* Staff Removal Request Modal */}
+      <RemovalRequestModal
+        isOpen={Boolean(staffForRemoval)}
+        onClose={() => setStaffForRemoval(null)}
+        staffUser={staffForRemoval}
+        currentSupervisorId={effectiveSupervisorId}
+        currentSupervisorName={supervisorName}
+        canPerformAction={canPerformAction}
+        isOnDuty={isOnDuty}
+        onSubmitRequest={handleRemovalSubmit}
+      />
 
       {/* Geofence Rejection Popup Modal */}
       <GeofenceRejectionModal

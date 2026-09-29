@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
-import { X, UserMinus, AlertTriangle } from 'lucide-react';
+import { X, UserMinus, AlertTriangle, Lock } from 'lucide-react';
 import type { AppUser } from '../types';
+import {
+  OFF_DUTY_RESTRICTION_MESSAGE,
+  showOffDutyToast,
+} from '../utils/dutyPermissionGuard';
 
 interface RemovalRequestModalProps {
   isOpen: boolean;
@@ -8,6 +12,8 @@ interface RemovalRequestModalProps {
   staffUser: AppUser | null;
   currentSupervisorId: string;
   currentSupervisorName?: string;
+  canPerformAction?: boolean;
+  isOnDuty?: boolean;
   onSubmitRequest: (data: {
     staff_id: string;
     staff_name: string;
@@ -25,6 +31,8 @@ export const RemovalRequestModal: React.FC<RemovalRequestModalProps> = ({
   staffUser,
   currentSupervisorId,
   currentSupervisorName,
+  canPerformAction = true,
+  isOnDuty,
   onSubmitRequest,
 }) => {
   const [reason, setReason] = useState('');
@@ -33,8 +41,15 @@ export const RemovalRequestModal: React.FC<RemovalRequestModalProps> = ({
 
   if (!isOpen || !staffUser) return null;
 
+  const isRestricted = canPerformAction === false || isOnDuty === false;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRestricted) {
+      showOffDutyToast();
+      setError(OFF_DUTY_RESTRICTION_MESSAGE);
+      return;
+    }
     if (!reason.trim()) {
       setError('Please provide a reason for the removal/termination request.');
       return;
@@ -90,6 +105,21 @@ export const RemovalRequestModal: React.FC<RemovalRequestModalProps> = ({
 
         {/* Content & Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {isRestricted && (
+            <div
+              id="removal-modal-off-duty-banner"
+              className="p-3 bg-amber-500/15 border border-amber-500/50 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 shadow-2xs"
+            >
+              <Lock className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                <div className="text-2xs text-amber-800 mt-0.5">
+                  Submitting staff removal requests is locked in read-only mode until you punch in on the supervisor terminal.
+                </div>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 font-medium">
               {error}
@@ -151,8 +181,13 @@ export const RemovalRequestModal: React.FC<RemovalRequestModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs cursor-pointer disabled:opacity-50"
+              disabled={isSubmitting || isRestricted}
+              title={isRestricted ? OFF_DUTY_RESTRICTION_MESSAGE : 'Submit Removal Request'}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold shadow-xs transition ${
+                isRestricted
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300'
+                  : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer disabled:opacity-50'
+              }`}
             >
               {isSubmitting ? 'Submitting...' : 'Submit Removal Request'}
             </button>

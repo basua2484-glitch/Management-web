@@ -241,7 +241,7 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
               <div className="rounded-xl bg-rose-50 border border-rose-200 p-3.5 text-xs text-rose-800 flex items-center gap-2">
                 <ShieldAlert className="h-5 w-5 shrink-0 text-rose-600" />
                 <span>
-                  <strong>Access Restricted:</strong> Only Admin accounts possess approval authority.
+                  <strong>Access Restricted:</strong> Only Admin and Manager accounts possess approval authority.
                 </span>
               </div>
             )}
