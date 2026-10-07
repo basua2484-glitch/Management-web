@@ -25,7 +25,9 @@ import {
   ShieldAlert,
   X,
   RotateCw,
+  FolderLock,
 } from 'lucide-react';
+import { EmployeeProfileModal } from '../components/EmployeeProfileModal';
 import { useAuth } from '../context/AuthContext';
 import {
   getStoredUsers,
@@ -73,6 +75,7 @@ export const StaffDashboard: React.FC = () => {
 
   // Emergency Exit Modal State
   const [showEmergencyExitModal, setShowEmergencyExitModal] = useState(false);
+  const [showDocsModal, setShowDocsModal] = useState(false);
   const [emergencyExitReason, setEmergencyExitReason] = useState('Immediate Personal / Medical Emergency');
   const [isSubmittingExit, setIsSubmittingExit] = useState(false);
 
@@ -97,7 +100,7 @@ export const StaffDashboard: React.FC = () => {
     if (authUser?.staff_id) return authUser.staff_id;
     if (authUser?.staffId) return `HK-${String(authUser.staffId).padStart(3, '0')}`;
     if (authUser?.username && authUser.username.toLowerCase().startsWith('hk')) return authUser.username.toUpperCase();
-    return 'HK-001'; // Default fallback: Ramesh Kumar
+    return authUser?.id ? String(authUser.id) : '';
   }, [authUser]);
 
   const [activeStaffCode, setActiveStaffCode] = useState<string>(effectiveStaffId);
@@ -687,6 +690,18 @@ export const StaffDashboard: React.FC = () => {
               </button>
             )}
 
+            {/* My Onboarding Documents Vault Button */}
+            <button
+              type="button"
+              id="btn-staff-my-documents"
+              onClick={() => setShowDocsModal(true)}
+              className="flex items-center gap-1.5 text-xs bg-emerald-600/90 hover:bg-emerald-600 text-white font-semibold px-3 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
+              title="Access your onboarding documents, ID proofs & joining files"
+            >
+              <FolderLock className="h-3.5 w-3.5 text-emerald-200" />
+              <span>My Documents</span>
+            </button>
+
             {/* Logout Button */}
             <button
               type="button"
@@ -801,6 +816,11 @@ export const StaffDashboard: React.FC = () => {
                   </h1>
                   <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-300">
                     {staffDashboard?.staffId || activeStaffCode}
+                  </span>
+                  {/* Site Badge (Requirement 4): e.g. "BASU-STF-001 | Apex Main Hospital" */}
+                  <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                    <Building2 className="h-3 w-3 text-[#1E3A8A] shrink-0" />
+                    <span>{staffDashboard?.staffId || activeStaffCode} | {staffProfile?.siteName || staffProfile?.site_name || 'Apex Main Hospital'}</span>
                   </span>
                   <span
                     className={`text-3xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
@@ -1375,6 +1395,20 @@ export const StaffDashboard: React.FC = () => {
           }
         }}
       />
+
+      {/* Staff Personal Onboarding Document Vault Modal */}
+      {showDocsModal && (
+        <EmployeeProfileModal
+          staffId={activeStaffCode}
+          onClose={() => setShowDocsModal(false)}
+          userRole="staff"
+          initialTab="documents"
+          selectedDate={selectedDate}
+          onActionComplete={() => {
+            setUsers(getStoredUsers());
+          }}
+        />
+      )}
     </div>
   );
 };

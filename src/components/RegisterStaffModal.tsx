@@ -1,15 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Check, AlertTriangle, Shield, KeyRound, Building2, User, Lock, Sparkles } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, UserPlus, Check, AlertTriangle, Shield, KeyRound, Building2, User, Lock, Sparkles, Building } from 'lucide-react';
 import type { UserRole } from '../types';
 import type { CredentialCardData } from './CredentialCardModal';
 import { generateSubAccountId } from '../services/firestoreService';
-import { getStoredUsers } from '../data/mockHousekeepingData';
+import { getStoredUsers, getTenantSites, getSiteNameById } from '../data/mockHousekeepingData';
 
 interface RegisterStaffModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentUserRole?: UserRole;
+  currentUserRole?: UserRole | string;
   activeTenantPrefix?: string;
+  currentUserSiteId?: string;
+  currentUserSiteName?: string;
   onStaffAccountCreated?: (slip: CredentialCardData) => void;
   onRegister: (data: {
     staff_id?: string;
@@ -25,6 +27,8 @@ interface RegisterStaffModalProps {
     fixed_department?: string;
     is_temp_reliever?: boolean;
     temp_department?: string | null;
+    siteId?: string;
+    siteName?: string;
   }) => { success: boolean; message: string };
 }
 
@@ -33,6 +37,8 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   onClose,
   currentUserRole = 'admin',
   activeTenantPrefix,
+  currentUserSiteId,
+  currentUserSiteName,
   onStaffAccountCreated,
   onRegister,
 }) => {
@@ -49,6 +55,9 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   const [tempDepartment, setTempDepartment] = useState('');
   const [errorWarning, setErrorWarning] = useState<string | null>(null);
 
+  const isManagerCreating = (currentUserRole || '').toLowerCase() === 'manager';
+  const isAdminCreating = (currentUserRole || '').toLowerCase() === 'admin';
+
   // Inherit active Admin/Manager tenantId prefix
   const companyPrefix = (
     activeTenantPrefix ||
@@ -58,6 +67,31 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
         localStorage.getItem('company_code'))) ||
     'APEX'
   ).toUpperCase();
+
+  const availableSites = useMemo(() => {
+    const raw = getTenantSites(companyPrefix);
+    const seen = new Set<string>();
+    return raw.filter((s) => {
+      const key = s.siteId || s.id;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [companyPrefix]);
+
+  // Site selection state:
+  // Operations Manager creator: forces inheritance of their own siteId
+  // Master Admin creator: forces selection of site if creating Manager, or selection of site for others
+  const [assignedSiteId, setAssignedSiteId] = useState<string>(() => {
+    if (isManagerCreating && currentUserSiteId) return currentUserSiteId;
+    return availableSites[0]?.siteId || availableSites[0]?.id || 'SITE_APEX_MAIN';
+  });
+
+  useEffect(() => {
+    if (isManagerCreating && currentUserSiteId) {
+      setAssignedSiteId(currentUserSiteId);
+    }
+  }, [isManagerCreating, currentUserSiteId, isOpen]);
 
   // Auto-generate sequential unique ID whenever modal opens or role changes
   useEffect(() => {
@@ -93,6 +127,16 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       return;
     }
 
+    // When Master Admin creates an Operations Manager, force selection of an assigned 'Site'.
+    if (isAdminCreating && role === 'manager' && !assignedSiteId) {
+      setErrorWarning('Assigned Site / Campus is strictly mandatory when onboarding an Operations Manager.');
+      return;
+    }
+
+    // When an Operations Manager creates a Supervisor or Staff, automatically inherit their active 'siteId'.
+    const finalSiteId = isManagerCreating ? (currentUserSiteId || 'SITE_APEX_MAIN') : assignedSiteId;
+    const finalSiteName = isManagerCreating ? (currentUserSiteName || getSiteNameById(finalSiteId)) : getSiteNameById(finalSiteId);
+
     const result = onRegister({
       staff_id: regUsername,
       username: regUsername,
@@ -107,6 +151,8 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       fixed_department: regArea,
       is_temp_reliever: isTempReliever,
       temp_department: isTempReliever && tempDepartment.trim() ? tempDepartment.trim() : null,
+      siteId: finalSiteId,
+      siteName: finalSiteName,
     });
 
     if (!result.success) {
@@ -360,6 +406,64 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                     className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white placeholder:text-white/20 focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
                   />
                 </div>
+              </div>
+
+              {/* Site / Campus Assignment (Requirement 3) */}
+              <div className="pt-2 border-t border-white/10">
+                {isManagerCreating ? (
+                  <div>
+                    <label className="block font-bold text-2xs uppercase tracking-wider text-white/70 mb-1">
+                      Assigned Site (Inherited from Operations Manager)
+                    </label>
+                    <div className="w-full rounded border border-[#00FF9C]/40 bg-[#00FF9C]/10 px-3 py-2 text-xs text-[#00FF9C] font-mono flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Building className="h-3.5 w-3.5 text-[#00FF9C]" />
+                        <span>{currentUserSiteName || getSiteNameById(currentUserSiteId)}</span>
+                      </div>
+                      <span className="text-3xs bg-[#00FF9C]/20 px-1.5 py-0.5 rounded uppercase font-bold text-[#00FF9C]">
+                        Auto-Inherited
+                      </span>
+                    </div>
+                    <p className="text-3xs text-white/40 mt-1">
+                      Supervisor &amp; Staff automatically inherit your assigned operating unit.
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label
+                        htmlFor="create-staff-site"
+                        className="block font-bold text-2xs uppercase tracking-wider text-white/70"
+                      >
+                        {role === 'manager' ? 'Assigned Site / Campus * (Required for Operations Manager)' : 'Assigned Site / Campus'}
+                      </label>
+                      {role === 'manager' && (
+                        <span className="text-3xs text-amber-400 font-mono font-bold bg-amber-500/10 px-1 rounded border border-amber-500/20">
+                          MANDATORY
+                        </span>
+                      )}
+                    </div>
+                    <select
+                      id="create-staff-site"
+                      name="site_id"
+                      required={role === 'manager'}
+                      value={assignedSiteId}
+                      onChange={(e) => setAssignedSiteId(e.target.value)}
+                      className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
+                    >
+                      {availableSites.map((s) => (
+                        <option key={s.siteId || s.id} value={s.siteId || s.id}>
+                          {s.siteName || s.name} ({s.code})
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-3xs text-white/40 mt-1">
+                      {role === 'manager'
+                        ? 'Operations Manager will be strictly isolated and scoped to this site.'
+                        : 'Operating hospital unit / branch for this personnel.'}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Duty Allocation Settings */}

@@ -26,7 +26,7 @@ import {
   type Unsubscribe,
   type WhereFilterOp,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { getActiveCompanyPrefix } from '../utils/tenantStorage';
 import type {
   AppUser,
@@ -66,6 +66,53 @@ export const COLLECTIONS = {
   TENANTS: 'tenants',
   TASKS: 'tasks',
 } as const;
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
+      providerInfo: auth?.currentUser?.providerData?.map((provider) => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 /**
  * 🛑 FIRESTORE PAYLOAD SANITIZER:
@@ -191,6 +238,145 @@ export function generateSubAccountId(
   return `${prefix}-${roleTag}-${String(nextSeq).padStart(3, '0')}`;
 }
 
+export const INJECTED_FIRESTORE_UID = 'bZIKmbFgrHQusVmFKjHSsYl0xRH2';
+export const INJECTED_FIRESTORE_ID = 'firestore-bZIKmbFgrHQusVmFKjHSsYl0xRH2';
+
+let injectionPromise: Promise<void> | null = null;
+
+/**
+ * Injects and syncs firestore-bZIKmbFgrHQusVmFKjHSsYl0xRH2 into Firestore and client cache
+ */
+export function ensureInjectedFirestoreIdentity(): Promise<void> {
+  if (injectionPromise) {
+    return injectionPromise;
+  }
+
+  injectionPromise = (async () => {
+    const injectedUser: AppUser = {
+      id: 101,
+      uid: INJECTED_FIRESTORE_UID,
+      staff_id: 'BASU-ADM-001',
+      username: INJECTED_FIRESTORE_ID,
+      name: 'Dr. Basu (Master Admin)',
+      full_name: 'Dr. Basu (Master Admin)',
+      email: 'basua2484@gmail.com',
+      role: 'admin',
+      tenant_id: 'BASU',
+      tenantId: 'BASU',
+      company_name: 'Basu Healthcare',
+      company_prefix: 'BASU',
+      siteId: 'SITE_A',
+      siteName: 'Site A - East Wing & Trauma',
+      duty_type: 'FIXED',
+      assigned_shift: '7-3',
+      password_hash: createPasswordHash('admin123'),
+      raw_password_vault: 'admin123',
+      password: 'admin123',
+      status: 'ACTIVE',
+      is_approved: true,
+      weeklyOffDay: 'Sunday',
+      leaveBalance: { casual: 15, sick: 12, paid: 20 },
+      leaveRequests: [],
+    };
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const existing = getStoredUsers('ALL');
+        if (!existing.some((u) => u.username === INJECTED_FIRESTORE_ID || (u as any).uid === INJECTED_FIRESTORE_UID || u.staff_id === 'BASU-ADM-001')) {
+          saveStoredUsers([injectedUser, ...existing]);
+        }
+
+        // Also ensure in housekeeping_users
+        const rawHk = localStorage.getItem('housekeeping_users');
+        let hkUsers: any[] = [];
+        if (rawHk) {
+          try {
+            hkUsers = JSON.parse(rawHk);
+          } catch {}
+        }
+        if (!hkUsers.some((u) => u.username === INJECTED_FIRESTORE_ID || u.staff_id === 'BASU-ADM-001' || u.id === INJECTED_FIRESTORE_ID)) {
+          hkUsers.push({
+            id: INJECTED_FIRESTORE_ID,
+            uid: INJECTED_FIRESTORE_UID,
+            staff_id: 'BASU-ADM-001',
+            username: INJECTED_FIRESTORE_ID,
+            fullName: 'Dr. Basu (Master Admin)',
+            name: 'Dr. Basu (Master Admin)',
+            email: 'basua2484@gmail.com',
+            role: 'admin',
+            password: 'admin123',
+            tenantId: 'BASU',
+            tenantName: 'Basu Healthcare',
+            company_prefix: 'BASU',
+          });
+          localStorage.setItem('housekeeping_users', JSON.stringify(hkUsers));
+        }
+      }
+    } catch {}
+
+    if (db) {
+      try {
+        const payload = sanitizeFirestorePayload({
+          ...injectedUser,
+          injectedId: INJECTED_FIRESTORE_ID,
+          uid: INJECTED_FIRESTORE_UID,
+          updatedAt: new Date().toISOString(),
+        });
+        // Background sync to Firestore without blocking the client thread
+        Promise.allSettled([
+          setDoc(doc(db, COLLECTIONS.USERS, INJECTED_FIRESTORE_ID), payload, { merge: true }),
+          setDoc(doc(db, COLLECTIONS.USERS, INJECTED_FIRESTORE_UID), payload, { merge: true }),
+          setDoc(doc(db, COLLECTIONS.USERS, 'BASU-ADM-001'), payload, { merge: true }),
+          setDoc(
+            doc(db, COLLECTIONS.SETTINGS, INJECTED_FIRESTORE_ID),
+            {
+              injectedId: INJECTED_FIRESTORE_ID,
+              uid: INJECTED_FIRESTORE_UID,
+              adminEmail: 'basua2484@gmail.com',
+              role: 'admin',
+              master_admin_registered: true,
+              hospital_name: 'Basu Healthcare',
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          ),
+          setDoc(
+            doc(db, COLLECTIONS.SETTINGS, 'config'),
+            {
+              master_admin_registered: true,
+              hospital_name: 'Basu Healthcare',
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          ),
+          setDoc(
+            doc(db, COLLECTIONS.STAFF, 'BASU-ADM-001'),
+            sanitizeFirestorePayload({
+              id: 'BASU-ADM-001',
+              staffCode: 'BASU-ADM-001',
+              name: 'Dr. Basu (Master Admin)',
+              department: 'Administration',
+              designation: 'Master Admin',
+              shift: '7-3',
+              phone: '9876543210',
+              status: 'ACTIVE',
+              tenantId: 'BASU',
+              updatedAt: new Date().toISOString(),
+            }),
+            { merge: true }
+          ),
+        ]).catch((err) => {
+          console.warn('Firestore background injection notice:', err);
+        });
+      } catch (err) {
+        console.warn('Firestore auto-injection notice:', err);
+      }
+    }
+  })();
+
+  return injectionPromise;
+}
+
 /**
  * Helper to get active tenant ID from local storage or memory
  */
@@ -288,8 +474,10 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
     password: data.password,
     status: 'ACTIVE',
     is_approved: true,
-    site_id: data.siteId || 'site-main',
+    site_id: data.siteId || 'SITE_APEX_MAIN',
+    siteId: data.siteId || 'SITE_APEX_MAIN',
     site_name: `${companyName} Central Hospital`,
+    siteName: `${companyName} Central Hospital`,
     weeklyOffDay: 'Sunday',
     leaveBalance: { casual: 15, sick: 12, paid: 20 },
     leaveRequests: [],
@@ -297,6 +485,7 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
 
   const tenantRecord: Tenant = {
     tenant_id: tenantId,
+    tenantId: tenantId,
     company_name: companyName,
     company_prefix: companyPrefix,
     root_admin_id: rootAdminId,
@@ -304,6 +493,7 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
     admin_email: data.email || `${rootAdminId.toLowerCase()}@${companyPrefix.toLowerCase()}.org`,
     created_at: new Date().toISOString(),
     status: 'ACTIVE',
+    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH', 'SITE_A', 'SITE_B'],
   };
 
   // 1. Write to Firestore if connected
@@ -428,11 +618,15 @@ export async function fetchLiveUsers(tenantId?: string): Promise<AppUser[]> {
     if (snap.empty) return [];
 
     const users: AppUser[] = [];
+    const userMap = new Map<string, AppUser>();
     snap.forEach((d) => {
       const u = d.data() as AppUser;
-      users.push(u);
+      const key = String(u.staff_id || u.username || u.id || d.id).trim().toUpperCase();
+      if (!userMap.has(key)) {
+        userMap.set(key, u);
+      }
     });
-    return users;
+    return Array.from(userMap.values());
   } catch (err) {
     console.warn('Error fetching live users from Firestore:', err);
     return [];
@@ -495,10 +689,15 @@ export async function fetchLiveStaff(tenantId?: string): Promise<StaffUser[]> {
     if (snap.empty) return [];
 
     const staff: StaffUser[] = [];
+    const staffMap = new Map<string, StaffUser>();
     snap.forEach((d) => {
-      staff.push(d.data() as StaffUser);
+      const s = d.data() as StaffUser;
+      const key = String(s.staffCode || (s as any).staff_id || s.id || d.id).trim().toUpperCase();
+      if (!staffMap.has(key)) {
+        staffMap.set(key, s);
+      }
     });
-    return staff;
+    return Array.from(staffMap.values());
   } catch (err) {
     console.warn('Error fetching live staff from Firestore:', err);
     return [];
@@ -1057,13 +1256,19 @@ export function subscribeToAttendance(
     const tid = tenantId || getActiveTenantId();
     const baseRef = collection(db, COLLECTIONS.ATTENDANCE);
     const q = tid ? query(baseRef, where('tenant_id', '==', tid)) : query(baseRef);
-    return onSnapshot(q, (snap) => {
-      const records: AttendanceRecord[] = [];
-      snap.forEach((d) => {
-        records.push(d.data() as AttendanceRecord);
-      });
-      onUpdate(records);
-    });
+    return onSnapshot(
+      q,
+      (snap) => {
+        const records: AttendanceRecord[] = [];
+        snap.forEach((d) => {
+          records.push(d.data() as AttendanceRecord);
+        });
+        onUpdate(records);
+      },
+      (err) => {
+        console.warn('Attendance live subscription offline note:', err);
+      }
+    );
   } catch (e) {
     console.warn('Attendance subscription error:', e);
     return () => {};
@@ -1079,15 +1284,77 @@ export function subscribeToDutyAllocations(
     const tid = tenantId || getActiveTenantId();
     const baseRef = collection(db, COLLECTIONS.DUTY_ALLOCATIONS);
     const q = tid ? query(baseRef, where('tenant_id', '==', tid)) : query(baseRef);
-    return onSnapshot(q, (snap) => {
-      const allocs: DutyAllocation[] = [];
-      snap.forEach((d) => {
-        allocs.push(d.data() as DutyAllocation);
-      });
-      onUpdate(allocs);
-    });
+    return onSnapshot(
+      q,
+      (snap) => {
+        const allocs: DutyAllocation[] = [];
+        snap.forEach((d) => {
+          allocs.push(d.data() as DutyAllocation);
+        });
+        onUpdate(allocs);
+      },
+      (err) => {
+        console.warn('Duty allocation live subscription offline note:', err);
+      }
+    );
   } catch (e) {
     console.warn('Duty allocation subscription error:', e);
+    return () => {};
+  }
+}
+
+export function subscribeToLiveUsers(
+  onUpdate: (users: AppUser[]) => void,
+  tenantId?: string
+): () => void {
+  if (!db) return () => {};
+  try {
+    const tid = tenantId || getActiveTenantId();
+    const baseRef = collection(db, COLLECTIONS.USERS);
+    const q = tid ? query(baseRef, where('tenant_id', '==', tid)) : query(baseRef);
+    return onSnapshot(
+      q,
+      (snap) => {
+        const users: AppUser[] = [];
+        snap.forEach((d) => {
+          users.push(d.data() as AppUser);
+        });
+        onUpdate(users);
+      },
+      (err) => {
+        console.warn('Users live subscription offline note:', err);
+      }
+    );
+  } catch (e) {
+    console.warn('Users subscription error:', e);
+    return () => {};
+  }
+}
+
+export function subscribeToLiveStaff(
+  onUpdate: (staff: StaffUser[]) => void,
+  tenantId?: string
+): () => void {
+  if (!db) return () => {};
+  try {
+    const tid = tenantId || getActiveTenantId();
+    const baseRef = collection(db, COLLECTIONS.STAFF);
+    const q = tid ? query(baseRef, where('tenantId', '==', tid)) : query(baseRef);
+    return onSnapshot(
+      q,
+      (snap) => {
+        const staffList: StaffUser[] = [];
+        snap.forEach((d) => {
+          staffList.push(d.data() as StaffUser);
+        });
+        onUpdate(staffList);
+      },
+      (err) => {
+        console.warn('Staff live subscription offline note:', err);
+      }
+    );
+  } catch (e) {
+    console.warn('Staff subscription error:', e);
     return () => {};
   }
 }

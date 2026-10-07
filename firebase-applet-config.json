@@ -3,6 +3,7 @@
   "appId": "1:377043867272:web:8ff369fb4e86e5283cb13d",
   "apiKey": "AIzaSyD6i5EHcSMOXFy6LJhoJaQhx5v3czRqP1w",
   "authDomain": "mess-app-e0167.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-housekeepingatte-03824cce-6402-48f1-bea7-c7bdeb898710",
   "storageBucket": "mess-app-e0167.firebasestorage.app",
   "messagingSenderId": "377043867272",
   "measurementId": "",

@@ -75,19 +75,19 @@ function buildDailyRows(users: StaffUser[], attendanceRecords: AttendanceRecord[
     ['Date', 'Staff ID', 'Staff Name', 'Department', 'Shift', 'Punch In', 'Punch Out', 'Reg Hours', 'OT Hours', 'Status', 'Notes'],
   ];
 
-  const sortedAttendance = [...attendanceRecords].sort((a, b) => a.date.localeCompare(b.date));
+  const sortedAttendance = [...attendanceRecords].sort((a, b) => (a.date || a.calendar_date || '').localeCompare(b.date || b.calendar_date || ''));
   for (const record of sortedAttendance) {
     const user = userMap.get(record.userId);
     dailyValues.push([
-      record.date,
+      record.date || record.calendar_date || '',
       user?.staffCode || `HK-${record.userId.toString().padStart(3, '0')}`,
       user?.name || `Staff #${record.userId}`,
       user?.department || 'Housekeeping',
       user?.shift || 'Morning',
       record.punchIn || '--:--',
       record.punchOut || '--:--',
-      record.regularHours.toFixed(1),
-      record.otHours.toFixed(1),
+      (record.regularHours ?? record.regular_hours ?? 0).toFixed(1),
+      (record.otHours ?? record.ot_hours ?? 0).toFixed(1),
       record.status,
       record.notes || '',
     ]);

@@ -104,3 +104,21 @@ export function fetchTenantStaff(overridePrefix?: string): StaffUser[] {
     return tid === prefixUpper;
   });
 }
+
+/**
+ * Har request / transaction se pehle session parameter set karein:
+ * SET LOCAL app.tenant_id = 'your-tenant-uuid-here';
+ */
+export function getTenantSqlSessionCommand(tenantId?: string | null): string {
+  const tid = tenantId || getActiveCompanyPrefix();
+  return `SET LOCAL app.tenant_id = '${tid.replace(/'/g, "''")}';`;
+}
+
+export function setTenantSessionHeader(headers: Record<string, string> = {}, tenantId?: string | null): Record<string, string> {
+  const tid = tenantId || getActiveCompanyPrefix();
+  return {
+    ...headers,
+    'X-Tenant-ID': tid,
+  };
+}
+

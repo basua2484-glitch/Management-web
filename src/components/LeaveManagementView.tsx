@@ -44,7 +44,8 @@ import {
   getDayOfWeekFromDate,
   isUserOnLeaveOnDate,
   isUserWeeklyOffOnDate,
-  getLeaveMetricsForDate
+  getLeaveMetricsForDate,
+  normalizeSiteId
 } from '../data/mockHousekeepingData';
 
 interface LeaveManagementViewProps {
@@ -124,7 +125,8 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
     if (selectedSite === 'ALL' || !selectedSite) {
       return users;
     }
-    return users.filter((u) => (u.siteId || u.site_id || 'site-main') === selectedSite);
+    const normSelected = normalizeSiteId(selectedSite);
+    return users.filter((u) => normalizeSiteId(u.siteId || u.site_id) === normSelected);
   }, [users, selectedSite]);
 
   // Daily status calculations for selectedDate
@@ -160,7 +162,8 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
       list = list.filter((r) => r.userId === currentUser.id);
     } else if (isManager && selectedSite !== 'ALL' && selectedSite) {
       // Manager sees requests from their site
-      list = list.filter((r) => r.siteId === selectedSite);
+      const normSelected = normalizeSiteId(selectedSite);
+      list = list.filter((r) => normalizeSiteId(r.siteId) === normSelected);
     }
 
     if (searchTerm.trim()) {
@@ -817,7 +820,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                     const bal = user.leaveBalance || { casual: 12, sick: 7, paid: 15 };
 
                     return (
-                      <tr key={user.staff_id || (user.id ? `leave-user-${user.id}` : `leave-user-${idx}`)} className="hover:bg-white/5 transition-colors">
+                      <tr key={user.id || `${user.staff_id}-${idx}`} className="hover:bg-white/5 transition-colors">
                         <td className="py-3 px-4 font-mono font-bold text-cyan-300">
                           {user.staff_id || `HK-${user.id.toString().padStart(3, '0')}`}
                         </td>
@@ -904,7 +907,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                   {staffUsers.map((user, idx) => {
                     const bal = user.leaveBalance || { casual: 12, sick: 7, paid: 15 };
                     return (
-                      <tr key={user.staff_id || (user.id ? `leave-bal-${user.id}` : `leave-bal-${idx}`)} className="hover:bg-white/5 transition-colors">
+                      <tr key={user.id || `${user.staff_id}-${idx}`} className="hover:bg-white/5 transition-colors">
                         <td className="py-3 px-4 font-mono font-bold text-cyan-300">
                           {user.staff_id || `HK-${user.id.toString().padStart(3, '0')}`}
                         </td>
@@ -912,7 +915,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                           {user.full_name || user.name}
                         </td>
                         <td className="py-3 px-4 text-slate-400">
-                          {user.siteId || 'site-main'}
+                          {user.siteName || user.site_name || normalizeSiteId(user.siteId)}
                         </td>
                         <td className="py-3 px-4 text-slate-300">
                           {user.assigned_shift || '7-3'}

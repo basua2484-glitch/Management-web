@@ -61,8 +61,18 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
     return '';
   })();
 
+  // Deduplicate incoming users using Map based on unique record IDs
+  const dedupeMap = new Map<string, AppUser>();
+  (users || []).forEach((u, index) => {
+    const key = String(u.id || u.staff_id || u.username || `user-${index}`).trim().toUpperCase();
+    if (!dedupeMap.has(key)) {
+      dedupeMap.set(key, u);
+    }
+  });
+  const deduplicatedUsers = Array.from(dedupeMap.values());
+
   const tenantScopedUsers = activeTenantPrefix
-    ? users.filter((u) => {
+    ? deduplicatedUsers.filter((u) => {
         const uid = String(u.id || '').toUpperCase();
         if (uid.startsWith(activeTenantPrefix)) return true;
         const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
@@ -70,7 +80,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
         const tid = (u.tenant_id || u.tenantId || u.company_prefix || '').toUpperCase();
         return tid === activeTenantPrefix;
       })
-    : users;
+    : deduplicatedUsers;
 
   const filteredUsers = tenantScopedUsers.filter((u) => {
     const q = search.toLowerCase().trim();
@@ -87,7 +97,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-150"
       id="admin-vault-modal"
       role="dialog"
       aria-modal="true"
@@ -218,7 +228,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                         const userStatus = user.status || (user.is_approved === false ? 'PENDING_APPROVAL' : 'ACTIVE');
 
                         return (
-                          <tr key={user.staff_id || (user.id ? `vault-${user.id}` : `vault-${idx}`)} className="hover:bg-slate-800/40 transition-colors">
+                          <tr key={user.id || `${user.staff_id}-${idx}`} className="hover:bg-slate-800/40 transition-colors">
                             {/* Staff ID & Name */}
                             <td className="py-3 px-3">
                               <div className="font-bold text-white text-xs">{user.full_name || user.name}</div>

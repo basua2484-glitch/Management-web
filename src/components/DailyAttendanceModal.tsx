@@ -79,12 +79,13 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
 
   const monthRecords = records
     .filter((r) => {
-      const matchesMonth = r.date.startsWith(monthPrefix);
+      const recDate = r.date || r.calendar_date || '';
+      const matchesMonth = recDate.startsWith(monthPrefix);
       const effectiveFilter = isAdminOrManager ? activeStaffFilter : currentStaffId;
       const matchesStaff = effectiveFilter === 'all' || r.userId === effectiveFilter;
       return matchesMonth && matchesStaff;
     })
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort((a, b) => (b.date || b.calendar_date || '').localeCompare(a.date || a.calendar_date || ''));
 
   // Auto calculate regular and OT hours using calculate_daily_attendance
   const handlePunchTimeChange = (inTime: string, outTime: string) => {

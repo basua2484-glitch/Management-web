@@ -3,6 +3,7 @@ import {
   X,
   Clock,
   Building,
+  Building2,
   Calendar,
   KeyRound,
   Shield,
@@ -25,8 +26,29 @@ import {
   User,
   CheckCircle,
   ExternalLink,
+  Upload,
+  FolderLock,
+  FileCheck,
+  Eye,
+  Trash2,
 } from 'lucide-react';
-import type { AppUser, StaffUser, AttendanceRecord, DutyType, AttendanceSession } from '../types';
+import type { AppUser, StaffUser, AttendanceRecord, DutyType, AttendanceSession, EmployeeDocument } from '../types';
+import {
+  MANDATORY_ONBOARDING_DOC_TYPES,
+  TOTAL_REQUIRED_DOCS,
+  normalizeHierarchicalRole,
+  canViewUserDocuments,
+  canUploadForUser,
+  canApproveOrReject,
+  canDeleteDocument,
+  generateInitialDocumentsForUser,
+  getDocumentSummary,
+  uploadEmployeeDocument,
+  approveEmployeeDocument,
+  rejectEmployeeDocument,
+  deleteEmployeeDocument,
+  filterRealDocuments,
+} from '../services/documentVaultService';
 import {
   getStoredUsers,
   saveStoredUsers,
@@ -38,13 +60,16 @@ import {
   saveStoredDutyAllocations,
   DUTY_AREAS,
   getStoredEmergencyRecalls,
+  getStoredCurrentUser,
 } from '../data/mockHousekeepingData';
+import { compressDocumentWithMetrics, formatBytes, type CompressionResult } from '../utils/fileCompressor';
 import { formatTimeTo12hStr } from '../utils/attendanceCalculator';
 
 export interface EmployeeModalProps {
   staffId: string | null;
   onClose: () => void;
-  userRole: 'admin' | 'manager' | 'supervisor';
+  userRole: 'admin' | 'manager' | 'supervisor' | 'staff';
+  initialTab?: 'duty' | 'monthly' | 'ot' | 'emergency' | 'documents' | 'actions';
   selectedDate?: string;
   isShiftGated?: boolean;
   onActionComplete?: () => void;
@@ -54,6 +79,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   staffId,
   onClose,
   userRole,
+  initialTab,
   selectedDate,
   isShiftGated = false,
   onActionComplete,
@@ -63,7 +89,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   const isAdminOrManager = userRole === 'admin' || userRole === 'manager';
 
   // Active tab selection
-  const [activeTab, setActiveTab] = useState<'duty' | 'monthly' | 'ot' | 'emergency' | 'actions'>('duty');
+  const [activeTab, setActiveTab] = useState<'duty' | 'monthly' | 'ot' | 'emergency' | 'documents' | 'actions'>(initialTab || 'duty');
 
   // Interactive Action Sub-panels
   const [actionPanel, setActionPanel] = useState<'none' | 'reliever' | 'ward' | 'password'>('none');
@@ -71,6 +97,18 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   const [selectedDutyType, setSelectedDutyType] = useState<DutyType>('PERMANENT_RELIEVER');
   const [newPassword, setNewPassword] = useState<string>('');
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+
+  // Document Vault modal & action states
+  const [docUploadType, setDocUploadType] = useState<string | null>(null);
+  const [docUploadFileName, setDocUploadFileName] = useState('');
+  const [docUploadNotes, setDocUploadNotes] = useState('');
+  const [selectedDocFile, setSelectedDocFile] = useState<File | null>(null);
+  const [isCompressingDoc, setIsCompressingDoc] = useState(false);
+  const [docCompressionProgress, setDocCompressionProgress] = useState(0);
+  const [docCompressionResult, setDocCompressionResult] = useState<CompressionResult | null>(null);
+  const [docRejectTarget, setDocRejectTarget] = useState<EmployeeDocument | null>(null);
+  const [docRejectReason, setDocRejectReason] = useState('Document copy is blurry or unreadable.');
+  const [docPreviewTarget, setDocPreviewTarget] = useState<EmployeeDocument | null>(null);
 
   // Target / today date
   const effectiveDate = selectedDate || new Date().toISOString().split('T')[0];
@@ -112,7 +150,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   }, [staffList, normalizedSearchId, matchedUser]);
 
   const displayName =
-    matchedUser?.full_name || matchedUser?.name || matchedStaff?.name || 'Ramesh Kumar';
+    matchedUser?.full_name || matchedUser?.name || matchedStaff?.name || 'Employee';
   const displayStaffCode =
     matchedUser?.staff_id || matchedStaff?.staffCode || staffId || '';
   const currentDutyType: DutyType =
@@ -198,7 +236,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       return inMonth && isStaff;
     });
 
-    return recordsForStaff.sort((a, b) => b.date.localeCompare(a.date));
+    return recordsForStaff.sort((a, b) => (b.date || (b as any).calendar_date || '').localeCompare(a.date || (a as any).calendar_date || ''));
   }, [attendanceList, currentMonthPrefix, numericId, displayStaffCode]);
 
   const totalPresentDays = useMemo(() => {
@@ -263,7 +301,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
       }
     });
 
-    return otList.sort((a, b) => b.date.localeCompare(a.date));
+    return otList.sort((a, b) => (b.date || (b as any).calendar_date || '').localeCompare(a.date || (a as any).calendar_date || ''));
   }, [allocations, displayStaffCode, monthlyRecords]);
 
   // Emergency Exit Logs
@@ -423,19 +461,161 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
     }, 1800);
   };
 
+  // RBAC Document Vault Helper Logic
+  const currentLoggedInUser = useMemo(() => {
+    return getStoredCurrentUser() || { role: userRole, staff_id: 'SYSTEM', full_name: 'Admin' };
+  }, [userRole]);
+
+  const userDocuments: EmployeeDocument[] = useMemo(() => {
+    return filterRealDocuments(matchedUser?.documents);
+  }, [matchedUser]);
+
+  const docSummary = useMemo(() => {
+    return getDocumentSummary(userDocuments);
+  }, [userDocuments]);
+
+  const canUploadForThisUser = useMemo(() => {
+    return canUploadForUser(currentLoggedInUser, matchedUser);
+  }, [currentLoggedInUser, matchedUser]);
+
+  const canApproveThisUser = useMemo(() => {
+    return canApproveOrReject(currentLoggedInUser);
+  }, [currentLoggedInUser]);
+
+  const canDeleteThisUser = useMemo(() => {
+    return canDeleteDocument(currentLoggedInUser);
+  }, [currentLoggedInUser]);
+
+  const handleApproveDoc = (doc: EmployeeDocument) => {
+    if (!matchedUser) return;
+    const res = approveEmployeeDocument(matchedUser.staff_id || matchedUser.id, doc.docId, currentLoggedInUser);
+    if (res.success) {
+      setActionSuccessMsg(`Verified: ${doc.docType} marked as Approved.`);
+      setUsers(getStoredUsers());
+      setTimeout(() => setActionSuccessMsg(null), 2500);
+      onActionComplete?.();
+    }
+  };
+
+  const handleConfirmRejectDoc = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!matchedUser || !docRejectTarget) return;
+    const res = rejectEmployeeDocument(matchedUser.staff_id || matchedUser.id, docRejectTarget.docId, currentLoggedInUser, docRejectReason);
+    if (res.success) {
+      setActionSuccessMsg(`Rejected: ${docRejectTarget.docType}.`);
+      setUsers(getStoredUsers());
+      setDocRejectTarget(null);
+      setTimeout(() => setActionSuccessMsg(null), 2500);
+      onActionComplete?.();
+    }
+  };
+
+  const handleDocFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsCompressingDoc(true);
+    setDocCompressionProgress(20);
+
+    try {
+      const result = await compressDocumentWithMetrics(file, {
+        maxSizeMB: 0.3, // Max target size ~300KB
+        maxWidthOrHeight: 1200, // Maintain readable text resolution for Aadhaar/PAN
+        useWebWorker: true,
+        fileType: 'image/jpeg',
+      });
+
+      setSelectedDocFile(result.file);
+      setDocCompressionResult(result);
+      setDocUploadFileName(result.file.name);
+      setDocCompressionProgress(100);
+
+      if (result.isCompressed) {
+        setActionSuccessMsg(
+          `Optimized: ${result.originalFormatted} → ${result.compressedFormatted} (Saved ${result.savedPercentage}%)`
+        );
+        setTimeout(() => setActionSuccessMsg(null), 3500);
+      }
+    } catch (err) {
+      console.error('File compression error:', err);
+      setSelectedDocFile(file);
+    } finally {
+      setIsCompressingDoc(false);
+    }
+  };
+
+  const handleConfirmUploadDoc = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!matchedUser || !docUploadType) return;
+    const sId = matchedUser.staff_id || matchedUser.username || matchedUser.id;
+    const cleanType = docUploadType.split('(')[0].trim().replace(/\s+/g, '_');
+    const fileName = docUploadFileName.trim() || `${sId}_${cleanType}.pdf`;
+
+    const activeSizeFormatted = docCompressionResult
+      ? docCompressionResult.compressedFormatted
+      : selectedDocFile
+      ? formatBytes(selectedDocFile.size)
+      : '290 KB';
+
+    const originalSizeFormatted = docCompressionResult?.isCompressed
+      ? docCompressionResult.originalFormatted
+      : undefined;
+
+    const ratioFormatted = docCompressionResult?.isCompressed
+      ? `Saved ${docCompressionResult.savedPercentage}%`
+      : undefined;
+
+    const res = uploadEmployeeDocument(
+      matchedUser.staff_id || matchedUser.id,
+      {
+        docType: docUploadType,
+        fileName,
+        fileSize: activeSizeFormatted,
+        originalFileSize: originalSizeFormatted,
+        compressionRatio: ratioFormatted,
+        notes: docUploadNotes,
+      },
+      currentLoggedInUser
+    );
+    if (res.success) {
+      setActionSuccessMsg(res.message);
+      setUsers(getStoredUsers());
+      setDocUploadType(null);
+      setDocUploadFileName('');
+      setDocUploadNotes('');
+      setSelectedDocFile(null);
+      setDocCompressionResult(null);
+      setTimeout(() => setActionSuccessMsg(null), 2500);
+      onActionComplete?.();
+    }
+  };
+
+  const handleDeleteDoc = (doc: EmployeeDocument) => {
+    if (!matchedUser) return;
+    if (confirm(`Permanently delete "${doc.docType}" from vault?`)) {
+      const res = deleteEmployeeDocument(matchedUser.staff_id || matchedUser.id, doc.docId, currentLoggedInUser);
+      if (res.success) {
+        setActionSuccessMsg(`Deleted "${doc.docType}" from vault.`);
+        setUsers(getStoredUsers());
+        setTimeout(() => setActionSuccessMsg(null), 2500);
+        onActionComplete?.();
+      }
+    }
+  };
+
   if (!staffId) return null;
 
   return (
     <div
       id="employee-profile-modal-backdrop"
-      className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex justify-end animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         id="employee-profile-modal-drawer"
-        className="bg-white w-full max-w-2xl h-full shadow-2xl p-6 overflow-y-auto animate-in slide-in-from-right duration-300 flex flex-col justify-between"
+        className="max-w-4xl w-full max-h-[90vh] overflow-y-auto bg-white rounded-xl shadow-2xl p-6 animate-in zoom-in-95 duration-200 flex flex-col justify-between"
       >
         <div>
           {/* Header */}
@@ -461,6 +641,11 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-xs font-semibold mt-1.5 text-slate-600">
+                {/* Site Badge (Requirement 4): e.g. "BASU-MGR-001 | Apex Main Hospital" */}
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded font-mono text-2xs font-bold bg-slate-100 text-slate-800 border border-slate-300 shadow-2xs">
+                  <Building2 className="h-3.5 w-3.5 text-[#1E3A8A] shrink-0" />
+                  <span>{displayStaffCode} | {matchedUser?.siteName || matchedUser?.site_name || 'Apex Main Hospital'}</span>
+                </span>
                 <span className="px-2 py-0.5 rounded bg-blue-100/70 text-blue-900 font-bold border border-blue-200">
                   Duty: {currentDutyType.replace('_', ' ')}
                 </span>
@@ -492,6 +677,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
               { id: 'monthly', label: `Monthly Attendance (${monthlyRecords.length})` },
               { id: 'ot', label: `OT Records (${staffOtRecords.length})` },
               { id: 'emergency', label: `Emergency Exits (${emergencyExitLogs.length})` },
+              { id: 'documents', label: `Document Vault (${docSummary.approved}/${MANDATORY_ONBOARDING_DOC_TYPES.length})` },
               { id: 'actions', label: 'Quick Actions' },
             ].map((tab) => (
               <button
@@ -1126,6 +1312,524 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                       </button>
                     </div>
                   </form>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 5: EMPLOYEE DOCUMENT VAULT (RBAC ONBOARDING) */}
+          {activeTab === 'documents' && (
+            <div className="mt-5 space-y-4 animate-in fade-in duration-200" id="profile-tab-documents">
+              {/* Header Box */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <FolderLock className="h-4.5 w-4.5 text-[#1E3A8A]" />
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Onboarding Document Dossier
+                    </h3>
+                    <span className="text-2xs font-extrabold px-2 py-0.5 rounded-full bg-blue-100 text-[#1E3A8A] border border-blue-200 uppercase">
+                      RBAC Mode: {userRole.toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="text-2xs text-slate-500 mt-1">
+                    Verified joining records, government identification, and mandatory hospital compliance credentials.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-2xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    <span>🟢</span>
+                    <span>{docSummary.approved} Verified</span>
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-2xs font-bold border ${
+                      docSummary.pending > 0
+                        ? 'bg-amber-100 text-amber-800 border-amber-200 animate-pulse'
+                        : 'bg-amber-50 text-amber-700 border-amber-200/60'
+                    }`}
+                  >
+                    <span>🟡</span>
+                    <span>{docSummary.pending} Pending Review</span>
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-2xs font-bold border ${
+                      docSummary.missingCount > 0
+                        ? 'bg-rose-100 text-rose-800 border-rose-200'
+                        : 'bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <span>🔴</span>
+                    <span>{docSummary.missingCount} Missing</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Action notice */}
+              {actionSuccessMsg && (
+                <div className="p-3 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4 text-emerald-600" />
+                  <span>{actionSuccessMsg}</span>
+                </div>
+              )}
+
+              {/* Mandatory Documents List */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {MANDATORY_ONBOARDING_DOC_TYPES.map((reqType) => {
+                  const existing = userDocuments.find((d) => d.docType.toLowerCase() === reqType.toLowerCase());
+
+                  if (existing) {
+                    const isApproved = existing.status === 'APPROVED';
+                    const isPending = existing.status === 'PENDING' || existing.status === 'PENDING_APPROVAL';
+                    const isRejected = existing.status === 'REJECTED';
+
+                    return (
+                      <div
+                        key={existing.docId}
+                        className={`p-3.5 rounded-xl border flex flex-col gap-2 relative overflow-hidden transition-all ${
+                          isApproved
+                            ? 'bg-emerald-50/40 border-emerald-200'
+                            : isPending
+                            ? 'bg-amber-50/40 border-amber-200'
+                            : 'bg-rose-50/40 border-rose-200'
+                        }`}
+                      >
+                        {/* Dedicated Header Line: Document Type & Verification Status Badge */}
+                        <div className="flex items-center justify-between gap-2 border-b border-slate-200/60 pb-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <FileCheck className="h-4 w-4 text-[#1E3A8A] shrink-0" />
+                            <span className="text-xs font-bold text-slate-900 truncate">{existing.docType}</span>
+                          </div>
+
+                          <div className="shrink-0">
+                            {isApproved && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 whitespace-nowrap">
+                                <span>🟢</span>
+                                <span>Verified / Approved</span>
+                              </span>
+                            )}
+                            {isPending && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-amber-100 text-amber-800 border border-amber-200 animate-pulse whitespace-nowrap">
+                                <span>🟡</span>
+                                <span>Pending Review</span>
+                              </span>
+                            )}
+                            {isRejected && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-rose-100 text-rose-800 border border-rose-200 whitespace-nowrap">
+                                <span>🔴</span>
+                                <span>Rejected</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Dedicated Filename Row */}
+                        <div className="flex items-center gap-1.5 text-2xs font-mono text-slate-700 bg-slate-100/80 px-2 py-1.5 rounded-md border border-slate-200/60">
+                          <FileText className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                          <span className="truncate" title={existing.fileName}>
+                            {existing.fileName}
+                          </span>
+                        </div>
+
+                        {/* Metadata */}
+                        <div className="text-3xs text-slate-500 space-y-0.5">
+                          <div className="flex justify-between items-center">
+                            <span>Uploaded: {existing.uploadedAt?.slice(0, 10)}</span>
+                            <div className="flex items-center gap-1 font-mono">
+                              {existing.originalFileSize && (
+                                <span className="line-through text-slate-400 text-3xs">
+                                  {existing.originalFileSize}
+                                </span>
+                              )}
+                              <span className="font-semibold text-slate-700">{existing.fileSize || '300 KB'}</span>
+                              {existing.compressionRatio && (
+                                <span className="text-3xs font-bold text-emerald-700 bg-emerald-100 px-1 rounded">
+                                  {existing.compressionRatio}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {existing.verifiedBy && (
+                            <div className="text-emerald-700 font-semibold truncate">
+                              Verified by: {existing.verifiedBy} ({existing.verifiedAt?.slice(0, 10)})
+                            </div>
+                          )}
+                          {existing.rejectionReason && (
+                            <div className="text-rose-700 font-semibold truncate">
+                              Reason: {existing.rejectionReason}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action Buttons strictly based on userRole RBAC */}
+                        <div className="mt-1 flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-200/60 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setDocPreviewTarget(existing)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-3xs font-bold cursor-pointer"
+                          >
+                            <Eye className="h-3 w-3" />
+                            <span>Preview</span>
+                          </button>
+
+                          <div className="flex items-center gap-1">
+                            {/* Approve / Reject buttons visible to Admin & Manager only */}
+                            {isPending && canApproveThisUser && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveDoc(existing)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-3xs font-bold cursor-pointer shadow-2xs"
+                                  title="Approve and verify document"
+                                >
+                                  <Check className="h-3 w-3" />
+                                  <span>Verify</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setDocRejectTarget(existing)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-3xs font-bold cursor-pointer shadow-2xs"
+                                  title="Reject document"
+                                >
+                                  <X className="h-3 w-3" />
+                                  <span>Reject</span>
+                                </button>
+                              </>
+                            )}
+
+                            {/* Upload / Update file button */}
+                            {canUploadForThisUser && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDocUploadType(existing.docType);
+                                  const sId = matchedUser?.staff_id || matchedUser?.username || matchedUser?.id;
+                                  const cleanType = existing.docType.split('(')[0].trim().replace(/\s+/g, '_');
+                                  setDocUploadFileName(`${sId}_${cleanType}.pdf`);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 text-slate-700 text-3xs font-bold cursor-pointer"
+                              >
+                                <Upload className="h-3 w-3 text-slate-500" />
+                                <span>Update File</span>
+                              </button>
+                            )}
+
+                            {/* Delete button: strictly Admin */}
+                            {canDeleteThisUser && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDoc(existing)}
+                                className="p-1 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded cursor-pointer"
+                                title="Delete document (Admin Only)"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // MISSING DOCUMENT ITEM
+                  return (
+                    <div
+                      key={reqType}
+                      className="p-3.5 rounded-xl border border-dashed border-rose-300 bg-rose-50/20 flex flex-col gap-2 relative overflow-hidden justify-between"
+                    >
+                      <div className="flex items-center justify-between gap-2 border-b border-rose-200/60 pb-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <AlertCircle className="h-4 w-4 text-rose-500 shrink-0" />
+                          <span className="text-xs font-bold text-slate-900 truncate">{reqType}</span>
+                        </div>
+
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-rose-100 text-rose-800 border border-rose-200 shrink-0 whitespace-nowrap">
+                          <span>🔴</span>
+                          <span>Missing Document</span>
+                        </span>
+                      </div>
+
+                      <p className="text-3xs text-rose-600 font-medium">
+                        Mandatory joining file required for onboarding compliance.
+                      </p>
+
+                      <div className="flex items-center justify-end pt-1 border-t border-rose-100">
+                        {canUploadForThisUser ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDocUploadType(reqType);
+                              const sId = matchedUser?.staff_id || matchedUser?.username || matchedUser?.id;
+                              const cleanType = reqType.split('(')[0].trim().replace(/\s+/g, '_');
+                              setDocUploadFileName(`${sId}_${cleanType}.pdf`);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-[#1E3A8A] hover:bg-[#152e6f] text-white text-3xs font-bold transition shadow-2xs cursor-pointer"
+                          >
+                            <Upload className="h-3 w-3" />
+                            <span>Upload Doc</span>
+                          </button>
+                        ) : (
+                          <span className="text-3xs text-slate-400 italic">
+                            Upload pending by Employee / Manager
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Upload Sub-Modal */}
+              {docUploadType && (
+                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+                  <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Upload className="h-4.5 w-4.5 text-[#1E3A8A]" />
+                        <h4 className="text-xs font-bold text-slate-900">Upload: {docUploadType}</h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDocUploadType(null)}
+                        className="p-1 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className={`p-2.5 rounded-lg border text-2xs ${
+                      userRole === 'admin' || userRole === 'manager'
+                        ? 'bg-purple-50 text-purple-900 border-purple-200 font-semibold'
+                        : 'bg-amber-50 text-amber-900 border-amber-200 font-semibold'
+                    }`}>
+                      {userRole === 'admin' || userRole === 'manager'
+                        ? '🟢 Direct Manager/Admin Upload: Will be marked as Approved automatically.'
+                        : '🟡 Staff Submission: Will be marked as PENDING_APPROVAL for Manager review.'}
+                    </div>
+
+                    <form onSubmit={handleConfirmUploadDoc} className="space-y-3 text-xs">
+                      <div>
+                        <label className="block text-3xs font-bold text-slate-700 uppercase mb-1">
+                          File Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={docUploadFileName}
+                          onChange={(e) => setDocUploadFileName(e.target.value)}
+                          className="w-full rounded-lg border border-slate-300 p-2 text-xs font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-3xs font-bold text-slate-700 uppercase mb-1">
+                          File Attachment (Automatic Client Compression)
+                        </label>
+                        <label className="relative border-2 border-dashed border-slate-300 hover:border-[#1E3A8A] rounded-xl p-3 text-center transition-colors cursor-pointer bg-slate-50 block group">
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,application/pdf"
+                            onChange={handleDocFileSelect}
+                            className="sr-only"
+                            disabled={isCompressingDoc}
+                          />
+                          <FileText className="h-5 w-5 text-slate-400 group-hover:text-[#1E3A8A] mx-auto mb-1 transition-colors" />
+                          <span className="text-2xs font-bold text-slate-700 block">
+                            {selectedDocFile ? selectedDocFile.name : 'Click to Select Document (Image or PDF)'}
+                          </span>
+                          <span className="text-3xs text-slate-400 block mt-0.5">
+                            Target ~300KB (1200px Max Dimension for Aadhaar/PAN)
+                          </span>
+                        </label>
+
+                        {/* Progress Indicator */}
+                        {isCompressingDoc && (
+                          <div className="mt-2 p-2 rounded-lg bg-blue-50 border border-blue-200 text-2xs text-blue-900 space-y-1">
+                            <div className="flex items-center justify-between font-bold">
+                              <span className="flex items-center gap-1">
+                                <RefreshCw className="h-3 w-3 animate-spin text-[#1E3A8A]" />
+                                <span>Compressing & Optimizing Document...</span>
+                              </span>
+                              <span>{docCompressionProgress}%</span>
+                            </div>
+                            <div className="w-full bg-blue-200 rounded-full h-1">
+                              <div
+                                className="bg-[#1E3A8A] h-1 rounded-full transition-all duration-300"
+                                style={{ width: `${docCompressionProgress}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Compression Result Badge */}
+                        {docCompressionResult && (
+                          <div className="mt-2 p-2 rounded-lg border text-2xs space-y-1 bg-emerald-50 text-emerald-900 border-emerald-200 font-mono">
+                            <div className="flex items-center justify-between font-bold">
+                              <span className="flex items-center gap-1 text-emerald-800">
+                                <CheckCircle className="h-3 w-3 text-emerald-600" />
+                                <span>Compressed Successfully</span>
+                              </span>
+                              {docCompressionResult.isCompressed ? (
+                                <span className="bg-emerald-600 text-white font-extrabold px-1.5 py-0.5 rounded text-3xs">
+                                  Saved {docCompressionResult.savedPercentage}%
+                                </span>
+                              ) : (
+                                <span className="text-3xs text-slate-500">PDF Ready</span>
+                              )}
+                            </div>
+                            <div className="text-3xs text-emerald-800 flex items-center justify-between">
+                              <span>Original: {docCompressionResult.originalFormatted}</span>
+                              <span>&rarr;</span>
+                              <span className="font-bold">Compressed: {docCompressionResult.compressedFormatted}</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-3xs font-bold text-slate-700 uppercase mb-1">
+                          Notes / ID Number (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={docUploadNotes}
+                          onChange={(e) => setDocUploadNotes(e.target.value)}
+                          placeholder="e.g. Card verified against original"
+                          className="w-full rounded-lg border border-slate-300 p-2 text-xs"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setDocUploadType(null)}
+                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="px-4 py-1.5 rounded-lg bg-[#1E3A8A] hover:bg-[#152e6f] text-white text-xs font-bold cursor-pointer"
+                        >
+                          Save to Vault
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* Reject Sub-Modal */}
+              {docRejectTarget && (
+                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+                  <div className="bg-white rounded-xl border border-slate-200 max-w-md w-full max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-2 text-rose-700">
+                        <X className="h-4.5 w-4.5" />
+                        <h4 className="text-xs font-bold">Reject Document</h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDocRejectTarget(null)}
+                        className="p-1 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleConfirmRejectDoc} className="space-y-3 text-xs">
+                      <div>
+                        <label className="block text-3xs font-bold text-slate-700 uppercase mb-1">
+                          Rejection Reason
+                        </label>
+                        <textarea
+                          rows={3}
+                          required
+                          value={docRejectReason}
+                          onChange={(e) => setDocRejectReason(e.target.value)}
+                          className="w-full rounded-lg border border-slate-300 p-2 text-xs"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setDocRejectTarget(null)}
+                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
+                        >
+                          Confirm Rejection
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {/* Preview Sub-Modal */}
+              {docPreviewTarget && (
+                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+                  <div className="bg-white rounded-xl border border-slate-200 max-w-md w-full max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-900">{docPreviewTarget.docType}</h4>
+                      <button
+                        type="button"
+                        onClick={() => setDocPreviewTarget(null)}
+                        className="p-1 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 rounded-lg text-xs space-y-1.5">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">File:</span>
+                        <span className="font-mono font-bold text-slate-800">{docPreviewTarget.fileName}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Size:</span>
+                        <div className="flex items-center gap-1 font-mono">
+                          {docPreviewTarget.originalFileSize && (
+                            <span className="line-through text-slate-400 text-3xs">
+                              {docPreviewTarget.originalFileSize}
+                            </span>
+                          )}
+                          <span className="font-semibold text-slate-800">{docPreviewTarget.fileSize || '300 KB'}</span>
+                          {docPreviewTarget.compressionRatio && (
+                            <span className="text-3xs font-bold text-emerald-700 bg-emerald-100 px-1 rounded">
+                              {docPreviewTarget.compressionRatio}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Status:</span>
+                        <span className="font-bold">
+                          {docPreviewTarget.status === 'APPROVED' ? '🟢 Verified' : docPreviewTarget.status === 'REJECTED' ? '🔴 Rejected' : '🟡 Pending'}
+                        </span>
+                      </div>
+                      {docPreviewTarget.verifiedBy && (
+                        <div className="text-2xs text-emerald-800">
+                          Verified by: {docPreviewTarget.verifiedBy}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex justify-end pt-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setDocPreviewTarget(null)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

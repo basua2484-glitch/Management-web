@@ -5,8 +5,8 @@ import type { AppUser, StaffUser, AttendanceRecord } from '../types';
 
 export type ShiftNameType = 'Morning' | 'Evening' | 'Night';
 export type ShiftFilterType = 'ALL' | 'Morning' | 'Evening' | 'Night';
-export type RoleGroupType = 'MANAGER' | 'SUPERVISOR' | 'STAFF';
-export type LivePunchStatus = 'PUNCHED_IN' | 'PUNCHED_OUT' | 'ABSENT' | 'PENDING';
+export type RoleGroupType = 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF';
+export type LivePunchStatus = 'NOT_PUNCHED_IN' | 'PUNCHED_IN' | 'PUNCHED_OUT' | 'ABSENT' | 'PENDING';
 
 export interface LiveDutyLog {
   id: string | number;
@@ -20,6 +20,8 @@ export interface LiveDutyLog {
   status: LivePunchStatus;
   punchIn: string | null;
   punchOut: string | null;
+  punchInTime?: string | null;
+  punchOutTime?: string | null;
   punchInTimestamp?: string | null;
   punchOutTimestamp?: string | null;
   totalWorkedHours: number;
@@ -28,6 +30,8 @@ export interface LiveDutyLog {
   department?: string;
   phone?: string;
   notes?: string;
+  siteId?: string;
+  siteName?: string;
 }
 
 /**
@@ -97,10 +101,11 @@ export function normalizeShift(rawShift?: string | null): ShiftNameType {
 }
 
 /**
- * Normalizes role to 'MANAGER' | 'SUPERVISOR' | 'STAFF'
+ * Normalizes role to 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF'
  */
 export function normalizeRole(rawRole?: string | null): RoleGroupType {
   const r = String(rawRole || '').trim().toUpperCase();
+  if (r.includes('ADMIN') || r === 'ADM') return 'ADMIN';
   if (r.includes('MANAGE') || r === 'MGR') return 'MANAGER';
   if (r.includes('SUPERVIS') || r === 'SUP') return 'SUPERVISOR';
   return 'STAFF';
@@ -113,7 +118,7 @@ export function calculateLivePunchTimer(
   punchInTimeStr: string | null | undefined,
   punchInTimestamp?: string | null
 ): string {
-  if (!punchInTimeStr && !punchInTimestamp) return '--';
+  if (!punchInTimeStr && !punchInTimestamp) return '0h 0m';
   try {
     const now = new Date();
     let startTime: Date | null = null;
@@ -136,7 +141,7 @@ export function calculateLivePunchTimer(
     }
 
     if (!startTime || isNaN(startTime.getTime())) {
-      return punchInTimeStr || '--';
+      return '0h 0m';
     }
 
     const diffMs = Math.max(0, now.getTime() - startTime.getTime());
@@ -145,7 +150,7 @@ export function calculateLivePunchTimer(
     const m = totalMinutes % 60;
     return `${h}h ${m.toString().padStart(2, '0')}m`;
   } catch {
-    return punchInTimeStr || '--';
+    return '0h 0m';
   }
 }
 
@@ -156,38 +161,94 @@ export function calculateLivePunchTimer(
  *      log.userId.startsWith(activeTenantPrefix) &&
  *      (selectedShift === 'ALL' || log.assignedShift === selectedShift)
  *    );
- * 2. Role-Based Grouping:
- *    const managerLogs = filteredLogs.filter(log => log.role === 'MANAGER');
- *    const supervisorLogs = filteredLogs.filter(log => log.role === 'SUPERVISOR');
- *    const staffLogs = filteredLogs.filter(log => log.role === 'STAFF');
+ * 2. Enforce Exclusive Role Filtering (No Duplication Across Sections):
+ *    // 1. Operations Managers
+ *    const managers = filteredLogs.filter(user => 
+ *      user.role === 'MANAGER' || user.role === 'MGR'
+ *    );
+ *    // 2. Ward & Floor Supervisors
+ *    const supervisors = filteredLogs.filter(user => 
+ *      user.role === 'SUPERVISOR' || user.role === 'SUP'
+ *    );
+ *    // 3. Housekeeping Staff (STRICT EXCLUSION of Supervisor/Admin/Manager)
+ *    const housekeepingStaff = filteredLogs.filter(user => 
+ *      user.role === 'STAFF' || 
+ *      (user.role !== 'SUPERVISOR' && user.role !== 'ADMIN' && user.role !== 'MANAGER' && user.id.includes('-STF-'))
+ *    );
+ *    // 4. Facility Administration & Oversight
+ *    const admins = filteredLogs.filter(user => 
+ *      user.role === 'ADMIN'
+ *    );
  */
 export function filterAndGroupDutyLogs(
   dutyLogs: LiveDutyLog[],
   activeTenantPrefix: string,
-  selectedShift: ShiftFilterType
+  selectedShift: ShiftFilterType,
+  siteFilter?: string
 ): {
   filteredLogs: LiveDutyLog[];
+  managers: LiveDutyLog[];
+  supervisors: LiveDutyLog[];
+  housekeepingStaff: LiveDutyLog[];
+  admins: LiveDutyLog[];
   managerLogs: LiveDutyLog[];
   supervisorLogs: LiveDutyLog[];
   staffLogs: LiveDutyLog[];
+  adminLogs: LiveDutyLog[];
 } {
   const cleanPrefix = (activeTenantPrefix || 'APEX').trim().toUpperCase();
 
   const filteredLogs = dutyLogs.filter((log) => {
-    const matchesTenant = log.userId.startsWith(cleanPrefix);
+    const id = String(log.userId || log.id || '').toUpperCase();
+    const matchesTenant = id.startsWith(cleanPrefix);
     const matchesShift = selectedShift === 'ALL' || log.assignedShift === selectedShift;
-    return matchesTenant && matchesShift;
+    const matchesSite = !siteFilter || siteFilter === 'ALL' || log.siteId === siteFilter;
+    return matchesTenant && matchesShift && matchesSite;
   });
 
-  const managerLogs = filteredLogs.filter((log) => log.role === 'MANAGER');
-  const supervisorLogs = filteredLogs.filter((log) => log.role === 'SUPERVISOR');
-  const staffLogs = filteredLogs.filter((log) => log.role === 'STAFF');
+  // 1. Operations Managers
+  const managers = filteredLogs.filter((user) => {
+    const r = (user.role || '').toUpperCase();
+    return r === 'MANAGER' || r === 'MGR';
+  });
+
+  // 2. Ward & Floor Supervisors
+  const supervisors = filteredLogs.filter((user) => {
+    const r = (user.role || '').toUpperCase();
+    return r === 'SUPERVISOR' || r === 'SUP';
+  });
+
+  // 3. Housekeeping Staff (STRICT EXCLUSION of Supervisor/Admin/Manager)
+  const housekeepingStaff = filteredLogs.filter((user) => {
+    const r = (user.role || '').toUpperCase();
+    const idStr = String(user.id || user.userId || '');
+    return (
+      r === 'STAFF' ||
+      (r !== 'SUPERVISOR' &&
+        r !== 'SUP' &&
+        r !== 'ADMIN' &&
+        r !== 'MANAGER' &&
+        r !== 'MGR' &&
+        idStr.includes('-STF-'))
+    );
+  });
+
+  // 4. Facility Administration & Oversight
+  const admins = filteredLogs.filter((user) => {
+    const r = (user.role || '').toUpperCase();
+    return r === 'ADMIN';
+  });
 
   return {
     filteredLogs,
-    managerLogs,
-    supervisorLogs,
-    staffLogs,
+    managers,
+    supervisors,
+    housekeepingStaff,
+    admins,
+    managerLogs: managers,
+    supervisorLogs: supervisors,
+    staffLogs: housekeepingStaff,
+    adminLogs: admins,
   };
 }
 
@@ -226,16 +287,29 @@ export function buildLiveDutyLogs(params: {
     if (cleanCode.startsWith(prefix)) {
       return cleanCode;
     }
-    const roleSlug = role === 'MANAGER' ? 'MGR' : role === 'SUPERVISOR' ? 'SUP' : 'STF';
+    const roleSlug =
+      role === 'ADMIN'
+        ? 'ADM'
+        : role === 'MANAGER'
+        ? 'MGR'
+        : role === 'SUPERVISOR'
+        ? 'SUP'
+        : 'STF';
     return `${prefix}-${roleSlug}-${String(numId).padStart(3, '0')}`;
   };
 
-  // 1. Process AppUsers (covers Managers, Supervisors, and registered Staff)
+  // 1. Process AppUsers (covers Managers, Supervisors, registered Staff, and Admins)
   users.forEach((u) => {
-    // Only process roles: manager, supervisor, staff (skip superadmin/root unless desired)
-    const roleUpper = normalizeRole(u.role);
+    let roleUpper = normalizeRole(u.role);
     const numId = Number(u.id) || 1;
     const rawCode = u.staff_id || u.username || `HK-${numId}`;
+    const rawCodeUpper = rawCode.toUpperCase();
+
+    // Explicit Admin check
+    if (roleUpper === 'STAFF' && (rawCodeUpper.includes('-ADM-') || rawCodeUpper.includes('ADMIN'))) {
+      roleUpper = 'ADMIN';
+    }
+
     const tenantUserId = formatTenantUserId(rawCode, roleUpper, numId);
 
     // Filter to active tenant
@@ -247,50 +321,74 @@ export function buildLiveDutyLogs(params: {
     if (processedCodes.has(tenantUserId)) return;
     processedCodes.add(tenantUserId);
 
-    // Find attendance record
-    const rec = userRecordMap.get(numId) || codeRecordMap.get(tenantUserId) || codeRecordMap.get(rawCode.toUpperCase());
+    // Check if a VALID punch-in record actually exists in the database/localStorage for the current user and shift date
+    const userPunchLog =
+      userRecordMap.get(numId) ||
+      codeRecordMap.get(tenantUserId) ||
+      codeRecordMap.get(rawCode.toUpperCase());
 
     // Determine shift
-    const assignedShift = normalizeShift(u.assigned_shift || u.shift || (rec?.shift_name as any));
+    const assignedShift = normalizeShift(u.assigned_shift || u.shift || (userPunchLog?.shift_name as any));
 
-    // Determine status & hours
-    let status: LivePunchStatus = 'PENDING';
-    const punchIn = rec?.punchIn || (u.dutyStatus === 'ON_DUTY' ? ((u as any).check_in_time || '07:30 AM') : null);
-    const punchOut = rec?.punchOut || null;
-    const punchInTimestamp = rec?.punchInTimestamp || rec?.punch_in_time || null;
-    const punchOutTimestamp = rec?.punchOutTimestamp || rec?.punch_out_time || null;
+    const rawPunchIn =
+      userPunchLog?.punchIn ||
+      (userPunchLog as any)?.punchInTime ||
+      (userPunchLog?.punch_in_time ? userPunchLog.punch_in_time.slice(11, 16) : null) ||
+      null;
 
-    let regularHours = rec?.regularHours || 0;
-    let otHours = rec?.otHours || 0;
+    const rawPunchOut =
+      userPunchLog?.punchOut ||
+      (userPunchLog as any)?.punchOutTime ||
+      (userPunchLog?.punch_out_time ? userPunchLog.punch_out_time.slice(11, 16) : null) ||
+      null;
 
-    if (punchIn && !punchOut) {
-      status = 'PUNCHED_IN';
-      if (regularHours === 0) regularHours = 8.0;
-    } else if (punchIn && punchOut) {
-      status = 'PUNCHED_OUT';
-    } else if (rec?.status === 'Duty Completed') {
-      status = 'PUNCHED_OUT';
-    } else if (u.dutyStatus === 'ON_DUTY' || u.isOnDuty) {
-      status = 'PUNCHED_IN';
-    } else {
-      // If no punch found on selectedDate:
-      // If date is today and shift has not started yet -> PENDING, otherwise ABSENT
-      const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
-      if (selectedDate === todayStr) {
-        const { startHour } = getShiftTimingDetails(assignedShift);
-        const currentHour = now.getHours();
-        if (assignedShift === 'Night') {
-          // Night starts at 23:00
-          status = currentHour >= 23 || currentHour < 7 ? 'ABSENT' : 'PENDING';
-        } else {
-          status = currentHour >= startHour ? 'ABSENT' : 'PENDING';
-        }
-      } else if (selectedDate < todayStr) {
-        status = 'ABSENT';
-      } else {
-        status = 'PENDING';
-      }
+    const hasValidPunchIn = Boolean(
+      rawPunchIn &&
+      rawPunchIn.trim() !== '' &&
+      rawPunchIn !== '--:--' &&
+      rawPunchIn !== '--'
+    );
+    const hasValidPunchOut = Boolean(
+      rawPunchOut &&
+      rawPunchOut.trim() !== '' &&
+      rawPunchOut !== '--:--' &&
+      rawPunchOut !== '--'
+    );
+
+    // Enforce Strict Punch Status Logic (Requirements 1 & 2):
+    // Do NOT default status to 'PUNCHED_IN' or inject fake '07:30 AM' timestamps.
+    let status: LivePunchStatus = 'NOT_PUNCHED_IN';
+    let punchIn: string | null = null;
+    let punchOut: string | null = null;
+    let punchInTimestamp: string | null = null;
+    let punchOutTimestamp: string | null = null;
+    let regularHours = 0;
+    let otHours = 0;
+
+    if (!userPunchLog || !hasValidPunchIn) {
+      status = 'NOT_PUNCHED_IN'; // Show Red/Yellow Badge
+      punchIn = null; // displays "--:--"
+      punchOut = null; // displays "--:--"
+      punchInTimestamp = null;
+      punchOutTimestamp = null;
+      regularHours = 0;
+      otHours = 0;
+    } else if (hasValidPunchIn && !hasValidPunchOut) {
+      status = 'PUNCHED_IN'; // Show Green Badge
+      punchIn = rawPunchIn;
+      punchOut = null; // displays "--:--"
+      punchInTimestamp = userPunchLog.punchInTimestamp || userPunchLog.punch_in_time || null;
+      punchOutTimestamp = null;
+      regularHours = userPunchLog.regularHours || 0;
+      otHours = userPunchLog.otHours || 0;
+    } else if (hasValidPunchIn && hasValidPunchOut) {
+      status = 'PUNCHED_OUT'; // Show Blue Badge
+      punchIn = rawPunchIn;
+      punchOut = rawPunchOut;
+      punchInTimestamp = userPunchLog.punchInTimestamp || userPunchLog.punch_in_time || null;
+      punchOutTimestamp = userPunchLog.punchOutTimestamp || userPunchLog.punch_out_time || null;
+      regularHours = userPunchLog.regularHours || 0;
+      otHours = userPunchLog.otHours || 0;
     }
 
     const totalWorkedHours = regularHours + otHours;
@@ -307,6 +405,8 @@ export function buildLiveDutyLogs(params: {
       status,
       punchIn,
       punchOut,
+      punchInTime: punchIn,
+      punchOutTime: punchOut,
       punchInTimestamp,
       punchOutTimestamp,
       totalWorkedHours,
@@ -314,55 +414,94 @@ export function buildLiveDutyLogs(params: {
       otHours,
       department: u.department || u.fixed_department,
       phone: u.mobile || u.phone,
-      notes: rec?.notes,
+      notes: userPunchLog?.notes,
+      siteId: u.siteId || u.site_id || 'SITE_APEX_MAIN',
+      siteName: u.siteName || u.site_name || 'Apex Main Hospital',
     });
   });
 
   // 2. Process any StaffUser not already in logs
   staff.forEach((s) => {
-    const roleUpper = normalizeRole(s.role);
+    let roleUpper = normalizeRole(s.role);
     const numId = Number(s.id) || 1;
     const rawCode = s.staffCode || `HK-${numId}`;
+    const rawCodeUpper = rawCode.toUpperCase();
+
+    // Explicit Admin check
+    if (roleUpper === 'STAFF' && (rawCodeUpper.includes('-ADM-') || rawCodeUpper.includes('ADMIN'))) {
+      roleUpper = 'ADMIN';
+    }
+
     const tenantUserId = formatTenantUserId(rawCode, roleUpper, numId);
 
     if (processedCodes.has(tenantUserId)) return;
     processedCodes.add(tenantUserId);
 
-    const rec = userRecordMap.get(numId) || codeRecordMap.get(tenantUserId) || codeRecordMap.get(rawCode.toUpperCase());
-    const assignedShift = normalizeShift(s.shift || (rec?.shift_name as any));
+    const userPunchLog =
+      userRecordMap.get(numId) ||
+      codeRecordMap.get(tenantUserId) ||
+      codeRecordMap.get(rawCode.toUpperCase());
 
-    let status: LivePunchStatus = 'PENDING';
-    const punchIn = rec?.punchIn || null;
-    const punchOut = rec?.punchOut || null;
-    const punchInTimestamp = rec?.punchInTimestamp || rec?.punch_in_time || null;
-    const punchOutTimestamp = rec?.punchOutTimestamp || rec?.punch_out_time || null;
+    const assignedShift = normalizeShift(s.shift || (userPunchLog?.shift_name as any));
 
-    let regularHours = rec?.regularHours || 0;
-    let otHours = rec?.otHours || 0;
+    const rawPunchIn =
+      userPunchLog?.punchIn ||
+      (userPunchLog as any)?.punchInTime ||
+      (userPunchLog?.punch_in_time ? userPunchLog.punch_in_time.slice(11, 16) : null) ||
+      null;
 
-    if (punchIn && !punchOut) {
+    const rawPunchOut =
+      userPunchLog?.punchOut ||
+      (userPunchLog as any)?.punchOutTime ||
+      (userPunchLog?.punch_out_time ? userPunchLog.punch_out_time.slice(11, 16) : null) ||
+      null;
+
+    const hasValidPunchIn = Boolean(
+      rawPunchIn &&
+      rawPunchIn.trim() !== '' &&
+      rawPunchIn !== '--:--' &&
+      rawPunchIn !== '--'
+    );
+    const hasValidPunchOut = Boolean(
+      rawPunchOut &&
+      rawPunchOut.trim() !== '' &&
+      rawPunchOut !== '--:--' &&
+      rawPunchOut !== '--'
+    );
+
+    // Enforce Strict Punch Status Logic (Requirements 1 & 2):
+    let status: LivePunchStatus = 'NOT_PUNCHED_IN';
+    let punchIn: string | null = null;
+    let punchOut: string | null = null;
+    let punchInTimestamp: string | null = null;
+    let punchOutTimestamp: string | null = null;
+    let regularHours = 0;
+    let otHours = 0;
+
+    if (!userPunchLog || !hasValidPunchIn) {
+      status = 'NOT_PUNCHED_IN';
+      punchIn = null;
+      punchOut = null;
+      punchInTimestamp = null;
+      punchOutTimestamp = null;
+      regularHours = 0;
+      otHours = 0;
+    } else if (hasValidPunchIn && !hasValidPunchOut) {
       status = 'PUNCHED_IN';
-      if (regularHours === 0) regularHours = 8.0;
-    } else if (punchIn && punchOut) {
+      punchIn = rawPunchIn;
+      punchOut = null;
+      punchInTimestamp = userPunchLog.punchInTimestamp || userPunchLog.punch_in_time || null;
+      punchOutTimestamp = null;
+      regularHours = userPunchLog.regularHours || 0;
+      otHours = userPunchLog.otHours || 0;
+    } else if (hasValidPunchIn && hasValidPunchOut) {
       status = 'PUNCHED_OUT';
-    } else if (rec?.status === 'Duty Completed') {
-      status = 'PUNCHED_OUT';
-    } else {
-      const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
-      if (selectedDate === todayStr) {
-        const { startHour } = getShiftTimingDetails(assignedShift);
-        const currentHour = now.getHours();
-        if (assignedShift === 'Night') {
-          status = currentHour >= 23 || currentHour < 7 ? 'ABSENT' : 'PENDING';
-        } else {
-          status = currentHour >= startHour ? 'ABSENT' : 'PENDING';
-        }
-      } else if (selectedDate < todayStr) {
-        status = 'ABSENT';
-      } else {
-        status = 'PENDING';
-      }
+      punchIn = rawPunchIn;
+      punchOut = rawPunchOut;
+      punchInTimestamp = userPunchLog.punchInTimestamp || userPunchLog.punch_in_time || null;
+      punchOutTimestamp = userPunchLog.punchOutTimestamp || userPunchLog.punch_out_time || null;
+      regularHours = userPunchLog.regularHours || 0;
+      otHours = userPunchLog.otHours || 0;
     }
 
     const totalWorkedHours = regularHours + otHours;
@@ -379,6 +518,8 @@ export function buildLiveDutyLogs(params: {
       status,
       punchIn,
       punchOut,
+      punchInTime: punchIn,
+      punchOutTime: punchOut,
       punchInTimestamp,
       punchOutTimestamp,
       totalWorkedHours,
@@ -386,7 +527,9 @@ export function buildLiveDutyLogs(params: {
       otHours,
       department: s.department,
       phone: s.phone || s.mobile,
-      notes: rec?.notes,
+      notes: userPunchLog?.notes,
+      siteId: s.siteId || (s as any).site_id || 'SITE_APEX_MAIN',
+      siteName: s.siteName || (s as any).site_name || 'Apex Main Hospital',
     });
   });
 

@@ -22,6 +22,7 @@ import { AuthLoadingScreen } from './AuthLoadingScreen';
 import { registerMasterAdmin, resetUserPasswordInDb } from '../services/firestoreService';
 import { getStoredUsers, saveStoredUsers } from '../data/mockHousekeepingData';
 import { createPasswordHash } from '../services/vaultService';
+import { LiveConnectBadge } from './LiveConnectBadge';
 import { auth } from '../firebase';
 import { sendPasswordResetEmail } from 'firebase/auth';
 
@@ -617,6 +618,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         id="auth-card"
         className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-8 backdrop-blur-md shadow-2xl"
       >
+        <div className="flex justify-center mb-4">
+          <LiveConnectBadge />
+        </div>
+
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-white tracking-wide">
             {isRegistering ? 'Register New Hospital / Company' : 'ApexCare Hospital Operations'}

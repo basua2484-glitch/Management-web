@@ -142,3 +142,38 @@ export function buildNewStaffUserPayload(params: {
     ...emptyAttendance,
   };
 }
+
+/**
+ * Fetch workforce directory accounts from /api/staff, dynamically synchronizing
+ * database users and ensuring Master Admin Dr. Basu is always present.
+ */
+export async function fetchStaffDirectory(siteId?: string): Promise<AppUser[]> {
+  try {
+    const url = siteId && siteId !== 'ALL' && siteId !== 'GLOBAL'
+      ? `/api/staff?site_id=${encodeURIComponent(siteId)}`
+      : '/api/staff';
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      const staffList = Array.isArray(data.staff) ? data.staff : Array.isArray(data.users) ? data.users : [];
+      if (staffList.length > 0) {
+        return staffList.map((u: any) => ({
+          ...u,
+          id: u.id || u.staff_id || 'BASU-ADM-001',
+          staff_id: u.staff_id || 'BASU-ADM-001',
+          full_name: u.full_name || u.name || 'Dr. Basu',
+          name: u.full_name || u.name || 'Dr. Basu',
+          role: u.role || 'admin',
+          status: u.status || 'ACTIVE',
+          is_approved: u.is_approved !== false,
+          siteId: u.siteId || u.site_id || 'SITE_APEX_MAIN',
+          tenant_id: u.tenant_id || u.tenantId || 'BASU',
+          company_prefix: u.company_prefix || 'BASU',
+        }));
+      }
+    }
+  } catch (err) {
+    console.warn('Note: API staff directory fetch fallback:', err);
+  }
+  return [];
+}

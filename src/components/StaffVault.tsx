@@ -14,11 +14,15 @@ import {
   UserPlus,
   RefreshCw,
   Trash2,
+  FileText,
+  FolderLock,
+  Building2,
 } from 'lucide-react';
 import type { AppUser, UserRole, UserStatus, DutyType } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
 import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
 import { getEmptyInitialAttendanceState, type InitialAttendanceState } from '../services/userService';
+import { EmployeeDocumentVault } from './EmployeeDocumentVault';
 
 export { getEmptyInitialAttendanceState, type InitialAttendanceState };
 
@@ -38,6 +42,7 @@ export interface StaffVaultProps {
   onDeleteUser?: (userId: number | string) => void;
   onOpenAddUser?: () => void;
   onOpenVaultModal?: () => void;
+  siteFilter?: string;
 }
 
 export const StaffVault: React.FC<StaffVaultProps> = ({
@@ -50,6 +55,7 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
   onDeleteUser,
   onOpenAddUser,
   onOpenVaultModal,
+  siteFilter,
 }) => {
   // 1. Retrieve active user session from state/localStorage (e.g., currentUser)
   const currentUser: { id?: string; [key: string]: any } | null = useMemo(() => {
@@ -94,33 +100,61 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
   // Retrieve raw allUsers list (from props or localStorage)
   const allUsers: Array<any> = useMemo(() => {
     const rawList = propUsers && propUsers.length > 0 ? propUsers : getStoredUsers();
-    // Ensure user.id starts with tenant prefix if it contains staff_id
-    return rawList.map((u: any) => {
-      const staffCode = String(u.staff_id || u.username || u.id || '');
-      const formattedId = staffCode.includes('-')
-        ? staffCode
-        : (u.staff_id || u.username || String(u.id || ''));
-      return {
-        ...u,
-        id: formattedId,
-        _originalId: u.id,
-      };
+    
+    // Deduplicate the incoming staff list array in frontend state using a Map filter based on unique record IDs
+    const dedupeMap = new Map<string, any>();
+    rawList.forEach((u: any, index: number) => {
+      const primaryKey = String(u.id || u.staff_id || u.username || `user-${index}`).trim().toUpperCase();
+      if (!dedupeMap.has(primaryKey)) {
+        const staffCode = String(u.staff_id || u.username || u.id || '');
+        const formattedId = staffCode.includes('-')
+          ? staffCode
+          : (u.staff_id || u.username || String(u.id || ''));
+        dedupeMap.set(primaryKey, {
+          ...u,
+          id: formattedId,
+          _originalId: u.id,
+        });
+      }
     });
+
+    return Array.from(dedupeMap.values());
   }, [propUsers]);
 
   // 2. Filter User List Before Rendering:
-  // Do NOT pass raw 'users' or 'localStorage' array directly to the table.
-  // Filter strictly by matching tenant prefix:
+  // Operations Manager: Automatically scoped to their assigned 'siteId' (user.tenantId === activeTenant && user.siteId === loggedInManager.siteId)
+  // Master Admin: Filter by specific site if selected in Top Bar Site Selector
+  const isManager = (currentUserRole || currentUser?.role || '').toLowerCase() === 'manager';
+  const managerSiteId = currentUser?.siteId || currentUser?.site_id;
+  const effectiveSiteFilter = isManager ? managerSiteId : (siteFilter && siteFilter !== 'ALL' ? siteFilter : null);
+
   const tenantScopedUsers = useMemo(() => {
-    if (!activeTenantPrefix) {
-      return allUsers;
-    }
-    return allUsers.filter(
-      (user) => user.id && user.id.startsWith(activeTenantPrefix)
-    );
-  }, [allUsers, activeTenantPrefix]);
+    return allUsers.filter((user) => {
+      const sid = String(user.staff_id || user.username || user.id || '').toUpperCase();
+      const isAdmin = user.role === 'admin' || sid === 'BASU-ADM-001';
+
+      // Must match tenant prefix
+      const userTenant = (user.tenant_id || user.tenantId || user.company_prefix || user.id || '').toUpperCase();
+      if (activeTenantPrefix && !isAdmin && !userTenant.startsWith(activeTenantPrefix) && !String(user.id).toUpperCase().startsWith(activeTenantPrefix)) {
+        return false;
+      }
+      // Site Isolation
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
+        const uSite = user.siteId || user.site_id || 'SITE_APEX_MAIN';
+        if (!isAdmin && uSite !== effectiveSiteFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [allUsers, activeTenantPrefix, effectiveSiteFilter]);
+
+  // Unified staffList representing the deduplicated, scoped workforce accounts
+  const staffList = tenantScopedUsers;
 
   // UI States
+  const [vaultActiveTab, setVaultActiveTab] = useState<'credentials' | 'documents'>('credentials');
+  const [selectedStaffDocId, setSelectedStaffDocId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | UserRole>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | UserStatus>('ALL');
@@ -227,7 +261,54 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
         </div>
       </div>
 
-      {/* 3. Summary Cards: 'TOTAL USERS' and 'ACTIVE ACCOUNTS' count ONLY 'tenantScopedUsers.length' */}
+      {/* Vault Tabs Navigation */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2" id="staff-vault-tabs-nav">
+        <button
+          type="button"
+          id="tab-staff-vault-credentials"
+          onClick={() => {
+            setVaultActiveTab('credentials');
+            setSelectedStaffDocId(null);
+          }}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            vaultActiveTab === 'credentials'
+              ? 'bg-[#1E3A8A] text-white shadow-2xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <KeyRound className="h-4 w-4 text-amber-400" />
+          <span>Staff Accounts & Password Vault</span>
+        </button>
+
+        <button
+          type="button"
+          id="tab-staff-vault-documents"
+          onClick={() => setVaultActiveTab('documents')}
+          className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            vaultActiveTab === 'documents'
+              ? 'bg-[#1E3A8A] text-white shadow-2xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <FolderLock className="h-4 w-4 text-emerald-400" />
+          <span>Employee Document Vault</span>
+          <span className="px-1.5 py-0.2 rounded-full text-3xs font-extrabold bg-emerald-500 text-white">
+            RBAC
+          </span>
+        </button>
+      </div>
+
+      {vaultActiveTab === 'documents' ? (
+        <EmployeeDocumentVault
+          users={tenantScopedUsers}
+          currentUser={currentUser}
+          currentUserRole={currentUserRole}
+          activeTenantPrefix={activeTenantPrefix}
+          selectedStaffId={selectedStaffDocId}
+        />
+      ) : (
+        <>
+          {/* 3. Summary Cards: 'TOTAL USERS' and 'ACTIVE ACCOUNTS' count ONLY 'tenantScopedUsers.length' */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" id="staff-vault-summary-cards">
         <div
           className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs border-l-4 border-l-[#1E3A8A]"
@@ -364,7 +445,7 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
                 </tr>
               ) : (
                 /* 3. Map over 'tenantScopedUsers' (via displayedUsers) in the table rows */
-                displayedUsers.map((user) => {
+                displayedUsers.map((user, index) => {
                   const uidStr = String(user.id || user.staff_id);
                   const isRevealed = !!revealedPasswords[uidStr];
                   const vaultResult = decryptVaultPassword(user as any, currentUserRole);
@@ -373,13 +454,19 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
 
                   return (
                     <tr
-                      key={uidStr}
+                      key={user.id || `${user.staff_id}-${index}`}
                       className="hover:bg-slate-50/70 transition-colors"
-                      id={`staff-vault-row-${uidStr}`}
+                      id={`staff-vault-row-${user.id || user.staff_id || index}`}
                     >
-                      {/* Staff ID */}
-                      <td className="py-3 px-3.5 font-bold font-mono text-slate-900">
-                        {user.staff_id || user.username || user.id}
+                      {/* Staff ID & Site Badge (Requirement 4) */}
+                      <td className="py-3 px-3.5 font-mono">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-bold text-slate-900">{user.staff_id || user.username || user.id}</span>
+                          <span className="inline-flex items-center gap-1 text-3xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit">
+                            <Building2 className="h-2.5 w-2.5 text-[#1E3A8A] shrink-0" />
+                            <span>{user.staff_id || user.username || user.id} | {user.siteName || user.site_name || 'Apex Main Hospital'}</span>
+                          </span>
+                        </div>
                       </td>
 
                       {/* Personnel Name */}
@@ -481,6 +568,19 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
 
                       {/* Actions */}
                       <td className="py-3 px-3.5 text-right space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedStaffDocId(String(user.staff_id || user.username || user.id));
+                            setVaultActiveTab('documents');
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-sm bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] text-2xs font-bold cursor-pointer transition-colors"
+                          title="View Employee Onboarding Document Vault"
+                        >
+                          <FileText className="h-3 w-3" />
+                          <span>Docs</span>
+                        </button>
+
                         {onUpdateUser && (
                           <button
                             type="button"
@@ -519,7 +619,17 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
             </tbody>
           </table>
         </div>
+
+        {/* Table Footer */}
+        <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 gap-2">
+          <span>Showing <strong>{displayedUsers.length}</strong> of <strong>{staffList.length}</strong> staff accounts</span>
+          <span className="text-2xs text-slate-400">
+            Internal Vault • Encrypted password store
+          </span>
+        </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

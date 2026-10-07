@@ -59,6 +59,7 @@ interface LiveAttendanceViewProps {
   allUsers?: AppUser[];
   dutyLogs?: LiveDutyLog[];
   onRefresh?: () => void;
+  siteFilter?: string;
 }
 
 export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
@@ -80,6 +81,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   allUsers,
   dutyLogs: propDutyLogs,
   onRefresh,
+  siteFilter,
 }) => {
   const roleUpper = (currentUserRole || '').toUpperCase();
   const isAdmin = roleUpper === 'ADMIN';
@@ -156,25 +158,62 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   // Filter logs strictly by logged-in company tenant AND selected shift:
   const filteredLogs = useMemo(() => {
     return dutyLogs.filter(
-      (log) =>
-        log.userId.startsWith(activeTenantPrefix) &&
-        (selectedShift === 'ALL' || log.assignedShift === selectedShift)
+      (log) => {
+        const id = String(log.userId || log.id || '').toUpperCase();
+        const matchesTenant = id.startsWith(activeTenantPrefix);
+        const matchesShift = selectedShift === 'ALL' || log.assignedShift === selectedShift;
+        return matchesTenant && matchesShift;
+      }
     );
   }, [dutyLogs, activeTenantPrefix, selectedShift]);
 
-  // 2. Role-Based Grouping:
-  // Group the filtered live duty logs by user roles:
-  const managerLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'MANAGER');
+  // 2. Enforce Exclusive Role Filtering (No Duplication Across Sections):
+  // Categorize users STRICTLY based on their primary 'user.role' property first.
+
+  // 1. Operations Managers
+  const managers = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'MANAGER' || r === 'MGR';
+    });
   }, [filteredLogs]);
 
-  const supervisorLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'SUPERVISOR');
+  // 2. Ward & Floor Supervisors
+  const supervisors = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'SUPERVISOR' || r === 'SUP';
+    });
   }, [filteredLogs]);
 
-  const staffLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'STAFF');
+  // 3. Housekeeping Staff (STRICT EXCLUSION of Supervisor/Admin/Manager)
+  const housekeepingStaff = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      const idStr = String(user.id || (user as any).userId || '');
+      return (
+        r === 'STAFF' ||
+        (r !== 'SUPERVISOR' &&
+          r !== 'SUP' &&
+          r !== 'ADMIN' &&
+          r !== 'MANAGER' &&
+          r !== 'MGR' &&
+          idStr.includes('-STF-'))
+      );
+    });
   }, [filteredLogs]);
+
+  // 4. Facility Administration & Oversight
+  const admins = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'ADMIN';
+    });
+  }, [filteredLogs]);
+
+  const managerLogs = managers;
+  const supervisorLogs = supervisors;
+  const staffLogs = housekeepingStaff;
 
   // Map each active staff member to their record for the selected date
   const dateRecordsMap = new Map<number, AttendanceRecord>();
@@ -184,16 +223,36 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       dateRecordsMap.set(r.userId, r);
     });
 
-  // Calculate live metrics for summary cards
-  const totalStaffCount = staff.filter((s) => s.active).length;
-  const leaveMetrics = getLeaveMetricsForDate(selectedDate);
+  // Calculate live metrics for summary cards (Exclude Admins from floor staff counts and isolate by site)
+  const totalStaffCount = staff.filter(
+    (s) => {
+      if (!s.active || s.role?.toLowerCase() === 'admin' || String(s.staffCode || '').toUpperCase().includes('-ADM-')) {
+        return false;
+      }
+      if (siteFilter && siteFilter !== 'ALL') {
+        const sSite = s.siteId || (s as any).site_id;
+        if (sSite && sSite !== siteFilter) return false;
+      }
+      return true;
+    }
+  ).length;
+  const leaveMetrics = getLeaveMetricsForDate(selectedDate, siteFilter);
 
   let presentTodayCount = 0;
   let otActiveCount = 0;
   let absentCount = 0;
 
   const staffAttendanceList = staff
-    .filter((s) => s.active)
+    .filter((s) => {
+      if (!s.active || s.role?.toLowerCase() === 'admin' || String(s.staffCode || '').toUpperCase().includes('-ADM-')) {
+        return false;
+      }
+      if (siteFilter && siteFilter !== 'ALL') {
+        const sSite = s.siteId || (s as any).site_id;
+        if (sSite && sSite !== siteFilter) return false;
+      }
+      return true;
+    })
     .map((user) => {
       const rec = dateRecordsMap.get(user.id);
       const isPresent = Boolean(rec?.punchIn);
@@ -223,6 +282,8 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
         userId: user.id,
         staffName: user.name,
         staffCode: user.staffCode,
+        siteId: user.siteId || (user as any).site_id,
+        siteName: user.siteName || (user as any).site_name || 'Apex Main Hospital',
         assignment,
         punchIn,
         punchOut,
@@ -282,6 +343,16 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Online Live Stream Indicator */}
+          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold shadow-2xs">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
+            </span>
+            <Radio className="h-3.5 w-3.5 text-emerald-700" />
+            <span>Online Live Stream</span>
+          </div>
+
           {isAdminOrManager && onOpenPendingApprovalModal && (
             <button
               type="button"
@@ -571,6 +642,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
               onRefresh={onRefresh}
               isSupervisor={isSupervisor}
               canPerformAction={canPerformAction}
+              siteFilter={siteFilter}
             />
           </div>
         ) : (
@@ -619,14 +691,20 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
                     className="hover:bg-blue-50/60 transition-colors cursor-pointer group"
                     title="Click to view complete employee profile, duty details, active punch status, OT and emergency exit logs"
                   >
-                    {/* Staff Name & ID */}
+                    {/* Staff Name, ID & Site Badge (Requirement 4) */}
                     <td className="px-6 py-3.5 font-bold text-slate-900">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-semibold text-[#1E3A8A] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 group-hover:bg-blue-100 transition-colors">
-                          {item.staffCode}
-                        </span>
-                        <span className="group-hover:text-[#1E3A8A] group-hover:underline underline-offset-2 transition-colors">
-                          {item.staffName}
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-semibold text-[#1E3A8A] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 group-hover:bg-blue-100 transition-colors">
+                            {item.staffCode}
+                          </span>
+                          <span className="group-hover:text-[#1E3A8A] group-hover:underline underline-offset-2 transition-colors">
+                            {item.staffName}
+                          </span>
+                        </div>
+                        <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit">
+                          <Building className="h-2.5 w-2.5 text-[#1E3A8A] shrink-0" />
+                          <span>{item.staffCode} | {item.siteName || 'Apex Main Hospital'}</span>
                         </span>
                       </div>
                     </td>

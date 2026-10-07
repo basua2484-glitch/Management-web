@@ -47,6 +47,7 @@ interface RoleWiseLiveDashboardProps {
   onRefresh?: () => void;
   isSupervisor?: boolean;
   canPerformAction?: boolean;
+  siteFilter?: string;
 }
 
 export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
@@ -64,6 +65,7 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
   onRefresh,
   isSupervisor = false,
   canPerformAction = true,
+  siteFilter,
 }) => {
   // 1. Dynamic Shift & Role Filtering Logic:
   // Default selectedShift filter automatically based on current system time (Requirement 4):
@@ -137,37 +139,70 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
   }, [propDutyLogs, users, staff, records, selectedDate, activeTenantPrefix]);
 
   // 1. Dynamic Shift & Role Filtering Logic:
-  // Filter logs strictly by logged-in company tenant AND selected shift:
-  // const filteredLogs = dutyLogs.filter(log => 
-  //   log.userId.startsWith(activeTenantPrefix) &&
-  //   (selectedShift === 'ALL' || log.assignedShift === selectedShift)
-  // );
+  // Filter logs strictly by logged-in company tenant, site scope, AND selected shift:
   const filteredLogs = useMemo(() => {
     return dutyLogs.filter(
       (log) =>
-        log.userId.startsWith(activeTenantPrefix) &&
-        (selectedShift === 'ALL' || log.assignedShift === selectedShift)
+        String(log.userId || log.id || '').toUpperCase().startsWith(activeTenantPrefix) &&
+        (selectedShift === 'ALL' || log.assignedShift === selectedShift) &&
+        (!siteFilter || siteFilter === 'ALL' || log.siteId === siteFilter)
     );
-  }, [dutyLogs, activeTenantPrefix, selectedShift]);
+  }, [dutyLogs, activeTenantPrefix, selectedShift, siteFilter]);
 
-  // 2. Role-Based Grouping:
-  // Group the filtered live duty logs by user roles:
-  // const managerLogs = filteredLogs.filter(log => log.role === 'MANAGER');
-  // const supervisorLogs = filteredLogs.filter(log => log.role === 'SUPERVISOR');
-  // const staffLogs = filteredLogs.filter(log => log.role === 'STAFF');
-  const managerLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'MANAGER');
+  // 2. Enforce Exclusive Role Filtering (No Duplication Across Sections):
+  // Categorize users STRICTLY based on their primary 'user.role' property first.
+
+  // 1. Operations Managers
+  const managers = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'MANAGER' || r === 'MGR';
+    });
   }, [filteredLogs]);
 
-  const supervisorLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'SUPERVISOR');
+  // 2. Ward & Floor Supervisors
+  const supervisors = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'SUPERVISOR' || r === 'SUP';
+    });
   }, [filteredLogs]);
 
-  const staffLogs = useMemo(() => {
-    return filteredLogs.filter((log) => log.role === 'STAFF');
+  // 3. Housekeeping Staff (STRICT EXCLUSION of Supervisor/Admin/Manager)
+  const housekeepingStaff = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      const idStr = String(user.id || (user as any).userId || '');
+      return (
+        r === 'STAFF' ||
+        (r !== 'SUPERVISOR' &&
+          r !== 'SUP' &&
+          r !== 'ADMIN' &&
+          r !== 'MANAGER' &&
+          r !== 'MGR' &&
+          idStr.includes('-STF-'))
+      );
+    });
   }, [filteredLogs]);
 
-  // Status badge renderer for Requirement 3
+  // 4. Facility Administration & Oversight
+  const admins = useMemo(() => {
+    return filteredLogs.filter((user) => {
+      const r = (user.role || '').toUpperCase();
+      return r === 'ADMIN';
+    });
+  }, [filteredLogs]);
+
+  // Explicit aliases for template compatibility
+  const managerLogs = managers;
+  const supervisorLogs = supervisors;
+  const staffLogs = housekeepingStaff;
+  const adminLogs = admins;
+
+  // Status badge renderer for Requirement 3:
+  // - Status "NOT_PUNCHED_IN" -> Display Badge: 🟡 OFF-DUTY / NOT PUNCHED IN
+  // - Status "PUNCHED_IN" -> Display Badge: 🟢 PUNCHED IN (Active)
+  // - Status "PUNCHED_OUT" -> Display Badge: 🔵 SHIFT COMPLETED
   const renderStatusBadge = (log: LiveDutyLog) => {
     // Current live timer calculated from punch-in timestamp or punch-in time string
     const liveTimer = calculateLivePunchTimer(log.punchIn, log.punchInTimestamp);
@@ -176,13 +211,13 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
       return (
         <span
           className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs"
-          title={`Punched in at ${log.punchIn || '--'}. Live duration: ${liveTimer}`}
+          title={`Punched in at ${log.punchIn || '--:--'}. Live duration: ${liveTimer}`}
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
           </span>
-          <span className="font-extrabold">PUNCHED IN</span>
+          <span className="font-extrabold">🟢 PUNCHED IN (Active)</span>
           <span className="text-emerald-950 font-mono">
             {log.punchIn ? `• ${log.punchIn}` : ''}
           </span>
@@ -197,13 +232,20 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
       return (
         <span
           className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-300 shadow-2xs"
-          title={`Punched out at ${log.punchOut || '--'}. Total worked hours: ${log.totalWorkedHours.toFixed(1)} hrs`}
+          title={`Shift completed. Total worked hours: ${log.totalWorkedHours.toFixed(1)} hrs`}
         >
           <CheckCircle2 className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-          <span className="font-extrabold">PUNCHED OUT</span>
-          <span className="text-blue-900 font-mono">
-            • {log.totalWorkedHours.toFixed(1)} hrs worked
-          </span>
+          <span className="font-extrabold">🔵 SHIFT COMPLETED</span>
+          {log.punchOut && (
+            <span className="text-blue-900 font-mono">
+              • {log.punchOut}
+            </span>
+          )}
+          {log.totalWorkedHours > 0 && (
+            <span className="text-blue-900 font-mono">
+              ({log.totalWorkedHours.toFixed(1)}h)
+            </span>
+          )}
         </span>
       );
     }
@@ -212,22 +254,22 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
       return (
         <span
           className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300 shadow-2xs"
-          title="No punch recorded for scheduled shift"
+          title="No punch recorded for scheduled shift date"
         >
           <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
-          <span className="font-extrabold">ABSENT</span>
+          <span className="font-extrabold">🔴 ABSENT / NOT PUNCHED IN</span>
         </span>
       );
     }
 
-    // PENDING
+    // Default / NOT_PUNCHED_IN / PENDING (Red/Yellow Badge)
     return (
       <span
-        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs"
-        title="Shift scheduled • Pending Punch-In"
+        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs"
+        title="No punch record for this shift date • Off Duty / Not Punched In"
       >
-        <Clock className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-        <span className="font-extrabold">PENDING PUNCH</span>
+        <span className="h-2 w-2 rounded-full bg-amber-500 shrink-0"></span>
+        <span className="font-extrabold">🟡 OFF-DUTY / NOT PUNCHED IN</span>
       </span>
     );
   };
@@ -269,8 +311,9 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
   ) => {
     const punchedInCount = roleLogs.filter((l) => l.status === 'PUNCHED_IN').length;
     const punchedOutCount = roleLogs.filter((l) => l.status === 'PUNCHED_OUT').length;
-    const pendingCount = roleLogs.filter((l) => l.status === 'PENDING').length;
-    const absentCount = roleLogs.filter((l) => l.status === 'ABSENT').length;
+    const unpunchedCount = roleLogs.filter(
+      (l) => l.status === 'NOT_PUNCHED_IN' || l.status === 'PENDING' || l.status === 'ABSENT'
+    ).length;
 
     return (
       <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col">
@@ -297,22 +340,16 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
           <div className="flex flex-wrap items-center gap-2 text-2xs font-semibold">
             <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-              {punchedInCount} Active In
+              {punchedInCount} Punched In
             </span>
             <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-200">
               <span className="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
-              {punchedOutCount} Completed
+              {punchedOutCount} Shift Completed
             </span>
-            {pendingCount > 0 && (
-              <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-2 py-0.5 rounded border border-amber-200">
+            {unpunchedCount > 0 && (
+              <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-800 px-2 py-0.5 rounded border border-amber-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
-                {pendingCount} Pending
-              </span>
-            )}
-            {absentCount > 0 && (
-              <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 px-2 py-0.5 rounded border border-rose-200">
-                <span className="h-1.5 w-1.5 rounded-full bg-rose-500"></span>
-                {absentCount} Absent
+                {unpunchedCount} Off-Duty / Not Punched
               </span>
             )}
           </div>
@@ -369,6 +406,14 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
                       </div>
                       <span className="shrink-0 text-3xs uppercase tracking-wider font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
                         {log.role}
+                      </span>
+                    </div>
+
+                    {/* Site Badge (Requirement 4): e.g. "BASU-MGR-001 | Apex Main Hospital" */}
+                    <div className="mt-1">
+                      <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-slate-700 bg-slate-100/90 px-2 py-0.5 rounded border border-slate-200">
+                        <Building className="h-2.5 w-2.5 text-[#1E3A8A] shrink-0" />
+                        <span>{log.userId} | {log.siteName || 'Apex Main Hospital'}</span>
                       </span>
                     </div>
 
@@ -589,12 +634,12 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
         </div>
       </div>
 
-      {/* 3 Separate Role-Based Sections (Requirement 3) */}
+      {/* Role-Based Sections (Requirement 3 & 6) */}
       <div className="space-y-6">
         {/* SECTION 1: MANAGERS */}
         {renderRoleSection(
           'Operations Managers',
-          managerLogs,
+          managers,
           <Shield className="h-4 w-4" />,
           'bg-[#1E3A8A]',
           'No Managers found for this shift'
@@ -603,20 +648,30 @@ export const RoleWiseLiveDashboard: React.FC<RoleWiseLiveDashboardProps> = ({
         {/* SECTION 2: SUPERVISORS */}
         {renderRoleSection(
           'Ward & Floor Supervisors',
-          supervisorLogs,
+          supervisors,
           <Users className="h-4 w-4" />,
           'bg-indigo-600',
           'No Supervisors assigned for this shift'
         )}
 
-        {/* SECTION 3: STAFF */}
+        {/* SECTION 3: STAFF (Excluded Admins - badge and count only reflects actual STAFF users) */}
         {renderRoleSection(
           'Housekeeping Staff',
-          staffLogs,
+          housekeepingStaff,
           <Sparkles className="h-4 w-4" />,
           'bg-emerald-600',
           'No Housekeeping Staff assigned for this shift'
         )}
+
+        {/* SECTION 4: FACILITY ADMINISTRATION & LEADERSHIP (Non-operational floor staff) */}
+        {admins.length > 0 &&
+          renderRoleSection(
+            'Facility Administration & Oversight',
+            admins,
+            <Building className="h-4 w-4" />,
+            'bg-slate-700',
+            'No Administration records for this shift'
+          )}
       </div>
     </div>
   );

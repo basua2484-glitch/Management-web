@@ -18,7 +18,7 @@ body {
   padding: 0;
 }
 
-/* Responsive Sidebar Overlay Setup */
+/* Responsive Sidebar Overlay Setup - Unified Overlay Drawer across Desktop & Mobile */
 .sidebar-drawer {
   width: var(--sidebar-width);
   height: 100vh;
@@ -27,29 +27,21 @@ body {
   left: 0;
   z-index: 1050;
   background-color: var(--navy-bg) !important;
-  transition: transform 0.3s ease-in-out;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease-in-out;
+  transform: translateX(-100%);
+  box-shadow: none;
 }
 
-/* Mobile view: Hidden by default to free 100% screen space */
-@media (max-width: 768px) {
-  .sidebar-drawer {
-    transform: translateX(-100%);
-  }
-  .sidebar-drawer.show {
-    transform: translateX(0);
-  }
-  .main-wrapper {
-    margin-left: 0 !important;
-    width: 100% !important;
-  }
+.sidebar-drawer.show {
+  transform: translateX(0) !important;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35) !important;
 }
 
-/* Desktop view: Fixed left column */
-@media (min-width: 769px) {
-  .main-wrapper {
-    margin-left: var(--sidebar-width);
-    width: calc(100% - var(--sidebar-width));
-  }
+/* Full Width Main Content Container across ALL screen sizes (Desktop and Mobile) */
+.main-wrapper {
+  margin-left: 0 !important;
+  width: 100% !important;
+  min-height: 100vh;
 }
 
 /* UI Components */

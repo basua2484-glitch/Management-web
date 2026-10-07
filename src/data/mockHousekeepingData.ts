@@ -18,14 +18,124 @@ import type {
   HospitalSite,
   ShiftName,
   EmergencyRecallAlert,
+  EmployeeDocument,
 } from '../types';
 import { createPasswordHash } from '../services/vaultService';
+import { isMockDocument } from '../services/documentVaultService';
 
 export const HOSPITAL_SITES: HospitalSite[] = [
-  { id: 'site-main', name: 'ApexCare Central Hospital', code: 'MAIN', city: 'Metro Central', address: 'Plot 42, Medical Enclave' },
-  { id: 'site-east', name: 'ApexCare East Wing & Trauma', code: 'EAST', city: 'East Zone', address: 'Tower B, East Campus' },
-  { id: 'site-north', name: 'ApexCare North Super-Speciality', code: 'NORTH', city: 'North Enclave', address: 'Sector 9, North Hub' },
+  { id: 'SITE_APEX_MAIN', siteId: 'SITE_APEX_MAIN', name: 'Apex Main Hospital', siteName: 'Apex Main Hospital', code: 'APEX-MAIN', city: 'Metro Central', address: 'Plot 42, Medical Enclave', industry_type: 'HEALTHCARE' },
+  { id: 'SITE_CARE_SOUTH', siteId: 'SITE_CARE_SOUTH', name: 'Care South Campus', siteName: 'Care South Campus', code: 'CARE-SOUTH', city: 'South District', address: 'Sector 15, Healthcare Blvd', industry_type: 'HEALTHCARE' },
+  { id: 'SITE_A', siteId: 'SITE_A', name: 'Site A - East Wing & Trauma', siteName: 'Site A - East Wing & Trauma', code: 'SITE-A', city: 'East Zone', address: 'Tower B, East Campus', industry_type: 'HEALTHCARE' },
+  { id: 'SITE_B', siteId: 'SITE_B', name: 'Site B - North Super-Speciality', siteName: 'Site B - North Super-Speciality', code: 'SITE-B', city: 'North Enclave', address: 'Sector 9, North Hub', industry_type: 'HEALTHCARE' },
 ];
+
+export const SITE_ALIAS_MAP: Record<string, string> = {
+  'site-main': 'SITE_APEX_MAIN',
+  'site-east': 'SITE_A',
+  'site-north': 'SITE_B',
+};
+
+/**
+ * Tenant Configurations with attached Site IDs:
+ * e.g. { tenantId: 'BASU', sites: ['SITE_A', 'SITE_B'] }
+ *      { tenantId: 'APEX', sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH'] }
+ */
+export const DEFAULT_TENANT_CONFIGS: Record<string, { tenantId: string; companyName: string; sites: string[] }> = {
+  APEX: {
+    tenantId: 'APEX',
+    companyName: 'ApexCare Hospital',
+    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH', 'SITE_A'],
+  },
+  BASU: {
+    tenantId: 'BASU',
+    companyName: 'Basu Healthcare',
+    sites: ['SITE_A', 'SITE_B'],
+  },
+  GLOBAL: {
+    tenantId: 'GLOBAL',
+    companyName: 'ApexCare Global',
+    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH'],
+  },
+};
+
+export function getTenantSites(tenantId?: string | null): HospitalSite[] {
+  const tid = (tenantId || 'APEX').trim().toUpperCase();
+  const storedTenantsStr = typeof localStorage !== 'undefined' ? localStorage.getItem('hk_tenants_v1') : null;
+  const siteMap = new Map<string, HospitalSite>();
+
+  if (storedTenantsStr) {
+    try {
+      const tenants: any[] = JSON.parse(storedTenantsStr);
+      const match = tenants.find(t => (t.tenant_id || t.tenantId || '').toUpperCase() === tid);
+      if (match && Array.isArray(match.sites) && match.sites.length > 0) {
+        match.sites.forEach((s: any) => {
+          const rawId = typeof s === 'string' ? s : s.id || s.siteId;
+          const normId = normalizeSiteId(rawId);
+          const found = HOSPITAL_SITES.find(hs => hs.id === normId || hs.siteId === normId || hs.id === rawId || hs.siteId === rawId);
+          if (found) {
+            const canonicalKey = found.siteId || found.id;
+            if (!siteMap.has(canonicalKey)) {
+              siteMap.set(canonicalKey, { ...found, id: canonicalKey, siteId: canonicalKey });
+            }
+          } else if (typeof s === 'object') {
+            const customId = s.siteId || s.id || 'SITE_CUSTOM';
+            if (!siteMap.has(customId)) {
+              siteMap.set(customId, {
+                id: customId,
+                siteId: customId,
+                name: s.name || s.siteName || 'Hospital Unit',
+                siteName: s.siteName || s.name || 'Hospital Unit',
+                code: s.code || 'UNIT',
+                city: s.city || 'Metro Area',
+              });
+            }
+          } else if (rawId) {
+            if (!siteMap.has(normId)) {
+              siteMap.set(normId, {
+                id: normId,
+                siteId: normId,
+                name: normId.replace(/^SITE_/, '').replace(/_/g, ' '),
+                siteName: normId.replace(/^SITE_/, '').replace(/_/g, ' '),
+                code: normId.replace(/^SITE_/, '').slice(0, 4),
+                city: 'Central Campus',
+              });
+            }
+          }
+        });
+        if (siteMap.size > 0) return Array.from(siteMap.values());
+      }
+    } catch {}
+  }
+
+  const defaultCfg = DEFAULT_TENANT_CONFIGS[tid] || DEFAULT_TENANT_CONFIGS.APEX;
+  const allowedSites = new Set(defaultCfg.sites.map(s => normalizeSiteId(s)));
+
+  HOSPITAL_SITES.forEach((hs) => {
+    const canonicalKey = hs.siteId || hs.id;
+    if (allowedSites.has(canonicalKey) || allowedSites.has(hs.id)) {
+      if (!siteMap.has(canonicalKey)) {
+        siteMap.set(canonicalKey, { ...hs, id: canonicalKey, siteId: canonicalKey });
+      }
+    }
+  });
+
+  return Array.from(siteMap.values());
+}
+
+export function getSiteNameById(siteId?: string | null): string {
+  const normId = normalizeSiteId(siteId);
+  const found = HOSPITAL_SITES.find(s => s.id === normId || s.siteId === normId || s.id === siteId || s.siteId === siteId);
+  if (found) return found.name || found.siteName || 'Apex Main Hospital';
+  return (siteId || 'SITE_APEX_MAIN').replace(/^SITE_/, '').replace(/_/g, ' ');
+}
+
+export function normalizeSiteId(siteId?: string | null): string {
+  if (!siteId) return 'SITE_APEX_MAIN';
+  const trimmed = siteId.trim();
+  if (SITE_ALIAS_MAP[trimmed]) return SITE_ALIAS_MAP[trimmed];
+  return trimmed;
+}
 
 /**
  * Returns today's ISO date string (YYYY-MM-DD) based on local system clock
@@ -67,8 +177,9 @@ export function normalizeUser(u: any): AppUser {
   const temp_department = u.temp_department ?? null;
 
   // Site normalization
-  const siteId = u.siteId || u.site_id || 'site-main';
-  const siteName = u.siteName || u.site_name || 'ApexCare Central Memorial';
+  const rawSiteId = u.siteId || u.site_id || 'SITE_APEX_MAIN';
+  const siteId = rawSiteId === 'site-main' ? 'SITE_APEX_MAIN' : rawSiteId;
+  const siteName = u.siteName || u.site_name || getSiteNameById(siteId);
 
   // 1. Ensure weeklyOffDay defaults to "Sunday"
   const weeklyOffDay: string = u.weeklyOffDay || u.weekly_off_day || 'Sunday';
@@ -181,6 +292,9 @@ export function normalizeUser(u: any): AppUser {
     company_name: u.company_name || u.tenantName || 'ApexCare Hospital',
     leaveRequests,
     leave_requests: leaveRequests,
+    documents: Array.isArray(u.documents)
+      ? u.documents.filter((d: any) => !isMockDocument(d))
+      : [],
   };
 }
 
@@ -208,11 +322,45 @@ export function generateSeedAttendance(_year?: number, _month?: number): Attenda
   return [];
 }
 
+/**
+ * Primary Actual Master Admin User Account (Dr. Basu / BASU-ADM-001)
+ * All other mock testing staff accounts are purged.
+ */
+export const PRIMARY_MASTER_ADMIN: AppUser = {
+  id: 1,
+  staff_id: 'BASU-ADM-001',
+  username: 'basu.admin',
+  full_name: 'Dr. Basu',
+  name: 'Dr. Basu',
+  role: 'admin',
+  status: 'ACTIVE',
+  is_approved: true,
+  dutyStatus: 'ON_DUTY',
+  isOnDuty: true,
+  duty_type: 'FIXED',
+  assigned_area: 'Executive Administration',
+  fixed_department: 'Executive Administration',
+  assigned_shift: 'General',
+  siteId: 'SITE_APEX_MAIN',
+  site_id: 'SITE_APEX_MAIN',
+  siteName: 'Apex Main Hospital',
+  tenant_id: 'BASU',
+  tenantId: 'BASU',
+  company_prefix: 'BASU',
+  company_name: 'Basu Healthcare Group',
+  weeklyOffDay: 'Sunday',
+  leaveBalance: { casual: 12, sick: 7, paid: 15 },
+  raw_password_vault: 'Admin@2026!',
+};
+
 const PURGED_DUMMY_STAFF_IDS = new Set([
-  'HK-001', 'HK-002', 'HK-003', 'HK-004', 'HK-005', 'HK-006', 'HK-007', 'HK-008', 'HK-009', 'HK-012', 'HK-201'
+  'HK001', 'HK002', 'HK003', 'SUP001', 'MGR001', 'ADMIN001',
+  'HK-001', 'HK-002', 'HK-003', 'HK-004', 'HK-005', 'HK-006', 'HK-007', 'HK-008', 'HK-009', 'HK-012', 'HK-201',
+  'ADMIN-001', 'MGR-001', 'SUP-001'
 ]);
 const PURGED_DUMMY_NAMES = new Set([
-  'ramesh kumar', 'sunita devi', 'amit sharma', 'anita patel', 'rahul sharma',
+  'ramesh sharma', 'sunita devi', 'amit patel', 'rakesh verma', 'operations manager', 'apexcare admin',
+  'ramesh kumar', 'amit sharma', 'anita patel', 'rahul sharma',
   'meena kumari', 'vikram singh', 'priya nair', 'vikas mehra', 'deepak joshi',
   'mohit rawat', 'pooja verma'
 ]);
@@ -222,6 +370,7 @@ const STORAGE_KEY_ATTENDANCE = 'hk_attendance_records_v2';
 
 export function getStoredStaff(companyPrefixFilter?: string): StaffUser[] {
   try {
+    if (typeof localStorage === 'undefined') return INITIAL_STAFF;
     const data = localStorage.getItem(STORAGE_KEY_STAFF);
     if (data) {
       const parsed: StaffUser[] = JSON.parse(data);
@@ -231,17 +380,27 @@ export function getStoredStaff(companyPrefixFilter?: string): StaffUser[] {
           !PURGED_DUMMY_NAMES.has(s.name?.trim().toLowerCase())
       );
 
+      // Deduplicate incoming staff array using Map based on unique record IDs
+      const dedupeMap = new Map<string, StaffUser>();
+      cleaned.forEach((s, idx) => {
+        const key = String(s.staffCode || (s as any).staff_id || s.id || `staff-${idx}`).trim().toUpperCase();
+        if (!dedupeMap.has(key)) {
+          dedupeMap.set(key, s);
+        }
+      });
+      const uniqueCleaned = Array.from(dedupeMap.values());
+
       const activePrefix = companyPrefixFilter !== undefined ? companyPrefixFilter : getActiveCompanyPrefix();
       if (activePrefix && activePrefix !== 'ALL') {
         const prefixUpper = activePrefix.toUpperCase();
-        return cleaned.filter((s) => {
+        return uniqueCleaned.filter((s) => {
           const sc = (s.staffCode || (s as any).staff_id || String(s.id || '')).toUpperCase();
           if (sc.startsWith(prefixUpper)) return true;
           const tid = (s.tenant_id || s.tenantId || '').toUpperCase();
           return tid === prefixUpper;
         });
       }
-      return cleaned;
+      return uniqueCleaned;
     }
   } catch (e) {
     console.error('Failed to parse staff from local storage', e);
@@ -251,6 +410,7 @@ export function getStoredStaff(companyPrefixFilter?: string): StaffUser[] {
 
 export function saveStoredStaff(staff: StaffUser[]): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     const activePrefix = getActiveCompanyPrefix();
     let allStored: StaffUser[] = [];
     const data = localStorage.getItem(STORAGE_KEY_STAFF);
@@ -280,6 +440,7 @@ export function saveStoredStaff(staff: StaffUser[]): void {
 
 export function getStoredAttendance(): AttendanceRecord[] {
   try {
+    if (typeof localStorage === 'undefined') return [];
     const data = localStorage.getItem(STORAGE_KEY_ATTENDANCE);
     if (data) {
       const parsed: AttendanceRecord[] = JSON.parse(data);
@@ -308,6 +469,7 @@ export function getStoredAttendance(): AttendanceRecord[] {
  */
 export function clearSampleAttendanceLogs(): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEY_ATTENDANCE, JSON.stringify([]));
     window.dispatchEvent(new CustomEvent('attendance-updated'));
   } catch (e) {
@@ -317,6 +479,7 @@ export function clearSampleAttendanceLogs(): void {
 
 export function saveStoredAttendance(records: AttendanceRecord[]): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEY_ATTENDANCE, JSON.stringify(records));
   } catch (e) {
     console.error('Failed to save attendance to local storage', e);
@@ -654,12 +817,22 @@ export function getStoredUsers(companyPrefixFilter?: string): AppUser[] {
         })
         .map((u) => normalizeUser(u));
 
+      // Deduplicate users array using Map based on unique primary IDs
+      const userDedupeMap = new Map<string, AppUser>();
+      filtered.forEach((u, idx) => {
+        const key = String(u.staff_id || u.username || u.id || `user-${idx}`).trim().toUpperCase();
+        if (!userDedupeMap.has(key)) {
+          userDedupeMap.set(key, u);
+        }
+      });
+      const uniqueUsers = Array.from(userDedupeMap.values());
+
       // 4. Isolation to LocalStorage Utilities:
       // Automatic tenant isolation based on logged-in user's company prefix
       const activePrefix = companyPrefixFilter !== undefined ? companyPrefixFilter : getActiveCompanyPrefix();
       if (activePrefix && activePrefix !== 'ALL') {
         const prefixUpper = activePrefix.toUpperCase();
-        return filtered.filter((u) => {
+        return uniqueUsers.filter((u) => {
           const uid = String(u.id || '').toUpperCase();
           if (uid.startsWith(prefixUpper)) return true;
           const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
@@ -669,12 +842,15 @@ export function getStoredUsers(companyPrefixFilter?: string): AppUser[] {
         });
       }
 
-      return filtered;
+      if (uniqueUsers.length === 0) {
+        return [PRIMARY_MASTER_ADMIN];
+      }
+      return uniqueUsers;
     }
   } catch (e) {
     console.error('Failed to parse users from local storage', e);
   }
-  return [];
+  return [PRIMARY_MASTER_ADMIN];
 }
 
 export function saveStoredUsers(users: AppUser[]): void {
@@ -705,6 +881,74 @@ export function saveStoredUsers(users: AppUser[]): void {
   } catch (e) {
     console.error('Failed to save users to local storage', e);
   }
+}
+
+/**
+ * Reset & purge all mock testing data from localStorage
+ * Retains only the primary actual Master Admin user account (Dr. Basu / BASU-ADM-001)
+ */
+export function purgeMockLocalStorageData(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+
+    // 1. Clean users
+    // 1. Clean users and ensure Master Admin Dr. Basu is guaranteed present
+    const userRaw = localStorage.getItem(STORAGE_KEY_USERS);
+    let usersList: AppUser[] = [];
+    if (userRaw) {
+      try {
+        const users: AppUser[] = JSON.parse(userRaw);
+        usersList = users.filter((u) => {
+          const sid = (u.staff_id || '').toUpperCase();
+          const name = (u.full_name || u.name || '').trim().toLowerCase();
+          return !PURGED_DUMMY_STAFF_IDS.has(sid) && !PURGED_DUMMY_NAMES.has(name);
+        });
+      } catch {}
+    }
+    if (!usersList.some((u) => (u.staff_id || '').toUpperCase() === 'BASU-ADM-001')) {
+      usersList.unshift(PRIMARY_MASTER_ADMIN);
+    }
+    localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(usersList));
+
+    // 2. Clean staff
+    const staffRaw = localStorage.getItem(STORAGE_KEY_STAFF);
+    if (staffRaw) {
+      try {
+        const staff: StaffUser[] = JSON.parse(staffRaw);
+        const filtered = staff.filter((s) => {
+          const sc = (s.staffCode || (s as any).staff_id || '').toUpperCase();
+          const name = (s.name || '').trim().toLowerCase();
+          return !PURGED_DUMMY_STAFF_IDS.has(sc) && !PURGED_DUMMY_NAMES.has(name);
+        });
+        localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(filtered));
+      } catch {}
+    }
+
+    // 3. Clean legacy housekeeping_users and guarantee Master Admin Dr. Basu
+    const legacyRaw = localStorage.getItem('housekeeping_users');
+    let legacyList: any[] = [];
+    if (legacyRaw) {
+      try {
+        const legacy: any[] = JSON.parse(legacyRaw);
+        legacyList = legacy.filter((u) => {
+          const sid = (u.staff_id || u.username || '').toUpperCase();
+          const name = (u.full_name || u.name || '').trim().toLowerCase();
+          return !PURGED_DUMMY_STAFF_IDS.has(sid) && !PURGED_DUMMY_NAMES.has(name);
+        });
+      } catch {}
+    }
+    if (!legacyList.some((u) => (u.staff_id || u.username || '').toUpperCase() === 'BASU-ADM-001')) {
+      legacyList.unshift(PRIMARY_MASTER_ADMIN);
+    }
+    localStorage.setItem('housekeeping_users', JSON.stringify(legacyList));
+  } catch (err) {
+    console.warn('Error purging mock local storage data:', err);
+  }
+}
+
+// Automatically invoke on client load to purge residual mock data
+if (typeof window !== 'undefined') {
+  purgeMockLocalStorageData();
 }
 
 const STORAGE_KEY_LOGGED_OUT = 'housekeeping_user_logged_out';
@@ -1009,7 +1253,7 @@ export function submitLeaveRequest(data: {
     userId: user.id,
     userName: user.full_name || user.name,
     role: user.role,
-    siteId: user.siteId || 'site-main',
+    siteId: user.siteId || user.site_id || 'SITE_APEX_MAIN',
     leaveType: data.leaveType,
     startDate: data.startDate,
     endDate: data.endDate,
@@ -1207,7 +1451,7 @@ export function getLeaveMetricsForDate(
 } {
   const allUsers = getStoredUsers().filter((u) => u.role === 'staff' && u.status === 'ACTIVE');
   const scopedUsers = siteId && siteId !== 'ALL'
-    ? allUsers.filter((u) => (u.siteId || u.site_id || 'site-main') === siteId)
+    ? allUsers.filter((u) => normalizeSiteId(u.siteId || u.site_id) === normalizeSiteId(siteId))
     : allUsers;
 
   const onLeaveUsers = scopedUsers.filter((u) => isUserOnLeaveOnDate(u, dateStr));
@@ -1324,10 +1568,10 @@ export function getSupervisorAccessContext(supervisorId: string): SupervisorAcce
     }
   }
 
-  // Default context: on-duty (live feed enabled)
+  // Default context: off-duty (Do NOT default to true/active upon loading)
   return {
     supervisorId,
-    isOnDuty: true,
+    isOnDuty: false,
     activeShiftWard: 'Central Hospital Wards',
   };
 }
@@ -1361,6 +1605,7 @@ export interface SupervisorDutyState {
 
 /**
  * Checks if a supervisor is currently punched in for duty today.
+ * Does NOT default to true/active upon loading.
  */
 export function getSupervisorDutyState(supervisorId: string, todayStr: string = getTodayIso()): SupervisorDutyState {
   if (typeof localStorage !== 'undefined') {
@@ -1375,13 +1620,40 @@ export function getSupervisorDutyState(supervisorId: string, todayStr: string = 
     } catch (e) {
       console.warn('Failed to parse supervisor duty punch', e);
     }
+
+    // Check actual attendance records for active punch-in for current date
+    try {
+      const attendance = getStoredAttendance();
+      const currentStored = getStoredCurrentUser();
+      const supLog = attendance.find((a) => {
+        const matchesUser =
+          (currentStored?.id && a.userId === currentStored.id) ||
+          (a.staff_id && a.staff_id.toLowerCase() === supervisorId.toLowerCase());
+        const matchesDate = a.date === todayStr;
+        const punchInVal = (a as any).punchInTime || a.punchIn;
+        const punchOutVal = (a as any).punchOutTime || a.punchOut;
+        return matchesUser && matchesDate && Boolean(punchInVal && punchInVal !== '--:--') && !punchOutVal;
+      });
+
+      if (supLog) {
+        const punchInVal = (supLog as any).punchInTime || supLog.punchIn;
+        return {
+          supervisorId,
+          isPunchedIn: true,
+          punchInTime: punchInVal || null,
+          punchOutTime: null,
+          activeShiftWard: '3rd Floor Wards & Critical Care',
+          dutyDate: todayStr,
+        };
+      }
+    } catch {}
   }
 
-  // Default: Punched In On-Duty for supervisor
+  // Default: Off-Duty (Do NOT default 'isOnDuty' or 'dutyStatus' to true/active upon loading)
   return {
     supervisorId,
-    isPunchedIn: true,
-    punchInTime: '06:55 AM',
+    isPunchedIn: false,
+    punchInTime: null,
     punchOutTime: null,
     activeShiftWard: '3rd Floor Wards & Critical Care',
     dutyDate: todayStr,
@@ -1404,7 +1676,7 @@ export function setSupervisorDutyPunch(
   const nextState: SupervisorDutyState = {
     supervisorId,
     isPunchedIn: action === 'IN',
-    punchInTime: action === 'IN' ? (existing.isPunchedIn ? existing.punchInTime : timeStr) : existing.punchInTime,
+    punchInTime: action === 'IN' ? (existing.isPunchedIn && existing.punchInTime ? existing.punchInTime : timeStr) : existing.punchInTime,
     punchOutTime: action === 'OUT' ? timeStr : null,
     activeShiftWard,
     dutyDate: todayStr,
@@ -1429,6 +1701,59 @@ export function setSupervisorDutyPunch(
         saveStoredCurrentUser(currentStored);
       }
 
+      // Synchronize real attendance records list so todayPunchLog reflects punch immediately
+      const records = getStoredAttendance();
+      const numUserId = currentStored?.id || (supervisorId.match(/\d+/) ? parseInt(supervisorId.match(/\d+/)![0], 10) : 102);
+      const existingIdx = records.findIndex(
+        (r) =>
+          (r.userId === numUserId || (r.staff_id && r.staff_id.toLowerCase() === supervisorId.toLowerCase())) &&
+          r.date === todayStr
+      );
+
+      if (action === 'IN') {
+        if (existingIdx >= 0) {
+          records[existingIdx] = {
+            ...records[existingIdx],
+            punchIn: timeStr,
+            punchInTime: timeStr,
+            punchInTimestamp: now.toISOString(),
+            punchOut: null,
+            punchOutTime: null,
+            punchOutTimestamp: null,
+            status: 'Present',
+          };
+        } else {
+          records.push({
+            id: String(Math.max(0, ...records.map((r) => Number(r.id) || 0)) + 1),
+            userId: Number(numUserId) || 102,
+            staff_id: supervisorId,
+            date: todayStr,
+            punchIn: timeStr,
+            punchInTime: timeStr,
+            punchInTimestamp: now.toISOString(),
+            punchOut: null,
+            punchOutTime: null,
+            punchOutTimestamp: null,
+            regularHours: 8,
+            otHours: 0,
+            status: 'Present',
+            shift_name: 'Morning',
+            notes: `Supervisor Shift - ${activeShiftWard}`,
+          });
+        }
+      } else {
+        if (existingIdx >= 0) {
+          records[existingIdx] = {
+            ...records[existingIdx],
+            punchOut: timeStr,
+            punchOutTime: timeStr,
+            punchOutTimestamp: now.toISOString(),
+            status: 'Duty Completed',
+          };
+        }
+      }
+      saveStoredAttendance(records);
+
       // Also sync with SupervisorAccessContext
       saveSupervisorAccessContext({
         supervisorId,
@@ -1438,6 +1763,7 @@ export function setSupervisorDutyPunch(
       window.dispatchEvent(
         new CustomEvent('supervisor-duty-punch-changed', { detail: nextState })
       );
+      window.dispatchEvent(new CustomEvent('attendance-updated'));
       window.dispatchEvent(new Event('auth-state-change'));
     } catch (e) {
       console.error('Failed to save supervisor duty punch', e);

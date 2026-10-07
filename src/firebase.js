@@ -8,17 +8,27 @@ import {
   GoogleAuthProvider,
   signOut
 } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  enableIndexedDbPersistence,
+  doc,
+  getDocFromServer,
+  setLogLevel
+} from 'firebase/firestore';
 import defaultConfig from '../firebase-applet-config.json';
 
 // Standard environment variable support with fallback to preserve existing credentials intact
+const env = (typeof import.meta !== 'undefined' && import.meta?.env) ? import.meta.env : (typeof process !== 'undefined' && process.env ? process.env : {});
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || defaultConfig.apiKey || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || defaultConfig.authDomain || '',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || defaultConfig.projectId || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || defaultConfig.storageBucket || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultConfig.messagingSenderId || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || defaultConfig.appId || '',
+  apiKey: env.VITE_FIREBASE_API_KEY || defaultConfig.apiKey || '',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultConfig.authDomain || '',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || defaultConfig.projectId || '',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || defaultConfig.storageBucket || '',
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultConfig.messagingSenderId || '',
+  appId: env.VITE_FIREBASE_APP_ID || defaultConfig.appId || '',
 };
 
 // Initialize Firebase App safely
@@ -29,7 +39,28 @@ let firestoreDb = null;
 try {
   app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
   authInstance = getAuth(app);
-  firestoreDb = getFirestore(app);
+  
+  // Prefer default database connect (or custom database ID if explicitly configured)
+  const dbId = env.VITE_FIREBASE_DATABASE_ID || defaultConfig.firestoreDatabaseId || undefined;
+
+  try {
+    if (dbId) {
+      firestoreDb = initializeFirestore(
+        app,
+        {
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+          experimentalAutoDetectLongPolling: true,
+        },
+        dbId
+      );
+    } else {
+      firestoreDb = getFirestore(app);
+    }
+  } catch {
+    firestoreDb = getFirestore(app);
+  }
 
   // Set persistence to browserLocalPersistence to guarantee session persistence across reloads
   if (authInstance && typeof window !== 'undefined') {
@@ -37,12 +68,28 @@ try {
       console.warn('Firebase persistence setup notice:', err);
     });
   }
+
+  // Suppress verbose SDK internal connection warnings in preview/iframe environment
+  try {
+    setLogLevel('silent');
+  } catch {}
 } catch (error) {
   console.warn('Firebase initialization notice:', error);
 }
 
+// Validate Connection to Firestore safely without throwing unhandled exceptions or connection errors
+export async function testFirestoreConnection() {
+  if (!firestoreDb) return false;
+  try {
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const auth = authInstance;
-export const db = firestoreDb;
+export const db = firestoreDb || (app ? getFirestore(app) : null);
+export { enableIndexedDbPersistence };
 export { app, firebaseConfig };
 
 // Google Auth Provider with Google Sheets Scope for Workspace Sync

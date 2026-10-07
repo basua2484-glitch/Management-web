@@ -5,13 +5,14 @@ import {
   app,
   provider,
   firebaseConfig,
+  enableIndexedDbPersistence,
   initAuth as jsInitAuth,
   googleSignIn as jsGoogleSignIn,
   getAccessToken as jsGetAccessToken,
   logout as jsLogout,
 } from '../firebase';
 
-export { auth, db, app, provider, firebaseConfig };
+export { auth, db, app, provider, firebaseConfig, enableIndexedDbPersistence };
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,

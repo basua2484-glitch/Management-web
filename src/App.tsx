@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ensureInjectedFirestoreIdentity } from './services/firestoreService';
 import { LoginPage } from './components/LoginPage';
+import { LiveAlertBanner } from './components/LiveAlertBanner';
 import AdminDashboard from './pages/AdminDashboard';
 import ManagerDashboard from './pages/ManagerDashboard';
 import SupervisorDashboard from './pages/SupervisorDashboard';
@@ -44,8 +46,15 @@ const RootRedirect: React.FC = () => {
 };
 
 function App() {
+  useEffect(() => {
+    ensureInjectedFirestoreIdentity().catch((err) => {
+      console.warn('Injected Firestore identity startup notice:', err);
+    });
+  }, []);
+
   return (
     <AuthProvider>
+      <LiveAlertBanner />
       <BrowserRouter>
         <Routes>
           {/* Default URL (`/`) -> Directly renders LoginPage so anyone opening the app lands on the Login Interface first */}

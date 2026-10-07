@@ -1,9 +1,31 @@
+export type HierarchicalRole = 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'STAFF';
 export type UserRole = 'admin' | 'manager' | 'supervisor' | 'staff';
 export type SystemRole = 'admin' | 'manager' | 'supervisor' | 'staff';
 export type DutyStatus = 'ON_DUTY' | 'OFF_DUTY';
 
+export type DocumentStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PENDING_APPROVAL';
+
+export interface EmployeeDocument {
+  docId: string;
+  docType: string;
+  fileUrl: string;
+  fileName: string;
+  uploadedAt: string; // ISO string
+  verifiedBy?: string | null;
+  status: DocumentStatus;
+  uploadedBy?: string | null;
+  verifiedAt?: string | null;
+  rejectionReason?: string | null;
+  fileSize?: string | null;
+  originalFileSize?: string | null;
+  compressionRatio?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+}
+
 export interface Tenant {
   tenant_id: string; // e.g. TENANT-APEX or TENANT-APEX-apexcare
+  tenantId?: string; // alias e.g. 'BASU' or 'APEX'
   company_name: string; // e.g. "ApexCare"
   company_prefix: string; // e.g. "APEX"
   root_admin_id: string; // e.g. "APEX-ADM-001"
@@ -11,6 +33,7 @@ export interface Tenant {
   admin_email?: string;
   created_at: string;
   status: 'ACTIVE' | 'INACTIVE';
+  sites?: string[] | HospitalSite[]; // Attached sites config: { tenantId: 'BASU', sites: ['SITE_A', 'SITE_B'] }
 }
 
 export interface TaskItem {
@@ -97,15 +120,107 @@ export interface LeaveRequest {
 }
 
 /**
+ * Industry Type defined ONLY at the Site level (Never on Tenant)
+ */
+export type IndustryType =
+  | 'HOSPITAL'
+  | 'MALL'
+  | 'CONSTRUCTION'
+  | 'HEALTHCARE'
+  | 'CORPORATE'
+  | 'EDUCATION'
+  | 'HOSPITALITY'
+  | 'FACILITIES'
+  | string;
+
+/**
+ * Sites Table Model (Multi-Tenant Isolation by tenant_id)
+ */
+export interface SiteRecord {
+  id: string; // UUID PRIMARY KEY DEFAULT gen_random_uuid()
+  tenant_id: string; // UUID Master Company Isolation
+  site_name: string; // e.g., "Site A - East Wing & Trauma"
+  industry_type: IndustryType; // e.g., "HOSPITAL", "COMMERCIAL", "HOTEL"
+  address?: string | null;
+  location_lat?: number;
+  location_lng?: number;
+  radius_meters?: number;
+  primary_manager_id?: string | null;
+  created_at?: string;
+}
+
+/**
  * Hospital Site & Location Model
  */
 export interface HospitalSite {
-  id: string; // e.g. 'site-main', 'site-east', 'site-north', 'site-south'
-  name: string;
-  code: string;
-  city: string;
+  id: string; // e.g. 'SITE_APEX_MAIN', 'SITE_CARE_SOUTH', 'site-main' or UUID
+  siteId?: string; // alias e.g. 'SITE_APEX_MAIN'
+  name: string; // e.g. 'Apex Main Hospital'
+  siteName?: string; // alias
+  code?: string;
+  city?: string;
+  industry_type?: IndustryType; // Defined ONLY at sites level, never on tenants
+  industryType?: IndustryType;
   totalBeds?: number;
   address?: string;
+  locationLat?: number;
+  locationLng?: number;
+  radiusMeters?: number;
+  primaryManagerId?: string | null;
+  primary_manager_id?: string | null;
+}
+
+/**
+ * Engagements Table Model (Worker Deployment separating Person Identity from Site)
+ */
+export interface EngagementRecord {
+  id: string; // UUID PRIMARY KEY DEFAULT gen_random_uuid()
+  person_id: string; // Worker's Master Identity (UUID)
+  site_id?: string | null; // UUID REFERENCES sites(id)
+  duty_type?: 'FIXED' | 'RELIEVER' | string | null; // "FIXED", "RELIEVER"
+  shift_code?: string | null; // "7-3 (Morning)", "3-11 (Evening)"
+  is_active?: boolean;
+  tenant_id: string; // UUID NOT NULL
+}
+
+/**
+ * Deployment Engagement (Separating Person Identity from Site Deployment)
+ */
+export interface Engagement {
+  id: number | string;
+  tenant_id: string;
+  site_id?: string | null;
+  person_id: string; // Worker's Master Identity
+  role?: HierarchicalRole | UserRole;
+  duty_type?: 'FIXED' | 'RELIEVER' | string | null;
+  shift_code?: string | null;
+  shift_name?: string;
+  department?: string;
+  start_time?: string; // ISO string
+  end_time?: string; // ISO string
+  is_active?: boolean;
+  status?: 'ACTIVE' | 'COMPLETED' | 'SUSPENDED';
+  created_at?: string;
+}
+
+/**
+ * Site Zone Model (Floors & Departments)
+ */
+export interface ZoneRecord {
+  id: string; // UUID PRIMARY KEY DEFAULT gen_random_uuid()
+  site_id: string; // UUID REFERENCES sites(id) ON DELETE CASCADE
+  zone_name: string; // e.g., "OPD", "ICU 3rd Floor", "Food Court"
+  tenant_id: string; // UUID NOT NULL
+}
+
+export interface Zone {
+  id: string | number;
+  tenant_id: string;
+  site_id: string;
+  zone_name: string;
+  floor?: string;
+  department?: string;
+  created_at?: string;
 }
 
 /**
@@ -117,8 +232,13 @@ export interface UserProfile {
   fullName: string;
   role: UserRole;
   dutyType: DutyType;
+  tenantId?: string;
+  tenant_id?: string;
+  company_prefix?: string;
   siteId?: string;
   siteName?: string;
+  site_id?: string;
+  site_name?: string;
   supervisorId?: string;
   supervisorName?: string;
   assignedArea?: string;
@@ -133,6 +253,7 @@ export interface UserProfile {
   leaveRequests?: LeaveRequest[];
   dutyStatus?: DutyStatus | string;
   isOnDuty?: boolean;
+  documents?: EmployeeDocument[];
 }
 
 export interface JoiningRequest {
@@ -260,7 +381,7 @@ export interface User {
   company_name?: string;
   company_prefix?: string;
   staff_id: string; // e.g. APEX-ADM-001 or HK-012
-  full_name: string;
+  full_name?: string;
   name: string; // alias for full_name for backward compatibility
   role: UserRole; // 'admin', 'manager', 'supervisor', 'staff'
   mobile?: string;
@@ -288,7 +409,7 @@ export interface User {
   temp_department?: string | null;
 
   assigned_shift: ShiftName | string; // '7-3', '3-11', '11-7'
-  password_hash: string;
+  password_hash?: string;
   raw_password_vault?: string | null; // Admin Eye Icon View
   status: UserStatus; // 'ACTIVE', 'PENDING_APPROVAL', 'DISABLED'
 
@@ -316,11 +437,14 @@ export interface User {
   department?: string;
   shift?: 'Morning' | 'Evening' | 'Night';
   is_approved?: boolean;
+  documents?: EmployeeDocument[];
 }
 
 export interface AppUser extends User {
   username: string; // alias for staff_id / login handle
   staffId?: number;
+  uid?: string;
+  injectedId?: string;
 }
 
 /**
@@ -383,7 +507,9 @@ export interface StaffUser {
   department: string;
   shift: 'Morning' | 'Evening' | 'Night';
   siteId?: string;
+  site_id?: string;
   siteName?: string;
+  site_name?: string;
   supervisorId?: string;
   supervisorName?: string;
   hourlyRate?: number;
@@ -401,6 +527,7 @@ export interface StaffUser {
   presentDays?: number;
   regularHours?: number;
   overtimeHours?: number;
+  documents?: EmployeeDocument[];
 }
 
 export interface AttendanceSession {
@@ -484,6 +611,8 @@ export interface AttendanceRecord {
   
   punchIn: string | null; // HH:mm
   punchOut: string | null; // HH:mm
+  punchInTime?: string | null;
+  punchOutTime?: string | null;
   punch_in_time?: string | null; // ISO DateTime
   punch_out_time?: string | null; // ISO DateTime
   punchInTimestamp?: string | null; // ISO string for exact ms calculation
@@ -520,6 +649,40 @@ export interface MonthlyStaffSummary {
   grandTotalHours: number;
   recordsCount: number;
 }
+
+/**
+ * 4. Duty Log Schema (Multi-Site & Shift Hierarchy)
+ */
+export interface DutyLogSchema {
+  id: string | number;
+  userId: string; // e.g. "APEX-MGR-001", "APEX-STF-001"
+  numericId?: number;
+  userName: string;
+  staffCode: string;
+  role: string;
+  assignedShift: string;
+  assignedArea: string;
+  status: string;
+  punchIn: string | null;
+  punchOut: string | null;
+  punchInTime?: string | null;
+  punchOutTime?: string | null;
+  punchInTimestamp?: string | null;
+  punchOutTimestamp?: string | null;
+  totalWorkedHours?: number;
+  regularHours?: number;
+  otHours?: number;
+  department?: string;
+  phone?: string;
+  notes?: string;
+  siteId?: string;
+  siteName?: string;
+  tenantId?: string;
+  supervisorId?: string;
+  supervisorName?: string;
+}
+
+export type DutyLog = DutyLogSchema;
 
 export interface GoogleSheetsExportStatus {
   isExporting: boolean;
@@ -558,6 +721,7 @@ export function toUserProfile(u: User): UserProfile {
     leaveRequests: u.leaveRequests || u.leave_requests || [],
     dutyStatus: u.dutyStatus || (u.isOnDuty ? 'ON_DUTY' : 'OFF_DUTY'),
     isOnDuty: u.dutyStatus ? u.dutyStatus === 'ON_DUTY' : Boolean(u.isOnDuty),
+    documents: u.documents || [],
   };
 }
 

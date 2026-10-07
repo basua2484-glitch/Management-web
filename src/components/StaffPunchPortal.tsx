@@ -50,6 +50,8 @@ import {
   fetchLiveGeofenceSettings,
   subscribeToGeofenceSettings,
 } from '../services/firestoreService';
+import { LiveConnectBadge } from './LiveConnectBadge';
+import { websocketService } from '../services/websocketService';
 
 interface StaffPunchPortalProps {
   staff: StaffUser[];
@@ -67,10 +69,10 @@ interface StaffPunchPortalProps {
 
 const DEFAULT_STAFF_FALLBACK: StaffUser = {
   id: 1,
-  name: 'Ramesh Kumar',
-  staffCode: 'HK-001',
-  role: 'staff',
-  department: 'General',
+  name: 'Dr. Basu',
+  staffCode: 'BASU-ADM-001',
+  role: 'admin',
+  department: 'Executive Administration',
   shift: 'Morning',
   active: true,
 };
@@ -79,7 +81,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
   staff,
   records,
   selectedDate = getTodayIso(),
-  initialStaffId = 1, // Defaults to Ramesh Kumar (id: 1)
+  initialStaffId,
   currentUser,
   onSaveRecord,
   onFlash,
@@ -295,18 +297,25 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
     distanceMeters?: number
   ) => {
     try {
+      const punchPayload = {
+        action_type: action,
+        timestamp: timestamp.toISOString(),
+        regular_hours: parseFloat(String(reg)),
+        overtime_hours: parseFloat(String(ot)),
+        lat,
+        lng,
+        distance_meters: distanceMeters,
+        staff_id: activeStaff.id,
+        staff_name: activeStaff.name,
+      };
+
+      // Broadcast immediately across 24/7 WebSockets
+      websocketService.broadcastPunch(punchPayload);
+
       fetch(getApiEndpoint('/api/attendance/punch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action_type: action,
-          timestamp: timestamp.toISOString(),
-          regular_hours: parseFloat(String(reg)),
-          overtime_hours: parseFloat(String(ot)),
-          lat,
-          lng,
-          distance_meters: distanceMeters,
-        }),
+        body: JSON.stringify(punchPayload),
       })
         .then((response) => {
           if (!response.ok) {
@@ -761,18 +770,21 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
               </div>
             </div>
 
-            {onLogout && (
-              <button
-                type="button"
-                id="btn-portal-logout"
-                onClick={onLogout}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2.5 py-1 rounded-md transition-colors"
-                title="Logout"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                <span>Logout</span>
-              </button>
-            )}
+            <div className="flex items-center gap-1.5">
+              <LiveConnectBadge />
+              {onLogout && (
+                <button
+                  type="button"
+                  id="btn-portal-logout"
+                  onClick={onLogout}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2.5 py-1 rounded-md transition-colors cursor-pointer"
+                  title="Logout"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span>Logout</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Navigation Bar */}

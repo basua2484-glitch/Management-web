@@ -63,6 +63,23 @@ const DB = {
 
     const users = [
       {
+        id: 'firestore-bZIKmbFgrHQusVmFKjHSsYl0xRH2',
+        aliases: [
+          'firestore-bzikmbfgrhqusvmfkjhssyl0xrh2',
+          'bzikmbfgrhqusvmfkjhssyl0xrh2',
+          'bZIKmbFgrHQusVmFKjHSsYl0xRH2',
+          'basu-adm-001',
+          'basu',
+          'dr. basu',
+          'basua2484@gmail.com',
+        ],
+        role: 'ADMIN',
+        plainPass: 'admin123',
+        passwordHash: '$2b$10$7CTgGVjgJXKMmGDen4EiYusKIVthdBqzMB.L0B/a55tl3WcTkkX3W',
+        name: 'Dr. Basu (Master Admin)',
+        redirect: '/admin-dashboard',
+      },
+      {
         id: 'admin',
         aliases: ['admin', 'admin001', 'admin-001'],
         role: 'ADMIN',

@@ -80,6 +80,8 @@ interface AdminStaffTableProps {
   onRequestRemoval?: (user: AppUser) => void;
   pendingCount?: number;
   onOpenProfileModal?: (staffId: string) => void;
+  siteFilter?: string;
+  currentUserSiteId?: string;
 }
 
 export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
@@ -98,6 +100,8 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   onRequestRemoval,
   pendingCount = 0,
   onOpenProfileModal,
+  siteFilter,
+  currentUserSiteId,
 }) => {
   const roleUpper = (currentUserRole || 'staff').toUpperCase();
   const isAdmin = roleUpper === 'ADMIN';
@@ -274,25 +278,49 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
     return '';
   }, [currentStaffId, currentUserId]);
 
-  // Strict tenant filtering: Do NOT pass raw 'users' or 'localStorage' array directly to the table.
-  const tenantScopedUsers = useMemo(() => {
-    if (!activeTenantPrefix) return users;
-    return users.filter((user) => {
-      const uid = String(user.id || '').toUpperCase();
-      if (uid.startsWith(activeTenantPrefix)) {
-        return true;
+  // Strict tenant and site isolation filtering:
+  const effectiveSite = isManager ? currentUserSiteId : (siteFilter && siteFilter !== 'ALL' ? siteFilter : null);
+
+  // Deduplicate incoming staff/users array in frontend state using a Map filter based on unique record IDs
+  const deduplicatedUsers = useMemo(() => {
+    const dedupeMap = new Map<string, AppUser>();
+    (users || []).forEach((u, index) => {
+      const primaryKey = String(u.id || u.staff_id || u.username || `user-${index}`).trim().toUpperCase();
+      if (!dedupeMap.has(primaryKey)) {
+        dedupeMap.set(primaryKey, u);
       }
-      const sid = (user.staff_id || user.username || String(user.id || '')).toUpperCase();
-      if (sid && sid.startsWith(activeTenantPrefix)) {
-        return true;
-      }
-      const tid = (user.tenant_id || user.tenantId || user.company_prefix || '').toUpperCase();
-      return tid === activeTenantPrefix;
     });
-  }, [users, activeTenantPrefix]);
+    return Array.from(dedupeMap.values());
+  }, [users]);
+
+  const tenantScopedUsers = useMemo(() => {
+    return deduplicatedUsers.filter((user) => {
+      const sid = (user.staff_id || user.username || String(user.id || '')).toUpperCase();
+      const isAdmin = user.role === 'admin' || sid === 'BASU-ADM-001';
+
+      // Must match tenant prefix (Admins always visible in global directory)
+      if (activeTenantPrefix && !isAdmin) {
+        const uid = String(user.id || '').toUpperCase();
+        const tid = (user.tenant_id || user.tenantId || user.company_prefix || '').toUpperCase();
+        const matchesTenant = uid.startsWith(activeTenantPrefix) || sid.startsWith(activeTenantPrefix) || tid === activeTenantPrefix;
+        if (!matchesTenant) return false;
+      }
+      // Site Isolation (Admins without specific site mapping are listed under All Sites / Global)
+      if (effectiveSite && effectiveSite !== 'ALL' && effectiveSite !== 'GLOBAL') {
+        const uSite = user.siteId || user.site_id || 'SITE_APEX_MAIN';
+        if (!isAdmin && uSite !== effectiveSite) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [deduplicatedUsers, activeTenantPrefix, effectiveSite]);
+
+  // Unified staffList representing the deduplicated, scoped workforce accounts
+  const staffList = tenantScopedUsers;
 
   // Filtered staff users scoped strictly to tenant
-  const filteredUsers = tenantScopedUsers.filter((u) => {
+  const filteredUsers = staffList.filter((u) => {
     const q = searchTerm.toLowerCase().trim();
     const matchesSearch =
       !q ||
@@ -560,7 +588,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                       : user.fixed_department || user.assigned_area || 'General Wards';
 
                   return (
-                    <tr key={user.staff_id || (user.id ? `user-${user.id}` : `user-row-${idx}`)} className="hover:bg-slate-50 transition-colors">
+                    <tr key={user.id || `${user.staff_id}-${idx}`} className="hover:bg-slate-50 transition-colors">
                       {/* Staff ID & Name */}
                       <td className="py-3 px-4 font-sans">
                         <button
@@ -571,7 +599,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                         >
                           {user.full_name || user.name}
                         </button>
-                        <div className="flex items-center gap-2 mt-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
                           <button
                             type="button"
                             onClick={() => onOpenProfileModal?.(user.staff_id || String(user.id))}
@@ -580,6 +608,11 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                           >
                             {user.staff_id || `USER-${user.id}`}
                           </button>
+                          {/* Site Badge (Requirement 4): e.g. "BASU-MGR-001 | Apex Main Hospital" */}
+                          <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                            <Building className="h-2.5 w-2.5 text-[#1E3A8A] shrink-0" />
+                            <span>{user.staff_id || `USER-${user.id}`} | {user.siteName || user.site_name || 'Apex Main Hospital'}</span>
+                          </span>
                           {user.username && user.username !== user.staff_id && (
                             <span className="text-2xs text-slate-400 font-mono">@{user.username}</span>
                           )}
@@ -830,7 +863,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
 
         {/* Table Footer */}
         <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-500 gap-2">
-          <span>Showing <strong>{filteredUsers.length}</strong> of <strong>{users.length}</strong> staff accounts</span>
+          <span>Showing <strong>{filteredUsers.length}</strong> of <strong>{staffList.length}</strong> staff accounts</span>
           <span className="text-2xs text-slate-400">
             Click Eye icon to decrypt • Duty Type dropdown auto-saves to StaffDutyProfile
           </span>

@@ -84,6 +84,8 @@ export const SupervisorDashboard: React.FC = () => {
 
   const effectiveSupervisorId = authUser?.staff_id || authUser?.username || 'SUPERVISOR';
   const supervisorName = authUser?.full_name || authUser?.name || 'Supervisor';
+  const supervisorSiteId = authUser?.siteId || authUser?.site_id || 'SITE_APEX_MAIN';
+  const supervisorSiteName = authUser?.siteName || authUser?.site_name || 'Apex Main Hospital';
 
   // Selected date for attendance (defaults to current dynamic system date)
   const [selectedDate, setSelectedDate] = useState<string>(() => getTodayIso());
@@ -100,11 +102,44 @@ export const SupervisorDashboard: React.FC = () => {
     getSupervisorDutyState(effectiveSupervisorId, selectedDate)
   );
 
-  // DUTY STATE GUARD (In App/State Logic):
-  // Check user duty status: const isOnDuty = currentUser.dutyStatus === 'ON_DUTY';
+  // 1 & 2. Enforce Strict Header Duty Check Logic:
+  // Fetch the real-time active shift punch log for the logged-in supervisor for the current date.
+  // Do NOT default 'isOnDuty' or 'dutyStatus' to true/active upon loading.
   const currentUser = authUser;
-  const isOnDuty = currentUser?.dutyStatus ? currentUser.dutyStatus === 'ON_DUTY' : dutyState.isPunchedIn;
+  const todayPunchLog = useMemo(() => {
+    return records.find((log) => {
+      const punchIn = (log as any).punchInTime || log.punchIn;
+      const punchOut = (log as any).punchOutTime || log.punchOut;
+
+      const matchesUser =
+        (currentUser?.id && (log.userId === currentUser.id || String(log.userId) === String(currentUser.id))) ||
+        (currentUser?.staff_id && log.staff_id && log.staff_id.toLowerCase() === currentUser.staff_id.toLowerCase()) ||
+        (currentUser?.username && log.staff_id && log.staff_id.toLowerCase() === currentUser.username.toLowerCase()) ||
+        (effectiveSupervisorId && log.staff_id && log.staff_id.toLowerCase() === effectiveSupervisorId.toLowerCase());
+
+      const hasPunchIn = Boolean(punchIn && punchIn !== '--:--' && punchIn !== '--');
+      const hasPunchOut = Boolean(punchOut && punchOut !== '--:--' && punchOut !== '--');
+
+      return matchesUser && log.date === selectedDate && hasPunchIn && !hasPunchOut;
+    });
+  }, [records, currentUser, effectiveSupervisorId, selectedDate]);
+
+  const isSupervisorPunchedIn = Boolean(todayPunchLog);
+  const isOnDuty = isSupervisorPunchedIn;
   const canPerformAction = canSupervisorAction(authRole || currentUser?.role || 'SUPERVISOR', isOnDuty);
+
+  const activePunchInTime = todayPunchLog
+    ? (todayPunchLog as any).punchInTime || todayPunchLog.punchIn
+    : null;
+  const activePunchOutTime = !isSupervisorPunchedIn
+    ? (records.find(
+        (l) =>
+          ((currentUser?.id && (l.userId === currentUser.id || String(l.userId) === String(currentUser.id))) ||
+            (effectiveSupervisorId && l.staff_id && l.staff_id.toLowerCase() === effectiveSupervisorId.toLowerCase())) &&
+          l.date === selectedDate &&
+          ((l as any).punchOutTime || l.punchOut)
+      )?.punchOut || dutyState?.punchOutTime || null)
+    : null;
 
   const [isLocatingDuty, setIsLocatingDuty] = useState(false);
   const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
@@ -231,7 +266,7 @@ export const SupervisorDashboard: React.FC = () => {
 
   // Handle Supervisor Duty Punch In / Punch Out
   const handleToggleSupervisorDuty = async () => {
-    const nextAction = dutyState.isPunchedIn ? 'OUT' : 'IN';
+    const nextAction = isSupervisorPunchedIn ? 'OUT' : 'IN';
     setIsLocatingDuty(true);
     let punchLocationResult;
     try {
@@ -312,6 +347,7 @@ export const SupervisorDashboard: React.FC = () => {
       selectedDate
     );
     setDutyState(next);
+    setRecords(getStoredAttendance());
 
     setFeedback({
       type: next.isPunchedIn ? 'success' : 'warning',
@@ -321,10 +357,20 @@ export const SupervisorDashboard: React.FC = () => {
     });
   };
 
-  // Housekeeping staff list
+  // Housekeeping staff list (Strict exclusion of Admin, Supervisor, Manager)
   const staffList: StaffUser[] = useMemo(() => {
     return users
-      .filter((u) => u.role === 'staff' || !u.role)
+      .filter((u) => {
+        const r = (u.role || '').toUpperCase();
+        const staffCode = String(u.staff_id || '').toUpperCase();
+        if (r === 'ADMIN' || r === 'ADM' || staffCode.includes('-ADM-')) return false;
+        if (r === 'SUPERVISOR' || r === 'SUP' || staffCode.includes('-SUP-')) return false;
+        if (r === 'MANAGER' || r === 'MGR' || staffCode.includes('-MGR-')) return false;
+        // Site Isolation: supervisor strictly scopes to their assigned siteId
+        const uSite = u.siteId || u.site_id;
+        if (supervisorSiteId && uSite && uSite !== supervisorSiteId) return false;
+        return r === 'STAFF' || r === 'STF' || staffCode.includes('-STF-') || !u.role;
+      })
       .map((u) => {
         const uAny = u as any;
         return {
@@ -337,9 +383,11 @@ export const SupervisorDashboard: React.FC = () => {
           hourlyRate: uAny.hourly_rate || uAny.hourlyRate || 15,
           phone: uAny.phone || '',
           active: u.status !== 'DISABLED',
+          siteId: u.siteId || u.site_id || supervisorSiteId,
+          siteName: u.siteName || u.site_name || supervisorSiteName,
         };
       });
-  }, [users]);
+  }, [users, supervisorSiteId, supervisorSiteName]);
 
   // Active pending Overtime requests submitted by staff
   const pendingOtRequests = useMemo(() => {
@@ -634,6 +682,11 @@ export const SupervisorDashboard: React.FC = () => {
                 <span className="bg-amber-500/90 text-amber-950 text-3xs font-bold px-2 py-0.5 rounded-full uppercase">
                   Supervisor Terminal
                 </span>
+                {/* Site Badge (Requirement 4) */}
+                <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-blue-100 bg-white/10 px-2 py-0.5 rounded border border-white/20">
+                  <Building2 className="h-3 w-3 text-blue-200 shrink-0" />
+                  <span>{effectiveSupervisorId} | {supervisorSiteName}</span>
+                </span>
               </div>
               <p className="text-3xs text-blue-200">
                 Supervisor: <b className="text-white">{supervisorName}</b> ({effectiveSupervisorId}) &bull; Active Sector: {dutyState.activeShiftWard}
@@ -712,14 +765,14 @@ export const SupervisorDashboard: React.FC = () => {
         <section
           id="supervisor-duty-status-card"
           className={`rounded-2xl p-4 sm:p-5 border shadow-sm transition-all ${
-            dutyState.isPunchedIn
+            isSupervisorPunchedIn
               ? 'bg-gradient-to-r from-emerald-900/10 via-emerald-800/5 to-white border-emerald-500/40 text-emerald-950'
               : 'bg-gradient-to-r from-amber-900/10 via-amber-800/5 to-white border-amber-500/40 text-amber-950'
           }`}
         >
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div className="flex items-center gap-3.5">
-              {dutyState.isPunchedIn ? (
+              {isSupervisorPunchedIn ? (
                 <span className="relative flex h-4 w-4">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500"></span>
@@ -730,65 +783,78 @@ export const SupervisorDashboard: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-base sm:text-lg font-bold text-slate-900">
-                    {dutyState.isPunchedIn
+                    {isSupervisorPunchedIn
                       ? 'Supervisor On-Duty Check: ACTIVE (Live Controls & Approvals Enabled)'
                       : 'Supervisor On-Duty Check: OFF-DUTY (Read-Only Past History Mode)'}
                   </h2>
                   <span
                     className={`text-2xs font-mono font-bold px-2.5 py-0.5 rounded-full ${
-                      dutyState.isPunchedIn
+                      isSupervisorPunchedIn
                         ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                         : 'bg-amber-100 text-amber-800 border border-amber-300'
                     }`}
                   >
-                    {dutyState.isPunchedIn ? 'LIVE OPERATIONAL' : 'READ-ONLY ARCHIVE'}
+                    {isSupervisorPunchedIn ? '🟢 LIVE OPERATIONAL / ON-DUTY' : '🟡 OFF-DUTY (Read-Only Mode)'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  {dutyState.isPunchedIn
-                    ? `Punched In at ${dutyState.punchInTime} • Supervising ${dutyState.activeShiftWard} • Live WebSocket feed authorized`
-                    : `Punched Out at ${dutyState.punchOutTime || '03:00 PM'} • Live controls and OT approvals are disabled until punched in`}
+                  {isSupervisorPunchedIn
+                    ? `Punched In at ${activePunchInTime || '--:--'} • Supervising ${dutyState.activeShiftWard} • Live controls and OT approvals are active`
+                    : `Currently Off-Duty • ${activePunchOutTime ? `Punched Out at ${activePunchOutTime} • ` : ''}Live operational controls and OT approvals locked in Read-Only mode`}
                 </p>
               </div>
             </div>
 
-            {/* Duty Punch In / Punch Out Toggle */}
+            {/* Action Button: Dynamic Switch between Green "Punch In to Start Shift" and Red "Punch Out of Shift" */}
             <div className="flex items-center gap-3 w-full md:w-auto">
-              <button
-                type="button"
-                id="btn-supervisor-duty-punch"
-                onClick={handleToggleSupervisorDuty}
-                disabled={isLocatingDuty}
-                className={`w-full md:w-auto px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer ${
-                  isLocatingDuty
-                    ? 'opacity-70 cursor-wait bg-slate-700 text-white'
-                    : dutyState.isPunchedIn
-                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                }`}
-              >
-                {isLocatingDuty ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                    <span>Verifying Location & GPS...</span>
-                  </>
-                ) : dutyState.isPunchedIn ? (
-                  <>
-                    <LogOut className="h-4 w-4" />
-                    <span>Punch Out of Shift (Go Off-Duty)</span>
-                  </>
-                ) : (
-                  <>
-                    <LogIn className="h-4 w-4" />
-                    <span>Punch In for Shift (Activate Live Tools)</span>
-                  </>
-                )}
-              </button>
+              {isSupervisorPunchedIn ? (
+                /* IF isSupervisorPunchedIn is TRUE: Show RED "Punch Out of Shift (Go Off-Duty)" button */
+                <button
+                  type="button"
+                  id="btn-supervisor-duty-punch"
+                  onClick={handleToggleSupervisorDuty}
+                  disabled={isLocatingDuty}
+                  className="w-full md:w-auto px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-rose-600 hover:bg-rose-700 text-white"
+                >
+                  {isLocatingDuty ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Verifying Location & GPS...</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogOut className="h-4 w-4" />
+                      <span>Punch Out of Shift (Go Off-Duty)</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                /* IF isSupervisorPunchedIn is FALSE: Show GREEN "Punch In to Start Shift" button (Hide Red Punch Out button) */
+                <button
+                  type="button"
+                  id="btn-supervisor-duty-punch"
+                  onClick={handleToggleSupervisorDuty}
+                  disabled={isLocatingDuty}
+                  className="w-full md:w-auto px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
+                >
+                  {isLocatingDuty ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Verifying Location & GPS...</span>
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="h-4 w-4" />
+                      <span>Punch In to Start Shift</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Off-Duty Notice if Punched Out */}
-          {!isOnDuty && (
+          {/* 4. Sync Off-Duty Restriction Rules (Live Watch permitted, action triggers locked until Punch-In) */}
+          {!isSupervisorPunchedIn && (
             <div
               id="supervisor-off-duty-banner"
               className="mt-4 p-3.5 bg-amber-500/15 border border-amber-500/40 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
@@ -796,9 +862,9 @@ export const SupervisorDashboard: React.FC = () => {
               <div className="flex items-start gap-2.5">
                 <AlertCircle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
                 <div>
-                  <b className="font-bold">Action Restricted:</b> You are currently OFF-DUTY. Please Punch-In to make operational entries.
+                  <b className="font-bold">🟡 Action Restricted:</b> You are currently OFF-DUTY (Read-Only Mode). Please Punch-In to make operational entries.
                   <div className="text-2xs text-amber-800 mt-0.5">
-                    Live operational controls, reliever allocation actions, and real-time overtime approval buttons are locked in READ-ONLY mode.
+                    Live operational controls, reliever allocation actions, and real-time overtime approval buttons are locked in READ-ONLY mode. Live Watch is permitted.
                   </div>
                 </div>
               </div>
@@ -807,10 +873,10 @@ export const SupervisorDashboard: React.FC = () => {
                 id="btn-banner-punch-in-quick"
                 onClick={handleToggleSupervisorDuty}
                 disabled={isLocatingDuty}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-2xs rounded-lg flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer shadow-2xs"
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer shadow-2xs"
               >
                 <LogIn className="h-3.5 w-3.5" />
-                <span>Punch In for Shift</span>
+                <span>Punch In to Start Shift</span>
               </button>
             </div>
           )}
@@ -1372,6 +1438,7 @@ export const SupervisorDashboard: React.FC = () => {
                     onRefresh={handleLiveRefresh}
                     isSupervisor={true}
                     canPerformAction={canPerformAction}
+                    siteFilter={supervisorSiteId}
                   />
                 </div>
               ) : (
@@ -1410,8 +1477,13 @@ export const SupervisorDashboard: React.FC = () => {
                           >
                             {staff.name}
                           </button>
-                          <div className="flex items-center gap-1.5 mt-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                             <span className="text-2xs font-mono text-slate-500 bg-slate-100 px-1 rounded">{staff.staffCode}</span>
+                            {/* Site Badge (Requirement 4) */}
+                            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              <Building2 className="h-2.5 w-2.5 text-[#1E3A8A] shrink-0" />
+                              <span>{staff.staffCode} | {staff.siteName || supervisorSiteName}</span>
+                            </span>
                           </div>
                         </td>
                         <td className="py-2.5 px-3 font-semibold text-slate-700">{staff.department}</td>

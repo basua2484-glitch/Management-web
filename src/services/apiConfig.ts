@@ -35,3 +35,35 @@ export function getApiEndpoint(endpointPath: string): string {
   }
   return normalized;
 }
+
+/**
+ * Returns default headers with X-Tenant-ID to enforce:
+ * SET LOCAL app.tenant_id = 'your-tenant-uuid-here';
+ * before every request / transaction.
+ */
+export function getTenantHeaders(overrideTenantId?: string): Record<string, string> {
+  let tenantId = overrideTenantId;
+  if (!tenantId && typeof localStorage !== 'undefined') {
+    tenantId = localStorage.getItem('tenant_id') || localStorage.getItem('company_code') || 'default-tenant';
+  }
+  return {
+    'Content-Type': 'application/json',
+    'X-Tenant-ID': tenantId || 'default-tenant',
+  };
+}
+
+/**
+ * Wrapper around window.fetch that automatically includes X-Tenant-ID
+ */
+export async function tenantFetch(endpointPath: string, options: RequestInit = {}): Promise<Response> {
+  const url = getApiEndpoint(endpointPath);
+  const headers = {
+    ...getTenantHeaders(),
+    ...(options.headers || {}),
+  };
+  return fetch(url, {
+    ...options,
+    headers,
+  });
+}
+

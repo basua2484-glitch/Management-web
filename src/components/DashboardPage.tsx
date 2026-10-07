@@ -36,8 +36,12 @@ import {
   Search,
   CalendarCheck,
   CalendarDays,
+  Radio,
+  RefreshCw,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole, StaffRequest, DutyAllocation } from '../types';
+import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole, StaffRequest, DutyAllocation, HospitalSite } from '../types';
 import {
   getStoredStaff,
   saveStoredStaff,
@@ -61,6 +65,9 @@ import {
   approveRemovalRequest,
   rejectRemovalRequest,
   HOSPITAL_SITES,
+  getTenantSites,
+  getSiteNameById,
+  DEFAULT_TENANT_CONFIGS,
   getAllLeaveRequests,
   getTodayIso,
 } from '../data/mockHousekeepingData';
@@ -76,6 +83,10 @@ import {
   fetchLiveDutyAllocations,
   getActiveTenantId,
   generateSubAccountId,
+  subscribeToAttendance,
+  subscribeToDutyAllocations,
+  subscribeToLiveUsers,
+  subscribeToLiveStaff,
 } from '../services/firestoreService';
 import { logout, getCurrentUser, initAuth } from '../services/firebase';
 import { performLogout, handleLogout, checkAdminRequired, adminRequired } from '../services/auth';
@@ -86,6 +97,7 @@ import { DailyAttendanceModal } from './DailyAttendanceModal';
 import { StaffManagementModal } from './StaffManagementModal';
 import { PdfPreviewModal } from './PdfPreviewModal';
 import { LiveAttendanceView } from './LiveAttendanceView';
+import { Sidebar } from './Sidebar';
 import { DutyAssignmentModal } from './DutyAssignmentModal';
 import { StaffPunchPortal } from './StaffPunchPortal';
 import { StaffPunchPortalModal } from './StaffPunchPortalModal';
@@ -95,11 +107,14 @@ import { AdminStaffTable } from './AdminStaffTable';
 import { StaffVault } from './StaffVault';
 import { AdminVaultModal } from './AdminVaultModal';
 import { StaffRequestModal } from './StaffRequestModal';
-import { getEmptyInitialAttendanceState } from '../services/userService';
+import { getEmptyInitialAttendanceState, fetchStaffDirectory } from '../services/userService';
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { LeaveManagementView } from './LeaveManagementView';
 import { EmployeeProfileModal } from './EmployeeProfileModal';
 import { GeofenceSettingsPanel } from './GeofenceSettingsPanel';
+import { LiveConnectBadge } from './LiveConnectBadge';
+import { SiteSelector } from './SiteSelector';
+import { CreateSiteModal } from './CreateSiteModal';
 import { createPasswordHash } from '../services/vaultService';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -183,6 +198,97 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return 'APEX';
   }, [currentUser, tenantId]);
 
+  // MULTI-SITE / UNIT-BASED HIERARCHY AND ISOLATION SYSTEM
+  // 1. Dynamic Sites from DB API & Static Tenant Defaults
+  const [dynamicSitesList, setDynamicSitesList] = useState<HospitalSite[]>([]);
+  const [isCreateSiteModalOpen, setIsCreateSiteModalOpen] = useState(false);
+
+  useEffect(() => {
+    let isSubscribed = true;
+    const fetchSites = async () => {
+      try {
+        const headers: Record<string, string> = {
+          'x-tenant-id': activeTenantPrefix,
+          'x-user-role': userRole || '',
+        };
+        if (currentUser?.id || currentUser?.staff_id) {
+          headers['x-user-id'] = String(currentUser.id || currentUser.staff_id);
+        }
+        const res = await fetch('/api/sites', { headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.success && Array.isArray(data.sites) && isSubscribed) {
+            setDynamicSitesList(data.sites);
+          }
+        }
+      } catch {}
+    };
+    fetchSites();
+    return () => {
+      isSubscribed = false;
+    };
+  }, [activeTenantPrefix, userRole, currentUser]);
+
+  const availableSites = useMemo(() => {
+    const defaultSites = getTenantSites(activeTenantPrefix);
+    const combined = [...defaultSites, ...dynamicSitesList];
+    const map = new Map<string, HospitalSite>();
+    combined.forEach((s) => {
+      const key = s.siteId || s.id;
+      if (key && !map.has(key)) {
+        map.set(key, { ...s, id: key, siteId: key });
+      }
+    });
+    return Array.from(map.values());
+  }, [activeTenantPrefix, dynamicSitesList]);
+
+  const handleSiteCreated = (newSite: HospitalSite) => {
+    const siteKey = newSite.siteId || newSite.id;
+    setDynamicSitesList((prev) => {
+      const existing = prev.filter((s) => (s.siteId || s.id) !== siteKey);
+      return [...existing, newSite];
+    });
+    if (siteKey) {
+      handleSiteFilterChange(siteKey);
+    }
+    addFlash(`Site "${newSite.name || newSite.siteName}" registered with GPS geofence successfully!`, 'success');
+  };
+
+  // 2. Master Admin Site Selector state:
+  const [selectedSiteFilter, setSelectedSiteFilter] = useState<string>(() => {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem(`hk_site_filter_${activeTenantPrefix}`);
+      if (stored) return stored;
+    }
+    return 'ALL';
+  });
+
+  const handleSiteFilterChange = (siteId: string) => {
+    setSelectedSiteFilter(siteId);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`hk_site_filter_${activeTenantPrefix}`, siteId);
+    }
+  };
+
+  // 3. Operational Site Scoping:
+  // - MASTER ADMIN: Can select "All Sites" or filter by specific site via Top Bar
+  // - OPERATIONS MANAGER: Automatically scoped to their assigned 'siteId'
+  // - SUPERVISOR & STAFF: Inherit the 'siteId' of the Operations Manager
+  const effectiveSiteFilter = useMemo(() => {
+    if (isManager) {
+      return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'SITE_APEX_MAIN';
+    }
+    if (isAdmin) {
+      return selectedSiteFilter;
+    }
+    return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'SITE_APEX_MAIN';
+  }, [isManager, isAdmin, currentUser, selectedSiteFilter, availableSites]);
+
+  const activeSiteName = useMemo(() => {
+    if (effectiveSiteFilter === 'ALL' || effectiveSiteFilter === 'GLOBAL') return 'All Sites (Global)';
+    return getSiteNameById(effectiveSiteFilter);
+  }, [effectiveSiteFilter]);
+
   // Leave Requests state for badge indicator
   const [allLeaveRequests, setAllLeaveRequests] = useState(() => getAllLeaveRequests());
 
@@ -232,7 +338,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     if (user?.role === 'supervisor') return 'leaves';
     return 'live';
   });
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
+  // 1. Unified Sidebar state: Collapsed (hidden) by default on ALL screen sizes (Desktop and Mobile)
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const isMobileSidebarOpen = isSidebarOpen;
+  const setIsMobileSidebarOpen = setIsSidebarOpen;
 
   // Staff and Attendance Records State
   const [staff, setStaff] = useState<StaffUser[]>(() => getStoredStaff());
@@ -262,29 +371,109 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [activeCredentialSlip, setActiveCredentialSlip] = useState<CredentialCardData | null>(null);
   const [profileModalStaffId, setProfileModalStaffId] = useState<string | null>(null);
 
-  // Pending approvals (Signups, Staff Requests, Overtime Requests, Removal Requests)
-  const pendingUsers = useMemo(() => users.filter((u) => u.is_approved === false), [users]);
-  const pendingStaffRequests = useMemo(() => staffRequests.filter((r) => r.status === 'PENDING'), [staffRequests]);
-  const pendingOtRequests = useMemo(
-    () => dutyAllocations.filter((a) => a.ot_status === 'PENDING' && (a.ot_requested_hours || 0) > 0),
-    [dutyAllocations]
-  );
+  // Online Live Connect Real-time Synchronization State
+  const [isLiveConnected, setIsLiveConnected] = useState<boolean>(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+  const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
+  const [isSyncingLive, setIsSyncingLive] = useState<boolean>(false);
+  const [showLiveInfoModal, setShowLiveInfoModal] = useState<boolean>(false);
+  const [realtimeEventsCount, setRealtimeEventsCount] = useState<number>(0);
+
+  // Global State Deduplication Helper
+  const deduplicateDataset = useCallback(<T extends { id?: any; staff_id?: string; staffCode?: string; username?: string }>(items: T[]): T[] => {
+    const map = new Map<string, T>();
+    (items || []).forEach((item, idx) => {
+      const key = String(item.staff_id || item.staffCode || item.username || item.id || `item-${idx}`).trim().toUpperCase();
+      if (!map.has(key)) {
+        map.set(key, item);
+      }
+    });
+    return Array.from(map.values());
+  }, []);
+
+  // Scoped datasets based on active tenant AND effective site filter:
+  const scopedUsers = useMemo(() => {
+    const deduped = deduplicateDataset(users);
+    return deduped.filter((u) => {
+      const userTenant = (u.company_prefix || u.tenant_id || u.tenantId || '').toUpperCase();
+      const userCode = String(u.staff_id || u.username || u.id || '').toUpperCase();
+      const isAdmin = u.role === 'admin' || userCode === 'BASU-ADM-001';
+
+      if (activeTenantPrefix && !isAdmin && !userCode.startsWith(activeTenantPrefix) && userTenant !== activeTenantPrefix) {
+        return false;
+      }
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
+        const uSite = u.siteId || u.site_id || 'SITE_APEX_MAIN';
+        if (!isAdmin && uSite !== effectiveSiteFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [users, activeTenantPrefix, effectiveSiteFilter, deduplicateDataset]);
+
+  // Unified staffList representing the deduplicated, scoped workforce accounts
+  const staffList = scopedUsers;
+
+  const scopedStaff = useMemo(() => {
+    const deduped = deduplicateDataset(staff);
+    return deduped.filter((s) => {
+      const staffTenant = (s.company_prefix || s.tenant_id || s.tenantId || '').toUpperCase();
+      const staffCode = String(s.staffCode || s.id || '').toUpperCase();
+      const isAdmin = (s as any).role === 'admin' || staffCode === 'BASU-ADM-001';
+
+      if (activeTenantPrefix && !isAdmin && !staffCode.startsWith(activeTenantPrefix) && staffTenant !== activeTenantPrefix) {
+        return false;
+      }
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
+        const sSite = s.siteId || (s as any).site_id || 'SITE_APEX_MAIN';
+        if (!isAdmin && sSite !== effectiveSiteFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [staff, activeTenantPrefix, effectiveSiteFilter, deduplicateDataset]);
+
+  const scopedRecords = useMemo(() => {
+    if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+      return records.filter((r) => {
+        if (r.siteId || r.site_id) {
+          return r.siteId === effectiveSiteFilter || r.site_id === effectiveSiteFilter;
+        }
+        const userMatch = users.find((u) => (r.userId && u.id === r.userId) || (r.staff_id && u.staff_id === r.staff_id));
+        const resolvedSite = userMatch?.siteId || userMatch?.site_id || 'SITE_APEX_MAIN';
+        return resolvedSite === effectiveSiteFilter;
+      });
+    }
+    return records;
+  }, [records, effectiveSiteFilter, users]);
+
+  // Pending approvals scoped by site
+  const pendingUsers = useMemo(() => scopedUsers.filter((u) => u.is_approved === false), [scopedUsers]);
+  const pendingStaffRequests = useMemo(() => {
+    return staffRequests.filter((r) => {
+      if (r.status !== 'PENDING') return false;
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+        const rSite = r.siteId || r.site_id;
+        if (rSite && rSite !== effectiveSiteFilter) return false;
+      }
+      return true;
+    });
+  }, [staffRequests, effectiveSiteFilter]);
+  const pendingOtRequests = useMemo(() => {
+    return dutyAllocations.filter((a) => {
+      if (a.ot_status !== 'PENDING' || (a.ot_requested_hours || 0) <= 0) return false;
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+        const aSite = a.siteId || a.site_id;
+        if (aSite && aSite !== effectiveSiteFilter) return false;
+      }
+      return true;
+    });
+  }, [dutyAllocations, effectiveSiteFilter]);
   const pendingRemovalRequests = useMemo(() => removalRequests.filter((r) => r.status === 'PENDING'), [removalRequests]);
   const totalPendingCount = pendingUsers.length + pendingStaffRequests.length + pendingOtRequests.length + pendingRemovalRequests.length;
 
-  const tenantUsersCount = useMemo(() => {
-    const userCode = String(currentUser?.staff_id || currentUser?.id || '');
-    const prefix = userCode.includes('-')
-      ? userCode.split('-')[0].toUpperCase()
-      : (currentUser?.company_prefix || currentUser?.tenant_id || '').toUpperCase();
-    if (!prefix) return users.length;
-    return users.filter((u) => {
-      const uid = String(u.id || '').toUpperCase();
-      if (uid.startsWith(prefix)) return true;
-      const sid = (u.staff_id || u.username || String(u.id || '')).toUpperCase();
-      return sid.startsWith(prefix) || (u.tenant_id && u.tenant_id.toUpperCase() === prefix);
-    }).length;
-  }, [users, currentUser]);
+  const tenantUsersCount = useMemo(() => scopedUsers.length, [scopedUsers]);
 
   // Listen for route changes and expose helpers
   useEffect(() => {
@@ -305,47 +494,122 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     };
   }, []);
 
-  // Real-time synchronization with primary database collections ('users' / 'staff' / 'attendance')
+  // Real-time synchronization & Firestore live subscriptions with primary database collections
+  const syncWithFirestore = useCallback(async () => {
+    setIsSyncingLive(true);
+    try {
+      const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
+      const [cloudUsers, cloudStaff, cloudRecords, cloudDuties, apiDirectory] = await Promise.all([
+        fetchLiveUsers(effectiveTenantId),
+        fetchLiveStaff(effectiveTenantId),
+        fetchLiveAttendanceRecords(effectiveTenantId),
+        fetchLiveDutyAllocations(effectiveTenantId),
+        fetchStaffDirectory(effectiveSiteFilter),
+      ]);
+      const combinedUsers = [...(cloudUsers || []), ...(apiDirectory || [])];
+      if (combinedUsers.length > 0) {
+        const dedupedUsers = deduplicateDataset(combinedUsers);
+        setUsers(dedupedUsers);
+        saveStoredUsers(dedupedUsers);
+      } else if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
+        const dedupedUsers = deduplicateDataset(cloudUsers);
+        setUsers(dedupedUsers);
+        saveStoredUsers(dedupedUsers);
+      }
+      if (Array.isArray(cloudStaff) && cloudStaff.length > 0) {
+        const dedupedStaff = deduplicateDataset(cloudStaff);
+        setStaff(dedupedStaff);
+        saveStoredStaff(dedupedStaff);
+      }
+      if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
+        setRecords(cloudRecords);
+        saveStoredAttendance(cloudRecords);
+      }
+      if (Array.isArray(cloudDuties) && cloudDuties.length > 0) {
+        setDutyAllocations(cloudDuties);
+        saveStoredDutyAllocations(cloudDuties);
+      }
+      setIsLiveConnected(true);
+      setLastSyncTime(new Date());
+      setRealtimeEventsCount((c) => c + 1);
+    } catch (err) {
+      console.warn('Firestore live sync note:', err);
+      setIsLiveConnected(false);
+    } finally {
+      setIsSyncingLive(false);
+    }
+  }, [tenantId, currentUser]);
+
   useEffect(() => {
     let isMounted = true;
-    const syncWithFirestore = async () => {
-      try {
-        const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
-        const [cloudUsers, cloudStaff, cloudRecords, cloudDuties] = await Promise.all([
-          fetchLiveUsers(effectiveTenantId),
-          fetchLiveStaff(effectiveTenantId),
-          fetchLiveAttendanceRecords(effectiveTenantId),
-          fetchLiveDutyAllocations(effectiveTenantId),
-        ]);
-        if (!isMounted) return;
-        if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
-          setUsers(cloudUsers);
-          saveStoredUsers(cloudUsers);
-        }
-        if (Array.isArray(cloudStaff) && cloudStaff.length > 0) {
-          setStaff(cloudStaff);
-          saveStoredStaff(cloudStaff);
-        }
-        if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
-          setRecords(cloudRecords);
-          saveStoredAttendance(cloudRecords);
-        }
-        if (Array.isArray(cloudDuties) && cloudDuties.length > 0) {
-          setDutyAllocations(cloudDuties);
-          saveStoredDutyAllocations(cloudDuties);
-        }
-      } catch (err) {
-        console.warn('Firestore live sync note:', err);
-      }
-    };
     syncWithFirestore();
 
+    const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
+
+    // 1. Live Realtime Subscriptions via Firestore onSnapshot
+    const unsubAttendance = subscribeToAttendance((liveRecords) => {
+      if (!isMounted) return;
+      if (Array.isArray(liveRecords) && liveRecords.length > 0) {
+        setRecords(liveRecords);
+        saveStoredAttendance(liveRecords);
+      }
+      setIsLiveConnected(true);
+      setLastSyncTime(new Date());
+      setRealtimeEventsCount((c) => c + 1);
+    }, effectiveTenantId);
+
+    const unsubDuty = subscribeToDutyAllocations((liveDuties) => {
+      if (!isMounted) return;
+      if (Array.isArray(liveDuties) && liveDuties.length > 0) {
+        setDutyAllocations(liveDuties);
+        saveStoredDutyAllocations(liveDuties);
+      }
+      setIsLiveConnected(true);
+      setLastSyncTime(new Date());
+      setRealtimeEventsCount((c) => c + 1);
+    }, effectiveTenantId);
+
+    const unsubUsers = subscribeToLiveUsers((liveUsers) => {
+      if (!isMounted) return;
+      if (Array.isArray(liveUsers) && liveUsers.length > 0) {
+        const dedupedUsers = deduplicateDataset(liveUsers);
+        setUsers(dedupedUsers);
+        saveStoredUsers(dedupedUsers);
+      }
+      setIsLiveConnected(true);
+      setLastSyncTime(new Date());
+      setRealtimeEventsCount((c) => c + 1);
+    }, effectiveTenantId);
+
+    const unsubStaff = subscribeToLiveStaff((liveStaff) => {
+      if (!isMounted) return;
+      if (Array.isArray(liveStaff) && liveStaff.length > 0) {
+        const dedupedStaff = deduplicateDataset(liveStaff);
+        setStaff(dedupedStaff);
+        saveStoredStaff(dedupedStaff);
+      }
+      setIsLiveConnected(true);
+      setLastSyncTime(new Date());
+      setRealtimeEventsCount((c) => c + 1);
+    }, effectiveTenantId);
+
+    const handleOnline = () => {
+      setIsLiveConnected(true);
+      syncWithFirestore();
+    };
+    const handleOffline = () => {
+      setIsLiveConnected(false);
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     const handleDataUpdate = () => {
-      setStaff(getStoredStaff());
-      setUsers(getStoredUsers());
+      setStaff(deduplicateDataset(getStoredStaff()));
+      setUsers(deduplicateDataset(getStoredUsers()));
       setRecords(getStoredAttendance());
       setDutyAllocations(getStoredDutyAllocations());
       setStaffRequests(getStoredStaffRequests());
+      setLastSyncTime(new Date());
     };
     window.addEventListener('staff-data-updated', handleDataUpdate);
     window.addEventListener('user-data-updated', handleDataUpdate);
@@ -354,12 +618,18 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
     return () => {
       isMounted = false;
+      unsubAttendance();
+      unsubDuty();
+      unsubUsers();
+      unsubStaff();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       window.removeEventListener('staff-data-updated', handleDataUpdate);
       window.removeEventListener('user-data-updated', handleDataUpdate);
       window.removeEventListener('duty-data-updated', handleDataUpdate);
       window.removeEventListener('attendance-data-updated', handleDataUpdate);
     };
-  }, []);
+  }, [syncWithFirestore, tenantId, currentUser]);
 
   useEffect(() => {
     // Expose logout, handleLogout, and admin_required on window for direct testing/scripts
@@ -421,9 +691,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
   const handleLiveAttendanceRefresh = useCallback(() => {
     setRecords(getStoredAttendance());
-    setUsers(getStoredUsers());
-    setStaff(getStoredStaff());
-  }, []);
+    setUsers(deduplicateDataset(getStoredUsers()));
+    setStaff(deduplicateDataset(getStoredStaff()));
+  }, [deduplicateDataset]);
 
   // Month formatting for Monthly Report
   const monthName = useMemo(() => {
@@ -435,20 +705,20 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return new Date(year, month, 0).getDate();
   }, [year, month]);
 
-  // Unified Duty Staff: Derived directly from primary 'users' / 'staff' database collections
+  // Unified Duty Staff: Derived directly from primary 'users' / 'staff' database collections scoped by tenant & site
   // Standardized role filtering: WHERE role === 'staff' (management roles ADMIN, MANAGER, SUPERVISOR do not participate in daily duty shifts)
   const unifiedDutyStaff = useMemo(() => {
     const staffMap = new Map<string, StaffUser>();
 
     // 1. Existing staff users with role === 'staff'
-    staff.forEach((s) => {
+    scopedStaff.forEach((s) => {
       if ((s.role || '').toLowerCase() === 'staff') {
         staffMap.set(s.staffCode.toUpperCase(), s);
       }
     });
 
     // 2. Synchronize any user from primary users collection with role === 'staff'
-    users.forEach((u) => {
+    scopedUsers.forEach((u) => {
       if ((u.role || '').toLowerCase() === 'staff') {
         const code = (u.staff_id || u.username || `HK-${u.id}`).toUpperCase();
         if (!staffMap.has(code)) {
@@ -464,13 +734,15 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             fixedDepartment: u.fixed_department || undefined,
             isTempReliever: u.is_temp_reliever,
             tempDepartment: u.temp_department || undefined,
+            siteId: u.siteId || u.site_id,
+            siteName: u.siteName || u.site_name,
           });
         }
       }
     });
 
     return Array.from(staffMap.values());
-  }, [staff, users]);
+  }, [scopedStaff, scopedUsers]);
 
   // Total active staff count for baseline presence denominator
   const totalActiveStaffCount = useMemo(() => {
@@ -496,12 +768,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const dynamicPresentCount = useMemo(() => {
     if (totalActiveStaffCount === 0) return 0;
     const presentUserIds = new Set(
-      records
+      scopedRecords
         .filter((r) => r.date === selectedLiveDate && Boolean(r.punchIn))
         .map((r) => r.userId)
     );
     return unifiedDutyStaff.filter((s) => s.active && presentUserIds.has(s.id)).length;
-  }, [unifiedDutyStaff, records, selectedLiveDate, totalActiveStaffCount]);
+  }, [unifiedDutyStaff, scopedRecords, selectedLiveDate, totalActiveStaffCount]);
 
   // Aggregate monthly data matching Python backend formula
   const summaryData = useMemo<MonthlyStaffSummary[]>(() => {
@@ -510,8 +782,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return visibleStaff
       .filter((s) => s.active)
       .map((user) => {
-        const userRecords = records.filter(
-          (r) => r.userId === user.id && r.date.startsWith(monthPrefix)
+        const userRecords = scopedRecords.filter(
+          (r) => r.userId === user.id && (r.date || r.calendar_date || '').startsWith(monthPrefix)
         );
 
         const daysPresent = userRecords.filter((r) => Boolean(r.punchIn)).length;
@@ -608,12 +880,23 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
 
     const numericStaffIds = staff.map((s) => Number(s.id)).filter((n) => !isNaN(n) && n > 0);
     const newId = numericStaffIds.length > 0 ? Math.max(...numericStaffIds) + 1 : 101;
+    const chosenSiteId =
+      (newStaffData as any).siteId ||
+      (isManager ? (currentUser?.siteId || currentUser?.site_id) : (effectiveSiteFilter !== 'ALL' ? effectiveSiteFilter : 'SITE_APEX_MAIN')) ||
+      'SITE_APEX_MAIN';
+    const chosenSiteName =
+      (newStaffData as any).siteName ||
+      (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) ||
+      getSiteNameById(chosenSiteId);
+
     const newMember: StaffUser = {
       ...newStaffData,
       id: newId,
       staffCode: autoStaffCode,
       tenant_id: activeTenantId,
       company_prefix: companyPrefix,
+      siteId: chosenSiteId,
+      siteName: chosenSiteName,
       attendanceLogs: [],
       presentDays: 0,
       regularHours: 0,
@@ -639,6 +922,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         username: cleanStaffId,
         tenant_id: activeTenantId,
         company_prefix: companyPrefix,
+        siteId: chosenSiteId,
+        siteName: chosenSiteName,
+        site_id: chosenSiteId,
+        site_name: chosenSiteName,
         name: newMember.name,
         full_name: newMember.name,
         role: (newStaffData.role as any) || 'staff',
@@ -1189,6 +1476,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     fixed_department?: string;
     is_temp_reliever?: boolean;
     temp_department?: string | null;
+    siteId?: string;
+    siteName?: string;
   }): { success: boolean; message: string; status?: number } => {
     // Rule: Only authenticated Admins and Managers inside the app can create Staff, Supervisors, or Managers
     if (!isAdminOrManager) {
@@ -1227,6 +1516,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const companyPrefix = activeTenantPrefix;
     const activeTenantId = activeTenantPrefix;
 
+    const chosenSiteId = data.siteId || (isManager ? (currentUser?.siteId || currentUser?.site_id) : 'SITE_APEX_MAIN') || 'SITE_APEX_MAIN';
+    const chosenSiteName = data.siteName || (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) || getSiteNameById(chosenSiteId);
+
     const newAppUser: AppUser = {
       id: newUserId,
       staff_id: chosenStaffId,
@@ -1234,6 +1526,11 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       tenant_id: activeTenantId,
       tenantId: activeTenantId,
       company_prefix: companyPrefix,
+      siteId: chosenSiteId,
+      site_id: chosenSiteId,
+      siteName: chosenSiteName,
+      site_name: chosenSiteName,
+      documents: [], // Enforce empty initial state
       password: pwd,
       password_hash: createPasswordHash(pwd),
       raw_password_vault: pwd,
@@ -1271,6 +1568,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       staffCode: chosenStaffId,
       tenant_id: activeTenantId,
       company_prefix: companyPrefix,
+      siteId: chosenSiteId,
+      site_id: chosenSiteId,
+      siteName: chosenSiteName,
+      site_name: chosenSiteName,
       name: data.name.trim(),
       mobile: data.mobile ? data.mobile.trim() : undefined,
       phone: data.mobile ? data.mobile.trim() : undefined,
@@ -1349,438 +1650,50 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         </div>
       )}
 
-      {/* Mobile Drawer Backdrop */}
-      {isMobileSidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-40 d-md-none"
-          onClick={() => setIsMobileSidebarOpen(false)}
-        />
-      )}
+      {/* 1. RESPONSIVE SIDEBAR OVERLAY DRAWER */}
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        activeTab={activeTab}
+        onNavigateTab={(tab) => {
+          handleNavigateTab(tab as any);
+          setIsSidebarOpen(false);
+        }}
+        isAdminOrManager={isAdminOrManager}
+        isAdmin={isAdmin}
+        isManager={isManager}
+        isStaff={isStaff}
+        tenantUsersCount={staffList.length}
+        staffList={staffList}
+        totalPendingCount={totalPendingCount}
+        pendingLeavesCount={pendingLeavesCount}
+        staffCount={staffList.length}
+        currentUser={currentUser}
+        userInitial={userInitial}
+        userName={userName}
+        onLogout={handleAppLogout}
+        onOpenAdminVaultModal={() => setIsAdminVaultModalOpen(true)}
+        onOpenStaffRequestModal={() => setIsStaffRequestModalOpen(true)}
+        onOpenDutyModal={() => setIsDutyModalOpen(true)}
+        onOpenStaffModal={() => setIsStaffModalOpen(true)}
+        onOpenSheetsModal={() => setIsSheetsModalOpen(true)}
+        onOpenPdfPreview={() => setIsPdfPreviewOpen(true)}
+      />
 
-      {/* 1. RESPONSIVE SIDEBAR DRAWER */}
-      <aside
-        className={`sidebar-drawer text-white p-3 d-flex flex-column justify-content-between shrink-0 select-none overflow-y-auto ${
-          isMobileSidebarOpen ? 'show' : ''
-        }`}
-        id="sidebarDrawer"
-      >
-        <div>
-          <div className="d-flex justify-content-between align-items-center mb-4 border-bottom border-white-50 pb-2">
-            <div>
-              <small className="text-info fw-bold text-uppercase" style={{ fontSize: '0.65rem', color: '#93c5fd' }}>
-                Admin Console
-              </small>
-              <h6 className="fw-bold mb-0 text-white">Housekeeping Ops</h6>
-            </div>
-            <button
-              type="button"
-              className="btn text-white p-0 d-md-none bg-transparent border-0 cursor-pointer fs-4 leading-none"
-              id="closeSidebarBtn"
-              onClick={() => setIsMobileSidebarOpen(false)}
-              title="Close Sidebar"
-            >
-              &times;
-            </button>
-          </div>
-
-          <nav className="nav flex-column gap-1">
-            {/* Live Attendance */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-live-attendance"
-                onClick={() => {
-                  handleNavigateTab('live');
-                  setIsMobileSidebarOpen(false);
-                }}
-                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full ${
-                  activeTab === 'live' ? 'bg-white/15' : ''
-                }`}
-              >
-                <Activity className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Live Attendance</span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <Activity className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Live Attendance</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Admin Staff Table & Vault */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-admin-staff-mgmt"
-                onClick={() => {
-                  handleNavigateTab('admin-staff');
-                  setIsMobileSidebarOpen(false);
-                }}
-                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
-                  activeTab === 'admin-staff' ? 'bg-white/15' : ''
-                }`}
-              >
-                <span className="d-flex align-items-center">
-                  <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Staff &amp; Vault</span>
-                </span>
-                <span className="badge bg-primary-subtle text-primary border border-primary-subtle" style={{ fontSize: '0.65rem' }}>
-                  {tenantUsersCount}
-                </span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Staff &amp; Vault</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Pending Approvals Queue */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-pending-approvals-queue"
-                onClick={() => {
-                  handleNavigateTab('pending-approvals');
-                  setIsMobileSidebarOpen(false);
-                }}
-                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
-                  activeTab === 'pending-approvals' ? 'bg-white/15' : ''
-                }`}
-              >
-                <span className="d-flex align-items-center">
-                  <UserCheck className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Approvals Queue</span>
-                </span>
-                {totalPendingCount > 0 ? (
-                  <span className="badge bg-warning text-dark font-bold animate-pulse" style={{ fontSize: '0.65rem' }}>
-                    {totalPendingCount} PENDING
-                  </span>
-                ) : (
-                  <span className="badge bg-secondary-subtle text-white-50" style={{ fontSize: '0.6rem' }}>
-                    0
-                  </span>
-                )}
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <UserCheck className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Approvals Queue</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Leaves & Weekly Off Management Tab (All Roles) */}
-            <button
-              type="button"
-              id="link-leave-management"
-              onClick={() => {
-                handleNavigateTab('leaves');
-                setIsMobileSidebarOpen(false);
-              }}
-              className={`nav-link text-white rounded py-2 px-2.5 d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
-                activeTab === 'leaves' ? 'bg-white/15 border-l-2 border-cyan-400' : ''
-              }`}
-            >
-              <span className="d-flex align-items-center">
-                <CalendarCheck className="me-2 shrink-0 text-cyan-400" style={{ width: '1rem', height: '1rem' }} />
-                <span>Leaves &amp; Weekly Off</span>
-              </span>
-              {pendingLeavesCount > 0 ? (
-                <span className="badge bg-warning text-dark font-bold animate-pulse" style={{ fontSize: '0.65rem' }}>
-                  {pendingLeavesCount} NEW
-                </span>
-              ) : (
-                <span className="badge bg-info-subtle text-info border border-info-subtle" style={{ fontSize: '0.6rem' }}>
-                  LIVE
-                </span>
-              )}
-            </button>
-
-            {/* Punching Kiosk */}
-            <button
-              type="button"
-              id="link-staff-portal"
-              onClick={() => {
-                handleNavigateTab('portal');
-                setIsMobileSidebarOpen(false);
-              }}
-              className={`nav-link text-white rounded py-2 px-2.5 d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
-                activeTab === 'portal' ? 'active-kiosk' : ''
-              }`}
-            >
-              <span className="d-flex align-items-center">
-                <Clock className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Punching Kiosk</span>
-              </span>
-              <span className="badge bg-success" style={{ fontSize: '0.6rem' }}>
-                ACTIVE
-              </span>
-            </button>
-
-            {/* Monthly OT */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-monthly-report"
-                onClick={() => {
-                  handleNavigateTab('monthly');
-                  setIsMobileSidebarOpen(false);
-                }}
-                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full ${
-                  activeTab === 'monthly' ? 'bg-white/15' : ''
-                }`}
-              >
-                <FileSpreadsheet className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Monthly OT</span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <FileSpreadsheet className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Monthly OT</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Admin Dynamic Geofence Configuration & GPS Settings Panel */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-geofence-settings"
-                onClick={() => {
-                  handleNavigateTab('geofence');
-                  setIsMobileSidebarOpen(false);
-                }}
-                className={`nav-link text-white py-2 px-2.5 rounded d-flex align-items-center justify-content-between cursor-pointer border-0 bg-transparent text-start w-full ${
-                  activeTab === 'geofence' ? 'bg-white/15 border-l-2 border-amber-400 font-bold' : ''
-                }`}
-              >
-                <span className="d-flex align-items-center">
-                  <MapPin className="me-2 shrink-0 text-amber-400" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Geofence &amp; GPS</span>
-                </span>
-                <span className="badge bg-amber-500/20 text-amber-300 border border-amber-500/40" style={{ fontSize: '0.62rem' }}>
-                  PERIMETER
-                </span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <MapPin className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Geofence &amp; GPS</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Admin Password Vault Modal Button */}
-            {isAdmin && (
-              <button
-                type="button"
-                id="link-admin-vault-modal"
-                onClick={() => {
-                  setIsAdminVaultModalOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full hover:bg-white/10"
-              >
-                <KeyRound className="me-2 shrink-0 text-amber-400" style={{ width: '1rem', height: '1rem' }} />
-                <span>Password Vault</span>
-              </button>
-            )}
-
-            {/* + Request New Staff Modal Button */}
-            {isAdminOrManager && (
-              <button
-                type="button"
-                id="link-new-staff-modal"
-                onClick={() => {
-                  setIsStaffRequestModalOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full hover:bg-white/10"
-              >
-                <UserPlus className="me-2 shrink-0 text-emerald-400" style={{ width: '1rem', height: '1rem' }} />
-                <span>+ Request Staff</span>
-              </button>
-            )}
-
-            {/* Duty & Shift Assignment: Sirf Admin/Manager ko dikhenge clickable, staff ke liye disabled & locked */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-shifts"
-                onClick={() => {
-                  setIsDutyModalOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full"
-              >
-                <Compass className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Duty &amp; Shift Assignment</span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <Compass className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Duty &amp; Shift Assignment</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Staff Roster: Sirf Admin/Manager ko dikhenge clickable, staff ke liye disabled & locked */}
-            {isAdminOrManager ? (
-              <button
-                type="button"
-                id="link-roster"
-                onClick={() => {
-                  setIsStaffModalOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full"
-              >
-                <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Staff Roster ({staff.length})</span>
-              </button>
-            ) : (
-              <div
-                className="nav-link text-white-50 disabled-link py-2 px-2.5 rounded d-flex align-items-center justify-content-between"
-                style={{ pointerEvents: 'none', opacity: 0.5 }}
-              >
-                <span className="d-flex align-items-center">
-                  <Users className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                  <span>Staff Roster</span>
-                </span>
-                <Lock className="text-warning ms-auto shrink-0" style={{ width: '0.85rem', height: '0.85rem', color: '#f59e0b' }} />
-              </div>
-            )}
-
-            {/* Punch Log History */}
-            <button
-              type="button"
-              id="link-punch-log-history"
-              onClick={() => {
-                if (isAdminOrManager) {
-                  setIsDutyModalOpen(true);
-                } else {
-                  handleNavigateTab('portal');
-                }
-                setIsMobileSidebarOpen(false);
-              }}
-              className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full"
-            >
-              <History className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-              <span>Punch Log History</span>
-            </button>
-
-            {/* Google Sheets Sync (Admin/Manager) */}
-            {isAdminOrManager && (
-              <button
-                type="button"
-                id="link-sync-sheets"
-                onClick={() => {
-                  setIsSheetsModalOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full"
-              >
-                <FileSpreadsheet className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>Google Sheets Sync</span>
-              </button>
-            )}
-
-            {/* PDF Document Preview (Admin/Manager) */}
-            {isAdminOrManager && (
-              <button
-                type="button"
-                id="link-pdf-preview"
-                onClick={() => {
-                  setIsPdfPreviewOpen(true);
-                  setIsMobileSidebarOpen(false);
-                }}
-                className="nav-link text-white py-2 px-2.5 rounded d-flex align-items-center cursor-pointer border-0 bg-transparent text-start w-full"
-              >
-                <FileText className="me-2 shrink-0" style={{ width: '1rem', height: '1rem' }} />
-                <span>PDF Document Preview</span>
-              </button>
-            )}
-          </nav>
-        </div>
-
-        {/* Sidebar Bottom Profile Badge */}
-        <div className="border-top border-light-subtle pt-3 d-flex align-items-center justify-content-between gap-2 mt-4">
-          <div className="d-flex align-items-center gap-2 overflow-hidden">
-            <div
-              className="bg-primary rounded-circle text-center fw-bold text-white shrink-0"
-              style={{ width: '34px', height: '34px', lineHeight: '34px', fontSize: '0.875rem' }}
-            >
-              {userInitial}
-            </div>
-            <div className="lh-1 overflow-hidden">
-              <div className="fw-bold small text-white truncate">{userName}</div>
-              <small className="text-white-50 text-uppercase truncate block font-mono" style={{ fontSize: '0.65rem' }}>
-                {currentUser?.staff_id ? `${currentUser.staff_id} • ` : ''}
-                {isAdmin
-                  ? 'ADMIN_OPERATIONS'
-                  : isManager
-                  ? 'OPERATIONS_MGR'
-                  : 'STAFF_USER'}
-              </small>
-            </div>
-          </div>
-          <button
-            type="button"
-            id="btn-sidebar-logout"
-            onClick={handleAppLogout}
-            title="Kill Session / Logout"
-            className="text-white-50 hover:text-rose-400 p-1.5 rounded transition-colors bg-transparent border-0 cursor-pointer"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </div>
-      </aside>
-
-      {/* 2. MAIN CONTENT AREA (OPTIMIZED FOR SPACE) */}
-      <div className="main-wrapper p-3 sm:p-4 min-h-screen">
-        {/* Top Bar for Mobile Menu & Header */}
+      {/* 2. MAIN CONTENT AREA (FULL SCREEN WIDTH ON ALL DEVICES) */}
+      <div className="main-wrapper w-full p-3 sm:p-4 min-h-screen">
+        {/* Top Bar for Menu & Header */}
         <div className="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-slate-200 gap-2 flex-wrap">
           <div className="d-flex align-items-center gap-2">
             <button
               type="button"
-              className="btn btn-primary btn-sm d-md-none cursor-pointer"
+              className="btn btn-primary btn-sm cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1E3A8A] hover:bg-blue-900 text-white rounded-lg text-xs font-bold shadow-xs transition-colors"
               id="openSidebarBtn"
-              onClick={() => setIsMobileSidebarOpen(true)}
+              onClick={() => setIsSidebarOpen(true)}
+              title="Toggle Navigation Menu"
             >
-              <Menu className="h-4 w-4 me-1 inline" /> Menu
+              <Menu className="h-4 w-4 inline" />
+              <span>Menu</span>
             </button>
             <div>
               <h5 className="fw-bold mb-0 text-primary font-sans" style={{ color: '#1a3a8a' }}>
@@ -1839,6 +1752,42 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 </button>
               </div>
             )}
+
+            {/* Top Bar Site Selector & Create Site Button for MASTER ADMIN (Requirement 1 & 8) */}
+            {isAdmin ? (
+              <div className="d-flex align-items-center gap-2">
+                <div className="d-flex align-items-center gap-1.5 bg-white border border-slate-300 rounded-lg px-2.5 py-1 shadow-2xs text-xs font-semibold">
+                  <Building className="text-[#1E3A8A] shrink-0" style={{ width: '0.85rem', height: '0.85rem' }} />
+                  <span className="text-slate-500 font-medium">Site:</span>
+                  <SiteSelector
+                    currentSite={selectedSiteFilter}
+                    onSiteChange={handleSiteFilterChange}
+                    userRole={userRole === 'admin' ? 'SUPER_ADMIN' : userRole}
+                    sites={availableSites}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateSiteModalOpen(true)}
+                  className="btn btn-sm cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors"
+                  title="Create New Operational Site with GPS Geofence"
+                >
+                  <Plus className="h-3.5 w-3.5 inline" />
+                  <span>+ Create New Site</span>
+                </button>
+              </div>
+            ) : (
+              <span
+                className="badge bg-blue-50 text-blue-900 border border-blue-200 d-flex align-items-center gap-1.5 px-2.5 py-1.5 rounded-lg shadow-2xs font-semibold text-xs font-mono"
+                title={`Assigned Operational Unit: ${activeSiteName}`}
+              >
+                <Building className="text-[#1E3A8A] inline shrink-0" style={{ width: '0.85rem', height: '0.85rem' }} />
+                <span>{activeSiteName}</span>
+              </span>
+            )}
+
+            {/* Online Live Connect 24/7 WebSocket Status Badge & Modal Trigger */}
+            <LiveConnectBadge />
 
             {/* Single Profile Header Badge */}
             <span className="badge bg-light text-dark border d-flex align-items-center gap-1.5 px-2.5 py-1.5 rounded shadow-2xs font-semibold text-xs">
@@ -2072,9 +2021,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               onSyncGoogleSheets={() => setIsSheetsModalOpen(true)}
             />
           ) : activeTab === 'admin-staff' ? (
-            /* Dedicated Admin Staff Table & Vault */
+            /* Dedicated Admin Staff Table & Vault scoped by Tenant & Site */
             <AdminStaffTable
-              users={users}
+              users={staffList}
               currentUserRole={userRole}
               currentUserId={currentUser?.id}
               currentStaffId={currentUser?.staff_id || currentUser?.username}
@@ -2088,11 +2037,13 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               onOpenPendingApprovals={() => handleNavigateTab('pending-approvals')}
               pendingCount={totalPendingCount}
               onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+              siteFilter={effectiveSiteFilter}
+              currentUserSiteId={currentUser?.siteId || currentUser?.site_id}
             />
           ) : activeTab === 'staff-vault' ? (
-            /* Dedicated Staff Vault Table with Strict Tenant Isolation */
+            /* Dedicated Staff Vault Table with Strict Tenant & Site Isolation */
             <StaffVault
-              users={users}
+              users={staffList}
               currentUser={currentUser}
               currentUserRole={userRole}
               currentUserId={currentUser?.id}
@@ -2101,6 +2052,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               onDeleteUser={handleDeleteUser}
               onOpenAddUser={() => setIsRegisterStaffModalOpen(true)}
               onOpenVaultModal={() => setIsAdminVaultModalOpen(true)}
+              siteFilter={effectiveSiteFilter}
             />
           ) : activeTab === 'pending-approvals' ? (
             /* Dedicated Pending Approvals Queue View */
@@ -2334,8 +2286,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             <LeaveManagementView
               currentUser={currentUser}
               selectedDate={selectedLiveDate}
-              selectedSite="site-main"
-              sites={HOSPITAL_SITES}
+              selectedSite={effectiveSiteFilter !== 'ALL' ? effectiveSiteFilter : 'SITE_APEX_MAIN'}
+              sites={availableSites.length > 0 ? availableSites : HOSPITAL_SITES}
               onOpenDutyModal={() => handleOpenAssignModal()}
             />
           ) : activeTab === 'geofence' ? (
@@ -2368,7 +2320,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 selectedDate={selectedLiveDate}
                 onDateChange={setSelectedLiveDate}
                 staff={visibleStaff}
-                records={records}
+                records={scopedRecords}
                 onOpenAssignModal={handleOpenAssignModal}
                 onOpenPunchPortal={(staffId) => {
                   setPunchPortalStaffId(staffId || 1);
@@ -2383,8 +2335,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 isOnDuty={isOnDuty}
                 onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
                 activeTenantPrefix={activeTenantPrefix}
-                allUsers={users}
+                allUsers={scopedUsers}
                 onRefresh={handleLiveAttendanceRefresh}
+                siteFilter={effectiveSiteFilter}
               />
             ) : (
               <div className="p-8 text-center bg-white rounded-2xl border border-rose-200 shadow-sm max-w-md mx-auto my-8">
@@ -2448,7 +2401,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         summaryData={summaryData}
         users={staff}
         attendanceRecords={records.filter((r) =>
-          r.date.startsWith(`${year}-${month.toString().padStart(2, '0')}`)
+          (r.date || r.calendar_date || '').startsWith(`${year}-${month.toString().padStart(2, '0')}`)
         )}
         currentUserEmail={googleUserEmail}
         onLoginSuccess={(email) => setGoogleUserEmail(email)}
@@ -2461,8 +2414,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           setIsPunchModalOpen(false);
           setSelectedStaffForPunch(null);
         }}
-        staff={staff}
-        records={records}
+        staff={scopedStaff}
+        records={scopedRecords}
         selectedStaffId={selectedStaffForPunch}
         currentYear={year}
         currentMonth={month}
@@ -2477,8 +2430,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <StaffManagementModal
         isOpen={isStaffModalOpen}
         onClose={() => setIsStaffModalOpen(false)}
-        staff={staff}
-        users={users}
+        staff={scopedStaff}
+        users={scopedUsers}
         currentUserRole={userRole}
         companyPrefix={activeTenantPrefix}
         onAddStaff={handleAddStaffMember}
@@ -2501,8 +2454,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <StaffPunchPortalModal
         isOpen={isPunchPortalModalOpen}
         onClose={() => setIsPunchPortalModalOpen(false)}
-        staff={staff}
-        records={records}
+        staff={scopedStaff}
+        records={scopedRecords}
         selectedDate={selectedLiveDate}
         initialStaffId={currentUser?.staffId || punchPortalStaffId}
         currentUser={currentUser}
@@ -2516,6 +2469,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         onClose={() => setIsRegisterStaffModalOpen(false)}
         currentUserRole={userRole}
         activeTenantPrefix={activeTenantPrefix}
+        currentUserSiteId={currentUser?.siteId || currentUser?.site_id}
+        currentUserSiteName={currentUser?.siteName || currentUser?.site_name}
         onStaffAccountCreated={(slip) => setActiveCredentialSlip(slip)}
         onRegister={handleCreateStaffAccount}
       />
@@ -2543,7 +2498,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <AdminVaultModal
         isOpen={isAdminVaultModalOpen}
         onClose={() => setIsAdminVaultModalOpen(false)}
-        users={users}
+        users={staffList}
         currentUserRole={userRole}
         onUpdateUserStatus={handleUpdateUserStatus}
         onDeleteUser={handleDeleteUser}
@@ -2646,6 +2601,126 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           </div>
         </div>
       )}
+
+      {/* Online Live Connect Real-time Cloud Status Modal */}
+      {showLiveInfoModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs font-sans text-left animate-in fade-in"
+          onClick={() => setShowLiveInfoModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-6 space-y-4 text-slate-800 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="relative flex h-3 w-3">
+                  {isLiveConnected && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  )}
+                  <span
+                    className={`relative inline-flex rounded-full h-3 w-3 ${
+                      isLiveConnected ? 'bg-emerald-600' : 'bg-amber-500'
+                    }`}
+                  ></span>
+                </span>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900 tracking-tight">
+                    Online Live Connect Status
+                  </h3>
+                  <p className="text-2xs text-slate-500">
+                    Cloud Firestore Real-Time Stream & Sync
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLiveInfoModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-medium">Connection State:</span>
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-bold text-2xs ${
+                      isLiveConnected
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : 'bg-amber-100 text-amber-800 border border-amber-300'
+                    }`}
+                  >
+                    <Radio className="h-3 w-3" />
+                    {isLiveConnected ? 'Live Connected' : 'Offline Cache Mode'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-medium">Last Cloud Sync:</span>
+                  <span className="font-mono font-bold text-slate-700">
+                    {lastSyncTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-medium">Realtime Stream Events:</span>
+                  <span className="font-mono font-bold text-blue-700">
+                    {realtimeEventsCount} received
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-blue-50/60 border border-blue-100 space-y-1.5 text-2xs text-slate-700">
+                <div className="font-bold text-blue-900 flex items-center gap-1.5">
+                  <ShieldCheck className="h-3.5 w-3.5 text-blue-700" />
+                  <span>Realtime Active Collections</span>
+                </div>
+                <ul className="list-disc list-inside space-y-0.5 text-slate-600 font-mono">
+                  <li><code>attendance_records</code> (Live punches & GPS logs)</li>
+                  <li><code>duty_allocations</code> (Shift & floor coverage)</li>
+                  <li><code>users</code> & <code>staff_roster</code> (Staff directory)</li>
+                </ul>
+              </div>
+
+              <div className="text-2xs text-slate-500">
+                <span className="font-semibold text-slate-700">Database:</span>{' '}
+                <span className="font-mono text-slate-600">ai-studio-housekeepingatte-03824cce-6402-48f1-bea7-c7bdeb898710</span>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  syncWithFirestore();
+                }}
+                disabled={isSyncingLive}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-[#1E3A8A] hover:bg-blue-900 transition-colors disabled:opacity-60 cursor-pointer shadow-xs"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isSyncingLive ? 'animate-spin' : ''}`} />
+                <span>{isSyncingLive ? 'Syncing...' : 'Sync / Reconnect Now'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowLiveInfoModal(false)}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dynamic Site Onboarding & GPS Geofence Modal */}
+      <CreateSiteModal
+        isOpen={isCreateSiteModalOpen}
+        onClose={() => setIsCreateSiteModalOpen(false)}
+        onSiteCreated={handleSiteCreated}
+        availableManagers={staffList}
+      />
     </div>
   );
 }
