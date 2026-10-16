@@ -122,7 +122,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
 
   // Filter users by selectedSite (if applicable)
   const scopedUsers = useMemo(() => {
-    if (selectedSite === 'ALL' || !selectedSite) {
+    if (selectedSite === 'ALL' || selectedSite === 'GLOBAL' || !selectedSite) {
       return users;
     }
     const normSelected = normalizeSiteId(selectedSite);
@@ -160,8 +160,8 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
     // Staff sees only their own
     if (isStaff && currentUser) {
       list = list.filter((r) => r.userId === currentUser.id);
-    } else if (isManager && selectedSite !== 'ALL' && selectedSite) {
-      // Manager sees requests from their site
+    } else if (selectedSite !== 'ALL' && selectedSite !== 'GLOBAL' && selectedSite) {
+      // Non-staff with site filter sees requests for that site
       const normSelected = normalizeSiteId(selectedSite);
       list = list.filter((r) => normalizeSiteId(r.siteId) === normSelected);
     }

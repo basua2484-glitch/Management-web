@@ -10,13 +10,17 @@ import {
   AlertCircle,
   Loader2,
   Compass,
+  Trash2,
 } from 'lucide-react';
 import type { HospitalSite, AppUser, IndustryType } from '../types';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 
 export interface CreateSiteModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSiteCreated: (newSite: HospitalSite) => void;
+  onSiteDeleted?: (siteId: string) => void;
+  existingSites?: HospitalSite[];
   availableManagers?: AppUser[];
 }
 
@@ -24,8 +28,11 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
   isOpen,
   onClose,
   onSiteCreated,
+  onSiteDeleted,
+  existingSites = [],
   availableManagers = [],
 }) => {
+  const [activeTab, setActiveTab] = useState<'create' | 'manage'>('create');
   const [siteName, setSiteName] = useState('');
   const [industryType, setIndustryType] = useState<IndustryType>('HOSPITAL');
   const [address, setAddress] = useState('');
@@ -33,6 +40,9 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
   const [longitude, setLongitude] = useState<string>('72.8777');
   const [radiusMeters, setRadiusMeters] = useState<number>(100);
   const [primaryManagerId, setPrimaryManagerId] = useState<string>('');
+
+  const [siteToDelete, setSiteToDelete] = useState<HospitalSite | null>(null);
+  const [isDeletingSite, setIsDeletingSite] = useState(false);
 
   const [isFetchingLocation, setIsFetchingLocation] = useState(false);
   const [locationSuccessMsg, setLocationSuccessMsg] = useState<string | null>(null);
@@ -194,7 +204,107 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
           </button>
         </div>
 
-        {/* Form Body */}
+        {/* Navigation Tabs */}
+        {existingSites.length > 0 && (
+          <div className="flex border-b border-slate-200 bg-slate-50 px-6 pt-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('create')}
+              className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+                activeTab === 'create'
+                  ? 'border-[#1E3A8A] text-[#1E3A8A]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              + Create New Site
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('manage')}
+              className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'manage'
+                  ? 'border-[#1E3A8A] text-[#1E3A8A]'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <span>Manage Existing Sites</span>
+              <span className="px-1.5 py-0.2 rounded-full text-3xs font-mono bg-blue-100 text-blue-800 font-bold">
+                {existingSites.length}
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* Existing Sites Management Tab */}
+        {activeTab === 'manage' && (
+          <div className="p-6 space-y-3 overflow-y-auto flex-1 text-xs">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <span className="font-bold text-slate-700 uppercase tracking-wider text-2xs">
+                Active Operational Sites ({existingSites.length})
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveTab('create')}
+                className="text-2xs text-[#1E3A8A] font-bold hover:underline cursor-pointer"
+              >
+                + Add Another Site
+              </button>
+            </div>
+
+            {existingSites.map((site) => {
+              const sKey = site.id || site.siteId || site.name;
+              return (
+                <div
+                  key={sKey}
+                  className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-white hover:border-slate-300 transition-all flex items-start justify-between gap-3"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Building className="h-4 w-4 text-[#1E3A8A] shrink-0" />
+                      <h4 className="font-bold text-slate-900 text-xs truncate">
+                        {site.name || site.siteName}
+                      </h4>
+                      {site.code && (
+                        <span className="font-mono text-3xs font-semibold px-1.5 py-0.5 rounded bg-blue-100 text-[#1E3A8A]">
+                          {site.code}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-2xs text-slate-500 flex items-center gap-2 flex-wrap">
+                      {site.address && (
+                        <span className="flex items-center gap-1">
+                          <MapPin className="h-3 w-3 text-slate-400" />
+                          <span>{site.address}</span>
+                        </span>
+                      )}
+                      {site.locationLat !== undefined && site.locationLng !== undefined && (
+                        <span className="font-mono text-3xs text-slate-400">
+                          [{site.locationLat.toFixed(4)}, {site.locationLng.toFixed(4)}] • {site.radiusMeters || 100}m
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSiteToDelete(site);
+                    }}
+                    className="p-1.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
+                    title={`Delete site ${site.name || site.siteName}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Form Body for Create */}
+        {activeTab === 'create' && (
         <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
           {errorMessage && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-center gap-2">
@@ -433,7 +543,50 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
             </button>
           </div>
         </form>
+        )}
       </div>
+
+      {/* Reusable Site Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(siteToDelete)}
+        title="Permanently Delete Operational Site"
+        itemType="Hospital Operational Site"
+        itemName={siteToDelete ? `${siteToDelete.name || siteToDelete.siteName} (${siteToDelete.code || siteToDelete.id})` : undefined}
+        message={
+          siteToDelete ? (
+            <p>
+              Are you sure you want to permanently delete operational site{' '}
+              <strong className="text-slate-900">"{siteToDelete.name || siteToDelete.siteName}"</strong>?
+              This will remove the site and its GPS geofence configuration from the multi-unit operational registry.
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Warning: Deleting a site removes its geofencing boundary and site scope from active dashboards."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingSite}
+        onCancel={() => {
+          if (!isDeletingSite) setSiteToDelete(null);
+        }}
+        onConfirm={async () => {
+          if (!siteToDelete) return;
+          try {
+            setIsDeletingSite(true);
+            const targetId = siteToDelete.id || siteToDelete.siteId;
+            try {
+              await fetch(`/api/sites/${targetId}`, { method: 'DELETE' });
+            } catch (err) {
+              console.warn('API DELETE site error:', err);
+            }
+            if (onSiteDeleted) {
+              onSiteDeleted(targetId);
+            }
+          } finally {
+            setIsDeletingSite(false);
+            setSiteToDelete(null);
+          }
+        }}
+      />
     </div>
   );
 };

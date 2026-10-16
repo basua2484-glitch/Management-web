@@ -281,6 +281,16 @@ class WebSocketService {
           break;
         }
 
+        case 'SESSION_REVOKED': {
+          window.dispatchEvent(
+            new CustomEvent('session-terminated', {
+              detail: msg.payload || {},
+            })
+          );
+          this.addEventLog('security', `Remote session terminated: ${msg.payload?.deviceName || msg.payload?.sessionId || 'Device'}`);
+          break;
+        }
+
         default:
           break;
       }

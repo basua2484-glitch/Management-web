@@ -166,7 +166,7 @@ export async function fetchStaffDirectory(siteId?: string): Promise<AppUser[]> {
           role: u.role || 'admin',
           status: u.status || 'ACTIVE',
           is_approved: u.is_approved !== false,
-          siteId: u.siteId || u.site_id || 'SITE_APEX_MAIN',
+          siteId: u.siteId || u.site_id || null,
           tenant_id: u.tenant_id || u.tenantId || 'BASU',
           company_prefix: u.company_prefix || 'BASU',
         }));

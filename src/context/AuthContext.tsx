@@ -6,6 +6,11 @@ import { ensureInjectedFirestoreIdentity } from '../services/firestoreService';
 import { auth } from '../firebase';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import { getApiEndpoint } from '../services/apiConfig';
+import {
+  registerCurrentSession,
+  getOrCreateCurrentSessionId,
+  checkSessionValidity,
+} from '../services/sessionService';
 
 interface AuthContextType {
   user: AppUser | null;
@@ -128,8 +133,8 @@ function resolveUserProfile(
       tenantId: 'BASU',
       company_name: 'Basu Healthcare',
       company_prefix: 'BASU',
-      siteId: 'SITE_A',
-      siteName: 'Site A - East Wing & Trauma',
+      siteId: null,
+      siteName: 'All Sites (Global)',
       duty_type: 'FIXED',
       assigned_shift: '7-3',
       password_hash: `pbkdf2:sha256:600000$vault_salt$admin123`,
@@ -215,10 +220,10 @@ function resolveUserProfile(
       is_approved: true,
       staff_id: fallbackId.toUpperCase(),
       assigned_area: roleUpper === 'STAFF' ? '3rd Floor Wards' : 'Hospital Wide',
-      siteId: 'SITE_APEX_MAIN',
-      site_id: 'SITE_APEX_MAIN',
-      siteName: 'Apex Main Hospital',
-      site_name: 'Apex Main Hospital',
+      siteId: roleUpper === 'ADMIN' ? null : undefined,
+      site_id: roleUpper === 'ADMIN' ? null : undefined,
+      siteName: roleUpper === 'ADMIN' ? 'All Sites (Global)' : undefined,
+      site_name: roleUpper === 'ADMIN' ? 'All Sites (Global)' : undefined,
       supervisorId: roleUpper === 'STAFF' ? '102' : undefined,
       weeklyOffDay: 'Sunday',
       leaveBalance: { casual: 12, sick: 7, paid: 15 },
@@ -243,17 +248,11 @@ function resolveUserProfile(
       const cname = localStorage.getItem('company_name');
       if (cname) userProfile.company_name = cname;
     }
-    if (!userProfile.siteId || userProfile.siteId === 'site-main') {
-      userProfile.siteId = 'SITE_APEX_MAIN';
-    }
-    if (!userProfile.site_id || userProfile.site_id === 'site-main') {
-      userProfile.site_id = 'SITE_APEX_MAIN';
-    }
-    if (!userProfile.siteName) {
-      userProfile.siteName = 'Apex Main Hospital';
-    }
-    if (!userProfile.site_name) {
-      userProfile.site_name = 'Apex Main Hospital';
+    if (userProfile.role === 'admin') {
+      userProfile.siteId = null;
+      userProfile.site_id = null;
+      userProfile.siteName = 'All Sites (Global)';
+      userProfile.site_name = 'All Sites (Global)';
     }
     if (!userProfile.weeklyOffDay) userProfile.weeklyOffDay = 'Sunday';
     if (!userProfile.leaveBalance) {
@@ -335,6 +334,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // Standard function declaration - hoisted across component scope to eliminate any Temporal Dead Zone errors
+  function executeLogout(navigate?: (to: string, options?: { replace?: boolean }) => void) {
+    // 1. Wipe local tokens, storage, and cookies
+    try {
+      authServiceLogout();
+    } catch (e) {
+      console.warn('authServiceLogout error:', e);
+    }
+
+    // 2. Sign out Firebase if initialized
+    if (auth) {
+      try {
+        auth.signOut().catch(() => {});
+      } catch {}
+    }
+
+    // 3. Clear serverless session
+    try {
+      fetch(getApiEndpoint('/api/logout'), { method: 'POST' }).catch(() => {});
+    } catch {}
+
+    // 4. Immediately clear React AuthContext state
+    setToken(null);
+    setRole(null);
+    setUser(null);
+    setTenantId(null);
+    setIsLoading(false);
+
+    // 5. Navigate to login
+    if (navigate) {
+      navigate('/login', { replace: true });
+    } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
+  }
+
+  // Stable logout callback fully initialized and accessible BEFORE any useEffect or event listeners
+  const logout = useCallback(executeLogout, []);
+
   // Sync with Firebase Authentication & cross-tab/window storage updates
   useEffect(() => {
     ensureInjectedFirestoreIdentity().catch(() => {});
@@ -405,19 +443,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
+    // 3. Remote Session Revocation Listener
+    const handleRemoteSessionTerminated = (e: any) => {
+      const currentSessionId = getOrCreateCurrentSessionId();
+      const detail = e.detail || {};
+      const isTargeted =
+        detail.sessionId === currentSessionId ||
+        (detail.allOthers && detail.keepSessionId !== currentSessionId);
+
+      if (isTargeted) {
+        sessionStorage.setItem(
+          'session_revocation_alert',
+          'Your active device session has been terminated remotely from another device.'
+        );
+        logout();
+      }
+    };
+
+    // Periodic heartbeat check for session revocation
+    const sessionHeartbeatInterval = setInterval(async () => {
+      if (getStoredToken()) {
+        const check = await checkSessionValidity();
+        if (!check.valid) {
+          sessionStorage.setItem(
+            'session_revocation_alert',
+            check.message || 'Your active device session has been terminated remotely.'
+          );
+          logout();
+        }
+      }
+    }, 20000);
+
     window.addEventListener('storage', handleStorageChange);
     window.addEventListener('auth-state-change', restoreAuth);
     window.addEventListener('supervisor-duty-punch-changed', restoreAuth);
+    window.addEventListener('session-terminated', handleRemoteSessionTerminated);
 
     return () => {
       if (typeof unsubscribeFirebase === 'function') {
         unsubscribeFirebase();
       }
+      clearInterval(sessionHeartbeatInterval);
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('auth-state-change', restoreAuth);
       window.removeEventListener('supervisor-duty-punch-changed', restoreAuth);
+      window.removeEventListener('session-terminated', handleRemoteSessionTerminated);
     };
-  }, [restoreAuth]);
+  }, [restoreAuth, logout]);
 
   const login = useCallback(
     async (
@@ -444,6 +516,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(userProfile);
         setIsLoading(false);
 
+        if (storedUserId) {
+          registerCurrentSession(storedUserId, userProfile?.name || staffId, storedRole || 'STAFF').catch(() => {});
+        }
+
         const destination =
           targetRedirect ||
           (storedRole === 'ADMIN'
@@ -457,44 +533,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         navigate(destination, { replace: true });
       }
       return success;
-    },
-    []
-  );
-
-  const logout = useCallback(
-    (navigate?: (to: string, options?: { replace?: boolean }) => void) => {
-      // 1. Wipe local tokens, storage, and cookies
-      try {
-        authServiceLogout();
-      } catch (e) {
-        console.warn('authServiceLogout error:', e);
-      }
-
-      // 2. Sign out Firebase if initialized
-      if (auth) {
-        try {
-          auth.signOut().catch(() => {});
-        } catch {}
-      }
-
-      // 3. Clear serverless session
-      try {
-        fetch(getApiEndpoint('/api/logout'), { method: 'POST' }).catch(() => {});
-      } catch {}
-
-      // 4. Immediately clear React AuthContext state
-      setToken(null);
-      setRole(null);
-      setUser(null);
-      setTenantId(null);
-      setIsLoading(false);
-
-      // 5. Navigate to login
-      if (navigate) {
-        navigate('/login', { replace: true });
-      } else if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
     },
     []
   );

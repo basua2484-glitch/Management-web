@@ -29,6 +29,7 @@ export interface Tenant {
   company_name: string; // e.g. "ApexCare"
   company_prefix: string; // e.g. "APEX"
   root_admin_id: string; // e.g. "APEX-ADM-001"
+  rootAdminId?: string;
   admin_name: string;
   admin_email?: string;
   created_at: string;
@@ -435,9 +436,30 @@ export interface User {
   assigned_area?: string; // alias for effective department
   password?: string;
   department?: string;
-  shift?: 'Morning' | 'Evening' | 'Night';
+  shift?: 'Morning' | 'Evening' | 'Night' | string;
   is_approved?: boolean;
+  active?: boolean;
+  deleted_at?: string | null;
   documents?: EmployeeDocument[];
+
+  // Social & Interactive Profile Fields
+  avatar?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  emergency_contact_name?: string;
+  emergencyContactName?: string;
+  emergency_contact_phone?: string;
+  emergencyContactPhone?: string;
+  emergencyContact?: string;
+  blood_group?: string;
+  bloodGroup?: string;
+  address?: string;
+  residential_address?: string;
+  id_proof_status?: 'VERIFIED' | 'PENDING' | 'SUBMITTED' | 'NOT_PROVIDED' | string;
+  idProofStatus?: 'VERIFIED' | 'PENDING' | 'SUBMITTED' | 'NOT_PROVIDED' | string;
+  id_proof_type?: string;
+  idProofType?: string;
+  joining_date?: string;
 }
 
 export interface AppUser extends User {
@@ -505,7 +527,7 @@ export interface StaffUser {
   name: string;
   role: 'staff' | 'supervisor' | 'manager' | 'lead' | 'admin';
   department: string;
-  shift: 'Morning' | 'Evening' | 'Night';
+  shift: 'Morning' | 'Evening' | 'Night' | string;
   siteId?: string;
   site_id?: string;
   siteName?: string;
@@ -519,6 +541,8 @@ export interface StaffUser {
   active: boolean;
   dutyType?: DutyType;
   fixedDepartment?: string;
+  fixed_department?: string;
+  assigned_area?: string;
   isTempReliever?: boolean;
   tempDepartment?: string;
   dutyStatus?: DutyStatus | string;
@@ -528,6 +552,23 @@ export interface StaffUser {
   regularHours?: number;
   overtimeHours?: number;
   documents?: EmployeeDocument[];
+  avatar?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  emergency_contact_name?: string;
+  emergencyContactName?: string;
+  emergency_contact_phone?: string;
+  emergencyContactPhone?: string;
+  emergencyContact?: string;
+  blood_group?: string;
+  bloodGroup?: string;
+  address?: string;
+  residential_address?: string;
+  id_proof_status?: 'VERIFIED' | 'PENDING' | 'SUBMITTED' | 'NOT_PROVIDED' | string;
+  idProofStatus?: 'VERIFIED' | 'PENDING' | 'SUBMITTED' | 'NOT_PROVIDED' | string;
+  id_proof_type?: string;
+  idProofType?: string;
+  joining_date?: string;
 }
 
 export interface AttendanceSession {

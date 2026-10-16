@@ -83,7 +83,7 @@ export function getStoredGeofenceConfig(): GeofenceConfig {
         return {
           ...DEFAULT_GEOFENCE_CONFIG,
           ...parsed,
-          zones: Array.isArray(parsed.zones) && parsed.zones.length > 0 ? parsed.zones : DEFAULT_WARD_ZONES,
+          zones: Array.isArray(parsed.zones) ? parsed.zones : DEFAULT_WARD_ZONES,
         };
       }
     }

@@ -64,6 +64,8 @@ import {
 } from '../data/mockHousekeepingData';
 import { compressDocumentWithMetrics, formatBytes, type CompressionResult } from '../utils/fileCompressor';
 import { formatTimeTo12hStr } from '../utils/attendanceCalculator';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
+import { UserProfileModal } from './UserProfileModal';
 
 export interface EmployeeModalProps {
   staffId: string | null;
@@ -97,6 +99,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
   const [selectedDutyType, setSelectedDutyType] = useState<DutyType>('PERMANENT_RELIEVER');
   const [newPassword, setNewPassword] = useState<string>('');
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+  const [showSocialProfileModal, setShowSocialProfileModal] = useState(false);
 
   // Document Vault modal & action states
   const [docUploadType, setDocUploadType] = useState<string | null>(null);
@@ -452,7 +455,7 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
 
     saveStoredUsers(updatedUsers);
     setUsers(updatedUsers);
-    setActionSuccessMsg(`Account password reset successfully to: ${trimmed}`);
+    setActionSuccessMsg('Account password reset securely.');
     setTimeout(() => {
       setActionPanel('none');
       setNewPassword('');
@@ -590,16 +593,28 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
     }
   };
 
+  const [docToDelete, setDocToDelete] = useState<EmployeeDocument | null>(null);
+  const [isDeletingDoc, setIsDeletingDoc] = useState(false);
+
   const handleDeleteDoc = (doc: EmployeeDocument) => {
     if (!matchedUser) return;
-    if (confirm(`Permanently delete "${doc.docType}" from vault?`)) {
-      const res = deleteEmployeeDocument(matchedUser.staff_id || matchedUser.id, doc.docId, currentLoggedInUser);
+    setDocToDelete(doc);
+  };
+
+  const confirmDeleteDoc = async () => {
+    if (!matchedUser || !docToDelete) return;
+    try {
+      setIsDeletingDoc(true);
+      const res = deleteEmployeeDocument(matchedUser.staff_id || matchedUser.id, docToDelete.docId, currentLoggedInUser);
       if (res.success) {
-        setActionSuccessMsg(`Deleted "${doc.docType}" from vault.`);
+        setActionSuccessMsg(`Deleted "${docToDelete.docType}" from vault.`);
         setUsers(getStoredUsers());
         setTimeout(() => setActionSuccessMsg(null), 2500);
         onActionComplete?.();
       }
+    } finally {
+      setIsDeletingDoc(false);
+      setDocToDelete(null);
     }
   };
 
@@ -659,15 +674,28 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              id="btn-close-employee-profile-modal"
-              onClick={onClose}
-              className="p-2 hover:bg-slate-100 rounded-full font-bold text-slate-400 hover:text-slate-800 transition cursor-pointer"
-              title="Close Profile Modal"
-            >
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                id="btn-open-interactive-social-profile"
+                onClick={() => setShowSocialProfileModal(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-bold hover:bg-indigo-100 transition-colors cursor-pointer shadow-2xs"
+                title="View & Edit Interactive Social Profile Card"
+              >
+                <User className="h-3.5 w-3.5 text-indigo-600" />
+                <span>Social Profile</span>
+              </button>
+
+              <button
+                type="button"
+                id="btn-close-employee-profile-modal"
+                onClick={onClose}
+                className="p-2 hover:bg-slate-100 rounded-full font-bold text-slate-400 hover:text-slate-800 transition cursor-pointer"
+                title="Close Profile Modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
 
           {/* Tab Navigation */}
@@ -1285,13 +1313,13 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                   <form onSubmit={handleResetPassword} className="space-y-3">
                     <div>
                       <label className="block text-2xs font-bold text-slate-700 uppercase mb-1">
-                        New Plaintext Password
+                        New Password (Permanently Masked)
                       </label>
                       <input
-                        type="text"
+                        type="password"
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="Enter new password (e.g. Pass@1234)"
+                        placeholder="Enter new password (min. 6 characters)"
                         className="w-full text-xs font-mono rounded-lg border border-amber-300 bg-white p-2 text-slate-800"
                         required
                       />
@@ -1518,7 +1546,10 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
                             {canDeleteThisUser && (
                               <button
                                 type="button"
-                                onClick={() => handleDeleteDoc(existing)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteDoc(existing);
+                                }}
                                 className="p-1 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded cursor-pointer"
                                 title="Delete document (Admin Only)"
                               >
@@ -1842,6 +1873,46 @@ export const EmployeeProfileModal: React.FC<EmployeeModalProps> = ({
           <span className="font-mono">Staff ID: {displayStaffCode}</span>
         </div>
       </div>
+
+      {/* Delete Document Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(docToDelete)}
+        title="Permanently Delete Document"
+        itemType="Employee Digitized Document"
+        itemName={docToDelete ? `${docToDelete.docType} (${matchedUser?.full_name || matchedUser?.name || displayStaffCode})` : undefined}
+        message={
+          docToDelete ? (
+            <p>
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-slate-900">"{docToDelete.docType}"</strong> from the employee's digitized vault dossier?
+              This record will be permanently erased.
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Security compliance notice: Erased documents cannot be recovered and must be re-uploaded."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingDoc}
+        onCancel={() => {
+          if (!isDeletingDoc) setDocToDelete(null);
+        }}
+        onConfirm={confirmDeleteDoc}
+      />
+
+      {/* Interactive Social-Style User Profile Modal */}
+      {showSocialProfileModal && matchedUser && (
+        <UserProfileModal
+          isOpen={showSocialProfileModal}
+          onClose={() => setShowSocialProfileModal(false)}
+          targetUser={matchedUser}
+          currentUser={currentLoggedInUser as any}
+          currentUserRole={userRole}
+          onUpdateUser={() => {
+            setUsers(getStoredUsers());
+            onActionComplete?.();
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -6,7 +6,7 @@ import {defineConfig, Plugin} from 'vite';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { setupWebSocketServer, getWsStatusSummary, broadcastToAll } from './src/server/websocketServer';
-import { HOSPITAL_SITES } from './src/data/mockHousekeepingData';
+import { parseUserAgentString, extractClientIpAddress, lookupIpLocation } from './src/utils/userAgentAndGeo';
 
 function attendanceApiPlugin(): Plugin {
   // In-memory session store for dev server API
@@ -23,32 +23,254 @@ function attendanceApiPlugin(): Plugin {
     radius_meters?: number;
     primary_manager_id?: string | null;
     created_at?: string;
+  }> = [];
+
+  const dynamicZonesStore: Array<{
+    id: string;
+    tenant_id: string;
+    site_id: string;
+    zone_name: string;
+    department?: string;
+    floor?: string;
+    created_at: string;
+    created_by_role?: string;
+    is_approved: boolean;
   }> = [
     {
-      id: 'SITE_APEX_MAIN',
+      id: 'zone-icu-01',
       tenant_id: '00000000-0000-0000-0000-000000000001',
-      site_name: 'Site A - East Wing & Trauma',
-      industry_type: 'HOSPITAL',
-      address: 'Apex Medical Campus, North Wing',
-      location_lat: 19.0760,
-      location_lng: 72.8777,
-      radius_meters: 100,
-      primary_manager_id: 'MGR001',
+      site_id: 'GLOBAL',
+      zone_name: 'ICU & Critical Care',
+      department: 'Critical Care',
+      floor: '3rd Floor',
       created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
     },
     {
-      id: 'SITE_CARE_SOUTH',
+      id: 'zone-emg-01',
       tenant_id: '00000000-0000-0000-0000-000000000001',
-      site_name: 'Site B - North Super-Speciality',
-      industry_type: 'HOSPITAL',
-      address: 'Sector 9, North Medical Hub',
-      location_lat: 19.0820,
-      location_lng: 72.8850,
-      radius_meters: 150,
-      primary_manager_id: null,
+      site_id: 'GLOBAL',
+      zone_name: 'Emergency & Trauma Care',
+      department: 'Emergency & Trauma',
+      floor: 'Ground Floor',
       created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
+    },
+    {
+      id: 'zone-gen-01',
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_id: 'GLOBAL',
+      zone_name: 'General Inpatient Wards',
+      department: 'Inpatient Wards',
+      floor: '1st - 5th Floor',
+      created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
+    },
+    {
+      id: 'zone-ot-01',
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_id: 'GLOBAL',
+      zone_name: 'Operation Theatres (OT)',
+      department: 'Operation Theatres',
+      floor: '2nd Floor',
+      created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
+    },
+    {
+      id: 'zone-opd-01',
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_id: 'GLOBAL',
+      zone_name: 'OPD & Patient Waiting Area',
+      department: 'Outpatient Clinic',
+      floor: 'Ground Floor',
+      created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
+    },
+    {
+      id: 'zone-rad-01',
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_id: 'GLOBAL',
+      zone_name: 'Radiology & Diagnostics',
+      department: 'Diagnostic Imaging',
+      floor: 'Basement',
+      created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
+    },
+    {
+      id: 'zone-pharma-01',
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_id: 'GLOBAL',
+      zone_name: 'Pharmacy & Central Store',
+      department: 'Pharmacy Store',
+      floor: 'Ground Floor',
+      created_at: new Date().toISOString(),
+      created_by_role: 'MASTER_ADMIN',
+      is_approved: true,
     },
   ];
+
+  function sendJson(res: any, statusCode: number, data: any) {
+    res.setHeader('Content-Type', 'application/json');
+    res.statusCode = statusCode;
+    res.end(JSON.stringify(data));
+  }
+
+  function readJsonBody(req: any): Promise<any> {
+    return new Promise((resolve) => {
+      let body = '';
+      req.on('data', (chunk: any) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          resolve(body ? JSON.parse(body) : {});
+        } catch {
+          resolve({});
+        }
+      });
+    });
+  }
+
+  // CUSTOM POSTS STORE
+  interface VitePost {
+    id: string;
+    tenant_id: string;
+    title: string;
+    content: string;
+    priority: 'NORMAL' | 'URGENT' | 'CRITICAL';
+    target_audience_type: string;
+    target_site_id?: string;
+    target_site_name?: string;
+    target_ward?: string;
+    target_role?: string;
+    pinned: boolean;
+    author_id: string;
+    author_name: string;
+    author_role: string;
+    created_at: string;
+    expires_at?: string;
+    read_by: string[];
+  }
+
+  const customPostsStore: VitePost[] = [
+    {
+      id: 'post-init-01',
+      tenant_id: 'default-tenant',
+      title: 'NABH Quality & Safety Compliance Notice',
+      content: 'All housekeeping supervisors and on-duty ward personnel must verify that bio-hazard spill kits and color-coded bins comply strictly with NABH biomedical hygiene guidelines.',
+      priority: 'CRITICAL',
+      target_audience_type: 'ALL_SITES',
+      target_role: 'all',
+      pinned: true,
+      author_id: 'BASU-ADM-001',
+      author_name: 'Dr. P. Basu (Master Admin)',
+      author_role: 'MASTER_ADMIN',
+      created_at: new Date(Date.now() - 3600000 * 4).toISOString(),
+      read_by: [],
+    },
+    {
+      id: 'post-init-02',
+      tenant_id: 'default-tenant',
+      title: 'ICU & OT Mandatory Sanitization Protocol',
+      content: 'Terminal cleaning routine scheduled between 14:00 - 15:00 hrs across all Critical Care zones. Ensure OT air filters and floor scrubber passes are signed off.',
+      priority: 'URGENT',
+      target_audience_type: 'ALL_SITES',
+      target_role: 'all',
+      pinned: false,
+      author_id: 'BASU-ADM-001',
+      author_name: 'Dr. P. Basu (Master Admin)',
+      author_role: 'MASTER_ADMIN',
+      created_at: new Date(Date.now() - 3600000 * 12).toISOString(),
+      read_by: [],
+    },
+  ];
+
+  // PERMISSION MATRIX STORE
+  let rolePermissionsStore: Record<string, any> = {
+    MASTER_ADMIN: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: true,
+      DELETE_RECORDS: true,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: true,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: true,
+      MANAGE_GEOFENCES: true,
+      MANAGE_SITES: true,
+      PUBLISH_POSTS: true,
+      OVERRIDE_PUNCHES: true,
+      APPROVE_LEAVES: true,
+    },
+    OPERATIONS_MANAGER: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: true,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: true,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: true,
+      MANAGE_GEOFENCES: true,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: true,
+      OVERRIDE_PUNCHES: true,
+      APPROVE_LEAVES: true,
+    },
+    SUPERVISOR: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: false,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: false,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: false,
+      MANAGE_GEOFENCES: false,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: false,
+      OVERRIDE_PUNCHES: false,
+      APPROVE_LEAVES: true,
+    },
+    STAFF: {
+      VIEW_STAFF_VAULT: false,
+      EDIT_STAFF_VAULT: false,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: false,
+      MANAGE_SHIFTS: false,
+      DOWNLOAD_REPORTS: false,
+      REGISTER_STAFF: false,
+      MANAGE_GEOFENCES: false,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: false,
+      OVERRIDE_PUNCHES: false,
+      APPROVE_LEAVES: false,
+    },
+  };
+
+  const userCustomPermissionsStore: Record<string, any> = {};
+
+  // ACTIVE SESSIONS STORE
+  interface ViteUserSession {
+    session_id: string;
+    user_id: string;
+    user_name?: string;
+    user_role?: string;
+    device_name: string;
+    device_type: 'desktop' | 'mobile' | 'tablet';
+    browser: string;
+    os: string;
+    ip_address: string;
+    location: string;
+    created_at: string;
+    last_active_at: string;
+    is_active: boolean;
+  }
+
+  const userSessionsStore: ViteUserSession[] = [];
 
   const formatTime12h = (val?: string | null): string => {
     if (!val) return '--';
@@ -163,6 +385,609 @@ function attendanceApiPlugin(): Plugin {
           return;
         }
 
+        // -------------------------------------------------------------------------
+        // REMOTE SESSION REVOCATION GATEKEEPER MIDDLEWARE
+        // -------------------------------------------------------------------------
+        const incomingSessionId = (req.headers['x-session-id'] as string) || '';
+        if (incomingSessionId) {
+          const matchedSession = userSessionsStore.find((s) => s.session_id === incomingSessionId);
+          if (matchedSession && matchedSession.is_active === false) {
+            const isExempt =
+              rawUrl.startsWith('/api/sessions/check') ||
+              rawUrl.startsWith('/api/sessions/register') ||
+              rawUrl.startsWith('/api/login') ||
+              rawUrl.startsWith('/api/logout');
+            if (!isExempt && rawUrl.startsWith('/api/')) {
+              sendJson(res, 401, {
+                success: false,
+                sessionRevoked: true,
+                error: 'SESSION_REVOKED',
+                message: 'Your device session has been terminated remotely from another device.',
+              });
+              return;
+            }
+          }
+        }
+
+        // -------------------------------------------------------------------------
+        // ACTIVE SESSIONS & REMOTE LOGOUT ENDPOINTS
+        // -------------------------------------------------------------------------
+
+        // GET /api/users/:id/sessions
+        const userSessionsMatch = rawUrl.match(/^\/api\/users\/([^/?#]+)\/sessions(\?.*)?$/);
+        if (userSessionsMatch && req.method === 'GET') {
+          const userId = decodeURIComponent(userSessionsMatch[1]);
+          const currentSessionId = (req.headers['x-session-id'] as string) || '';
+
+          const matchesUser = (s: ViteUserSession) => {
+            const sId = s.user_id.toLowerCase().replace(/[-_\s]/g, '');
+            const targetId = userId.toLowerCase().replace(/[-_\s]/g, '');
+            if (sId === targetId) return true;
+            if (s.user_id.toLowerCase() === userId.toLowerCase()) return true;
+            if (targetId.includes('adm') && sId.includes('adm')) return true;
+            return false;
+          };
+
+          let userSessions = userSessionsStore.filter((s) => matchesUser(s) && s.is_active);
+
+          // If no sessions yet, dynamically capture current real connection
+          if (userSessions.length === 0 && userId) {
+            const uaHeader = (req.headers['user-agent'] as string) || '';
+            const parsedDevice = parseUserAgentString(uaHeader);
+            const clientIp = extractClientIpAddress(req);
+            lookupIpLocation(clientIp).then((geo) => {
+              const autoSessionId = currentSessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+              const newSession: ViteUserSession = {
+                session_id: autoSessionId,
+                user_id: userId,
+                device_name: parsedDevice.deviceName,
+                device_type: parsedDevice.deviceType,
+                browser: parsedDevice.browser,
+                os: parsedDevice.os,
+                ip_address: geo.ip,
+                location: geo.formattedLocation,
+                created_at: new Date().toISOString(),
+                last_active_at: new Date().toISOString(),
+                is_active: true,
+              };
+              userSessionsStore.unshift(newSession);
+
+              sendJson(res, 200, {
+                success: true,
+                count: 1,
+                sessions: [{ ...newSession, is_current: true }],
+              });
+            });
+            return;
+          }
+
+          const activeSessions = userSessions.map((s) => ({
+            ...s,
+            is_current: currentSessionId ? s.session_id === currentSessionId : true,
+          }));
+
+          sendJson(res, 200, {
+            success: true,
+            count: activeSessions.length,
+            sessions: activeSessions,
+          });
+          return;
+        }
+
+        // POST /api/sessions/register
+        if ((rawUrl === '/api/sessions/register' || rawUrl.startsWith('/api/sessions/register?')) && req.method === 'POST') {
+          readJsonBody(req).then(async (data) => {
+            const { session_id, user_id, user_name, user_role, device_name, device_type, browser, os, location, ip_address } = data || {};
+            if (!session_id || !user_id) {
+              sendJson(res, 400, { success: false, error: 'session_id and user_id are required' });
+              return;
+            }
+
+            const uaHeader = (req.headers['user-agent'] as string) || '';
+            const parsedDevice = parseUserAgentString(uaHeader);
+            const detectedIp = extractClientIpAddress(req);
+            const resolvedIp = ip_address && ip_address !== '127.0.0.1' && ip_address !== 'Local Network' ? ip_address : detectedIp;
+            const geo = await lookupIpLocation(resolvedIp);
+
+            const finalDeviceName = device_name && !device_name.includes('Unknown') ? device_name : parsedDevice.deviceName;
+            const finalDeviceType = device_type || parsedDevice.deviceType;
+            const finalBrowser = browser || parsedDevice.browser;
+            const finalOs = os || parsedDevice.os;
+            const finalIp = geo.ip && geo.ip !== '127.0.0.1' ? geo.ip : resolvedIp;
+            const finalLocation = location && location !== 'Local Verified Network' && location !== 'Verified Device Location'
+              ? location
+              : geo.formattedLocation;
+
+            const existingIndex = userSessionsStore.findIndex((s) => s.session_id === session_id);
+            const sessionRecord: ViteUserSession = {
+              session_id,
+              user_id,
+              user_name: user_name || (existingIndex >= 0 ? userSessionsStore[existingIndex].user_name : undefined),
+              user_role: user_role || (existingIndex >= 0 ? userSessionsStore[existingIndex].user_role : undefined),
+              device_name: finalDeviceName,
+              device_type: finalDeviceType,
+              browser: finalBrowser,
+              os: finalOs,
+              ip_address: finalIp,
+              location: finalLocation,
+              created_at: existingIndex >= 0 ? userSessionsStore[existingIndex].created_at : new Date().toISOString(),
+              last_active_at: new Date().toISOString(),
+              is_active: true,
+            };
+
+            if (existingIndex >= 0) {
+              userSessionsStore[existingIndex] = sessionRecord;
+            } else {
+              userSessionsStore.unshift(sessionRecord);
+            }
+
+            sendJson(res, 200, {
+              success: true,
+              message: 'Authentic session registered and synchronized successfully',
+              session_id,
+              device_name: finalDeviceName,
+              ip_address: finalIp,
+              location: finalLocation,
+            });
+          });
+          return;
+        }
+
+        // POST /api/sessions/revoke or DELETE /api/sessions/:sessionId
+        const revokeMatch = rawUrl.match(/^\/api\/sessions\/([^/?#]+)(\?.*)?$/);
+        const isRevokeUrl = rawUrl === '/api/sessions/revoke' || rawUrl.startsWith('/api/sessions/revoke?');
+        if ((isRevokeUrl && req.method === 'POST') || (revokeMatch && (req.method === 'DELETE' || req.method === 'POST'))) {
+          readJsonBody(req).then((data) => {
+            const sessionId =
+              data?.sessionId ||
+              (revokeMatch && revokeMatch[1] !== 'revoke' && revokeMatch[1] !== 'revoke-all-others' && revokeMatch[1] !== 'check' && revokeMatch[1] !== 'register' ? decodeURIComponent(revokeMatch[1]) : null);
+
+            if (!sessionId) {
+              sendJson(res, 400, { success: false, error: 'sessionId is required to revoke session' });
+              return;
+            }
+
+            const session = userSessionsStore.find((s) => s.session_id === sessionId);
+            if (!session) {
+              sendJson(res, 404, { success: false, error: 'Session not found or already terminated' });
+              return;
+            }
+
+            session.is_active = false;
+            session.last_active_at = new Date().toISOString();
+
+            broadcastToAll({
+              type: 'SESSION_REVOKED',
+              payload: {
+                sessionId,
+                userId: session.user_id,
+                deviceName: session.device_name,
+                revokedAt: new Date().toISOString(),
+                message: 'Your session has been terminated remotely from another device.',
+              },
+            });
+
+            sendJson(res, 200, {
+              success: true,
+              message: `Session ${sessionId} (${session.device_name}) revoked and disconnected successfully.`,
+              revokedSessionId: sessionId,
+            });
+          });
+          return;
+        }
+
+        // POST /api/sessions/revoke-all-others
+        if ((rawUrl === '/api/sessions/revoke-all-others' || rawUrl.startsWith('/api/sessions/revoke-all-others?')) && req.method === 'POST') {
+          readJsonBody(req).then((data) => {
+            const { userId, currentSessionId } = data || {};
+            if (!userId) {
+              sendJson(res, 400, { success: false, error: 'userId is required' });
+              return;
+            }
+
+            let revokedCount = 0;
+            userSessionsStore.forEach((s) => {
+              const matchesUser =
+                s.user_id.toLowerCase() === String(userId).toLowerCase() ||
+                (String(userId).toLowerCase().includes('adm') && s.user_id.includes('ADM'));
+
+              if (matchesUser && s.session_id !== currentSessionId && s.is_active) {
+                s.is_active = false;
+                s.last_active_at = new Date().toISOString();
+                revokedCount++;
+              }
+            });
+
+            broadcastToAll({
+              type: 'SESSION_REVOKED',
+              payload: {
+                allOthers: true,
+                userId,
+                keepSessionId: currentSessionId,
+                revokedAt: new Date().toISOString(),
+                message: 'All other active sessions have been terminated remotely.',
+              },
+            });
+
+            sendJson(res, 200, {
+              success: true,
+              message: `Successfully terminated ${revokedCount} other active device session(s).`,
+              revokedCount,
+            });
+          });
+          return;
+        }
+
+        // GET /api/sessions/check
+        if ((rawUrl === '/api/sessions/check' || rawUrl.startsWith('/api/sessions/check?')) && req.method === 'GET') {
+          const sessionId = (req.headers['x-session-id'] as string) || '';
+          if (!sessionId) {
+            sendJson(res, 200, { success: true, valid: true });
+            return;
+          }
+
+          const session = userSessionsStore.find((s) => s.session_id === sessionId);
+          if (session && !session.is_active) {
+            sendJson(res, 401, {
+              success: false,
+              valid: false,
+              sessionRevoked: true,
+              message: 'Your session has been terminated remotely from another device.',
+            });
+            return;
+          }
+
+          sendJson(res, 200, { success: true, valid: true, active: true });
+          return;
+        }
+
+        // -------------------------------------------------------------------------
+        // CUSTOM POSTS & ANNOUNCEMENTS ENDPOINTS
+        // -------------------------------------------------------------------------
+
+        // GET /api/posts & /api/announcements
+        if ((rawUrl === '/api/posts' || rawUrl.startsWith('/api/posts?') || rawUrl === '/api/announcements' || rawUrl.startsWith('/api/announcements?')) && req.method === 'GET') {
+          const reqRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+          const reqSiteId = (req.headers['x-site-id'] || '').toString().toLowerCase();
+          const reqWard = (req.headers['x-ward'] || req.headers['x-assigned-area'] || '').toString().toLowerCase();
+
+          const filtered = customPostsStore.filter((post) => {
+            if (reqRole === 'admin' || reqRole === 'master_admin') return true;
+            if (post.target_audience_type === 'ALL_SITES') return true;
+            if (post.target_audience_type === 'SPECIFIC_SITE' && post.target_site_id) {
+              if (reqSiteId && post.target_site_id.toLowerCase() !== reqSiteId) return false;
+            }
+            if (post.target_audience_type === 'SPECIFIC_WARD' && post.target_ward) {
+              if (reqWard && !post.target_ward.toLowerCase().includes(reqWard)) return false;
+            }
+            if (post.target_audience_type === 'SPECIFIC_ROLE' && post.target_role) {
+              if (post.target_role.toLowerCase() !== 'all' && post.target_role.toLowerCase() !== reqRole) return false;
+            }
+            return true;
+          });
+
+          filtered.sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          });
+
+          sendJson(res, 200, { success: true, count: filtered.length, posts: filtered });
+          return;
+        }
+
+        // POST /api/posts & /api/announcements
+        if ((rawUrl === '/api/posts' || rawUrl.startsWith('/api/posts?') || rawUrl === '/api/announcements' || rawUrl.startsWith('/api/announcements?')) && req.method === 'POST') {
+          readJsonBody(req).then((data) => {
+            const reqRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+            const isMasterAdmin = reqRole === 'admin' || reqRole === 'master_admin';
+            const isManager = reqRole === 'manager' || reqRole === 'operations_manager';
+
+            if (!isMasterAdmin && !isManager) {
+              sendJson(res, 403, {
+                success: false,
+                error: 'Forbidden: Strictly Master Admin and Operations Managers can publish operational notices.',
+              });
+              return;
+            }
+
+            const {
+              title,
+              content,
+              priority = 'NORMAL',
+              target_audience_type = 'ALL_SITES',
+              target_site_id,
+              target_site_name,
+              target_ward,
+              target_role,
+              pinned = false,
+              author_id,
+              author_name,
+              expires_at,
+            } = data || {};
+
+            if (!title || !title.trim()) {
+              sendJson(res, 400, { success: false, error: 'Notice title is required' });
+              return;
+            }
+            if (!content || !content.trim()) {
+              sendJson(res, 400, { success: false, error: 'Notice content body is required' });
+              return;
+            }
+
+            const newPost: VitePost = {
+              id: `post-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              tenant_id: tenantId,
+              title: title.trim(),
+              content: content.trim(),
+              priority: ['NORMAL', 'URGENT', 'CRITICAL'].includes(priority) ? priority : 'NORMAL',
+              target_audience_type,
+              target_site_id,
+              target_site_name,
+              target_ward,
+              target_role: target_role || 'all',
+              pinned: Boolean(pinned),
+              author_id: author_id || (isMasterAdmin ? 'BASU-ADM-001' : 'MGR-001'),
+              author_name: author_name || (isMasterAdmin ? 'Dr. P. Basu (Master Admin)' : 'Operations Manager'),
+              author_role: isMasterAdmin ? 'MASTER_ADMIN' : 'OPERATIONS_MANAGER',
+              created_at: new Date().toISOString(),
+              expires_at,
+              read_by: [],
+            };
+
+            customPostsStore.unshift(newPost);
+
+            broadcastToAll({
+              type: 'ANNOUNCEMENT_PUBLISHED',
+              payload: {
+                post: newPost,
+                broadcastTime: new Date().toISOString(),
+              },
+            });
+
+            sendJson(res, 201, {
+              success: true,
+              message: 'Notice broadcasted successfully',
+              post: newPost,
+            });
+          });
+          return;
+        }
+
+        // DELETE /api/posts/:id or /api/announcements/:id
+        const postDeleteMatch = rawUrl.match(/^\/api\/(posts|announcements)\/([^/?#]+)(\?.*)?$/);
+        if (postDeleteMatch && req.method === 'DELETE') {
+          const postId = decodeURIComponent(postDeleteMatch[2]);
+          const idx = customPostsStore.findIndex((p) => p.id === postId);
+          if (idx === -1) {
+            sendJson(res, 404, { success: false, error: 'Post not found' });
+            return;
+          }
+
+          const removed = customPostsStore.splice(idx, 1)[0];
+          broadcastToAll({
+            type: 'ANNOUNCEMENT_DELETED',
+            payload: { id: postId },
+          });
+
+          sendJson(res, 200, { success: true, message: 'Notice deleted successfully', post: removed });
+          return;
+        }
+
+        // POST /api/posts/:id/acknowledge
+        const postAckMatch = rawUrl.match(/^\/api\/(posts|announcements)\/([^/?#]+)\/acknowledge(\?.*)?$/);
+        if (postAckMatch && req.method === 'POST') {
+          readJsonBody(req).then((data) => {
+            const postId = decodeURIComponent(postAckMatch[2]);
+            const userId = String(req.headers['x-user-id'] || data?.userId || '').trim();
+            const post = customPostsStore.find((p) => p.id === postId);
+            if (!post) {
+              sendJson(res, 404, { success: false, error: 'Post not found' });
+              return;
+            }
+            if (userId && !post.read_by.includes(userId)) {
+              post.read_by.push(userId);
+            }
+            sendJson(res, 200, { success: true, readCount: post.read_by.length, read_by: post.read_by });
+          });
+          return;
+        }
+
+        // PUT /api/posts/:id/pin
+        const postPinMatch = rawUrl.match(/^\/api\/(posts|announcements)\/([^/?#]+)\/pin(\?.*)?$/);
+        if (postPinMatch && req.method === 'PUT') {
+          const postId = decodeURIComponent(postPinMatch[2]);
+          const post = customPostsStore.find((p) => p.id === postId);
+          if (!post) {
+            sendJson(res, 404, { success: false, error: 'Post not found' });
+            return;
+          }
+          post.pinned = !post.pinned;
+          sendJson(res, 200, { success: true, pinned: post.pinned, post });
+          return;
+        }
+
+        // -------------------------------------------------------------------------
+        // GRANULAR PERMISSION MATRIX ENDPOINTS
+        // -------------------------------------------------------------------------
+
+        // GET /api/permissions/matrix
+        if ((rawUrl === '/api/permissions/matrix' || rawUrl.startsWith('/api/permissions/matrix?')) && req.method === 'GET') {
+          sendJson(res, 200, {
+            success: true,
+            rolePermissions: rolePermissionsStore,
+            userCustomPermissions: userCustomPermissionsStore,
+            updated_at: new Date().toISOString(),
+          });
+          return;
+        }
+
+        // PUT /api/permissions/matrix
+        if ((rawUrl === '/api/permissions/matrix' || rawUrl.startsWith('/api/permissions/matrix?')) && req.method === 'PUT') {
+          readJsonBody(req).then((data) => {
+            const reqRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+            const isMasterAdmin = reqRole === 'admin' || reqRole === 'master_admin';
+
+            if (!isMasterAdmin) {
+              sendJson(res, 403, {
+                success: false,
+                error: 'Forbidden: Access Control & Permissions configuration is strictly restricted to MASTER_ADMIN.',
+              });
+              return;
+            }
+
+            const { matrix } = data || {};
+            if (!matrix || typeof matrix !== 'object') {
+              sendJson(res, 400, { success: false, error: 'Valid permission matrix is required' });
+              return;
+            }
+
+            rolePermissionsStore = {
+              ...rolePermissionsStore,
+              ...matrix,
+              MASTER_ADMIN: {
+                VIEW_STAFF_VAULT: true,
+                EDIT_STAFF_VAULT: true,
+                DELETE_RECORDS: true,
+                EDIT_ROSTER: true,
+                MANAGE_SHIFTS: true,
+                DOWNLOAD_REPORTS: true,
+                REGISTER_STAFF: true,
+                MANAGE_GEOFENCES: true,
+                MANAGE_SITES: true,
+                PUBLISH_POSTS: true,
+                OVERRIDE_PUNCHES: true,
+                APPROVE_LEAVES: true,
+              },
+            };
+
+            broadcastToAll({
+              type: 'PERMISSIONS_MATRIX_UPDATED',
+              payload: { rolePermissions: rolePermissionsStore },
+            });
+
+            sendJson(res, 200, {
+              success: true,
+              message: 'Role permissions matrix updated and enforced across all routes.',
+              rolePermissions: rolePermissionsStore,
+            });
+          });
+          return;
+        }
+
+        // PUT /api/permissions/user/:id
+        const userPermMatch = rawUrl.match(/^\/api\/permissions\/user\/([^/?#]+)(\?.*)?$/);
+        if (userPermMatch && req.method === 'PUT') {
+          readJsonBody(req).then((data) => {
+            const reqRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+            const isMasterAdmin = reqRole === 'admin' || reqRole === 'master_admin';
+
+            if (!isMasterAdmin) {
+              sendJson(res, 403, {
+                success: false,
+                error: 'Forbidden: Only Master Admin can configure individual user custom permissions.',
+              });
+              return;
+            }
+
+            const userId = decodeURIComponent(userPermMatch[1]);
+            const { overrides } = data || {};
+
+            if (!overrides || typeof overrides !== 'object') {
+              sendJson(res, 400, { success: false, error: 'Overrides object is required' });
+              return;
+            }
+
+            userCustomPermissionsStore[userId] = overrides;
+
+            broadcastToAll({
+              type: 'USER_PERMISSIONS_OVERRIDDEN',
+              payload: { userId, overrides },
+            });
+
+            sendJson(res, 200, {
+              success: true,
+              message: `Custom permissions override updated for user ${userId}`,
+              userId,
+              overrides,
+            });
+          });
+          return;
+        }
+
+        // POST /api/permissions/reset
+        if ((rawUrl === '/api/permissions/reset' || rawUrl.startsWith('/api/permissions/reset?')) && req.method === 'POST') {
+          const reqRole = (req.headers['x-user-role'] || '').toString().toLowerCase();
+          const isMasterAdmin = reqRole === 'admin' || reqRole === 'master_admin';
+
+          if (!isMasterAdmin) {
+            sendJson(res, 403, { success: false, error: 'Forbidden: Strictly Master Admin can reset permissions.' });
+            return;
+          }
+
+          rolePermissionsStore = {
+            MASTER_ADMIN: {
+              VIEW_STAFF_VAULT: true,
+              EDIT_STAFF_VAULT: true,
+              DELETE_RECORDS: true,
+              EDIT_ROSTER: true,
+              MANAGE_SHIFTS: true,
+              DOWNLOAD_REPORTS: true,
+              REGISTER_STAFF: true,
+              MANAGE_GEOFENCES: true,
+              MANAGE_SITES: true,
+              PUBLISH_POSTS: true,
+              OVERRIDE_PUNCHES: true,
+              APPROVE_LEAVES: true,
+            },
+            OPERATIONS_MANAGER: {
+              VIEW_STAFF_VAULT: true,
+              EDIT_STAFF_VAULT: true,
+              DELETE_RECORDS: false,
+              EDIT_ROSTER: true,
+              MANAGE_SHIFTS: true,
+              DOWNLOAD_REPORTS: true,
+              REGISTER_STAFF: true,
+              MANAGE_GEOFENCES: true,
+              MANAGE_SITES: false,
+              PUBLISH_POSTS: true,
+              OVERRIDE_PUNCHES: true,
+              APPROVE_LEAVES: true,
+            },
+            SUPERVISOR: {
+              VIEW_STAFF_VAULT: true,
+              EDIT_STAFF_VAULT: false,
+              DELETE_RECORDS: false,
+              EDIT_ROSTER: true,
+              MANAGE_SHIFTS: false,
+              DOWNLOAD_REPORTS: true,
+              REGISTER_STAFF: false,
+              MANAGE_GEOFENCES: false,
+              MANAGE_SITES: false,
+              PUBLISH_POSTS: false,
+              OVERRIDE_PUNCHES: false,
+              APPROVE_LEAVES: true,
+            },
+            STAFF: {
+              VIEW_STAFF_VAULT: false,
+              EDIT_STAFF_VAULT: false,
+              DELETE_RECORDS: false,
+              EDIT_ROSTER: false,
+              MANAGE_SHIFTS: false,
+              DOWNLOAD_REPORTS: false,
+              REGISTER_STAFF: false,
+              MANAGE_GEOFENCES: false,
+              MANAGE_SITES: false,
+              PUBLISH_POSTS: false,
+              OVERRIDE_PUNCHES: false,
+              APPROVE_LEAVES: false,
+            },
+          };
+
+          sendJson(res, 200, { success: true, message: 'Permissions reset to system defaults.' });
+          return;
+        }
+
         // =========================================================================
         // SITE RESTRICTED CONTROLLER ENDPOINTS (PHASE 1)
         // 1. GET /api/v1/sites/:siteId/dashboard
@@ -195,15 +1020,16 @@ function attendanceApiPlugin(): Plugin {
           res.statusCode = 200;
 
           if (endpointType === 'dashboard') {
-            const site = HOSPITAL_SITES.find(
-              (s) => s.id.toLowerCase() === requestedSiteId.toLowerCase() || s.code.toLowerCase() === requestedSiteId.toLowerCase()
+            const site = dynamicSitesStore.find(
+              (s) => s.id.toLowerCase() === requestedSiteId.toLowerCase() || (s.site_name && s.site_name.toLowerCase() === requestedSiteId.toLowerCase())
             ) || {
               id: requestedSiteId,
-              name: `Hospital Campus (${requestedSiteId})`,
+              site_name: `Site (${requestedSiteId})`,
+              name: `Site (${requestedSiteId})`,
               code: requestedSiteId,
               industry_type: 'HEALTHCARE',
               city: 'Metro City',
-              address: 'Medical Enclave Sector 4',
+              address: 'Campus Address',
             };
 
             const zones = [
@@ -228,7 +1054,7 @@ function attendanceApiPlugin(): Plugin {
                 },
                 zones,
                 activeDeployments: [],
-                message: `Site dashboard loaded for ${site.name} (${site.industry_type || 'HEALTHCARE'})`,
+                message: `Site dashboard loaded for ${site.site_name} (${site.industry_type || 'HEALTHCARE'})`,
               })
             );
             return;
@@ -259,7 +1085,7 @@ function attendanceApiPlugin(): Plugin {
                 role: 'admin',
                 department: 'Executive Administration',
                 shift: 'General',
-                siteId: requestedSiteId || 'SITE_APEX_MAIN',
+                siteId: requestedSiteId || '',
                 active: true,
                 status: 'ACTIVE',
                 duty_type: 'FIXED',
@@ -301,9 +1127,9 @@ function attendanceApiPlugin(): Plugin {
               fixed_department: 'Executive Administration',
               shift: 'General',
               assigned_shift: 'General',
-              siteId: 'SITE_APEX_MAIN',
-              site_id: 'SITE_APEX_MAIN',
-              siteName: 'Site A - East Wing & Trauma',
+              siteId: null,
+              site_id: null,
+              siteName: 'All Sites (Global)',
               status: 'ACTIVE',
               is_approved: true,
               dutyStatus: 'ON_DUTY',
@@ -364,10 +1190,13 @@ function attendanceApiPlugin(): Plugin {
               totalSites: list.length,
               sites: list.map((s) => ({
                 ...s,
+                id: s.id,
                 siteId: s.id,
-                name: s.site_name,
-                siteName: s.site_name,
-                code: s.site_name.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+                name: s.name || s.site_name,
+                siteName: s.site_name || s.name,
+                location: s.location || s.address || `${s.location_lat}, ${s.location_lng}`,
+                address: s.address || s.location || 'Metro Region',
+                code: (s.name || s.site_name).replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
                 city: 'Metro Region',
                 locationLat: s.location_lat,
                 locationLng: s.location_lng,
@@ -431,6 +1260,12 @@ function attendanceApiPlugin(): Plugin {
                 primaryManagerId,
               };
 
+              broadcastToAll({
+                type: 'site-created',
+                payload: formattedSite,
+                timestamp: new Date().toISOString(),
+              });
+
               res.statusCode = 201;
               res.end(
                 JSON.stringify({
@@ -444,6 +1279,207 @@ function attendanceApiPlugin(): Plugin {
               res.end(JSON.stringify({ success: false, error: err.message }));
             }
           });
+          return;
+        }
+
+        // DELETE /api/sites/:siteId
+        if (rawUrl.startsWith('/api/sites') && req.method === 'DELETE') {
+          res.setHeader('Content-Type', 'application/json');
+          const siteId = rawUrl.replace(/^\/api\/sites\/?/, '').split('?')[0];
+          const index = dynamicSitesStore.findIndex(
+            (s) => s.id.toLowerCase() === siteId.toLowerCase() || (s.site_name && s.site_name.toLowerCase() === siteId.toLowerCase())
+          );
+          if (index !== -1) {
+            const deleted = dynamicSitesStore.splice(index, 1)[0];
+            broadcastToAll({
+              type: 'site-deleted',
+              payload: { siteId: deleted.id },
+              timestamp: new Date().toISOString(),
+            });
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: `Site ${deleted.site_name} deleted successfully` }));
+            return;
+          }
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, message: 'Site removed from active store' }));
+          return;
+        }
+
+        // DELETE /api/staff/:id
+        if ((rawUrl.startsWith('/api/staff/') || rawUrl.startsWith('/api/users/')) && req.method === 'DELETE') {
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, message: 'Staff member deleted' }));
+          return;
+        }
+
+        // =========================================================================
+        // ZONES API CONTROLLERS (/api/zones & /api/sites/:siteId/zones)
+        // RBAC: MASTER_ADMIN & OPERATIONS_MANAGER can create custom wards
+        // =========================================================================
+
+        // GET /api/zones or /api/sites/:siteId/zones
+        if ((rawUrl === '/api/zones' || rawUrl.startsWith('/api/zones?') || rawUrl.match(/^\/api\/sites\/[^/]+\/zones/)) && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json');
+          const siteMatch = rawUrl.match(/^\/api\/sites\/([^/?]+)\/zones/);
+          const parsedUrl = new URL(rawUrl, 'http://localhost');
+          const requestedSiteId = (siteMatch ? siteMatch[1] : parsedUrl.searchParams.get('site_id') || parsedUrl.searchParams.get('siteId') || '').trim();
+
+          let filtered = dynamicZonesStore;
+          if (requestedSiteId && requestedSiteId !== 'ALL' && requestedSiteId !== 'GLOBAL') {
+            filtered = dynamicZonesStore.filter(
+              (z) => z.site_id.toLowerCase() === requestedSiteId.toLowerCase() || z.site_id === 'GLOBAL'
+            );
+          }
+
+          const seen = new Set<string>();
+          const deduplicated = filtered.filter((z) => {
+            const key = (z.zone_name || '').trim().toLowerCase();
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              site_id: requestedSiteId || 'ALL',
+              totalZones: deduplicated.length,
+              zones: deduplicated.map((z) => ({
+                id: z.id,
+                tenant_id: z.tenant_id,
+                site_id: z.site_id,
+                zone_name: z.zone_name,
+                name: z.zone_name,
+                department: z.department || z.zone_name,
+                floor: z.floor || 'Floor 1',
+                created_at: z.created_at,
+                created_by_role: z.created_by_role,
+                is_approved: z.is_approved,
+              })),
+            })
+          );
+          return;
+        }
+
+        // POST /api/zones or /api/sites/:siteId/zones
+        if ((rawUrl === '/api/zones' || rawUrl.startsWith('/api/zones?') || rawUrl.match(/^\/api\/sites\/[^/]+\/zones/)) && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', (chunk) => {
+            bodyStr += chunk;
+          });
+          req.on('end', () => {
+            res.setHeader('Content-Type', 'application/json');
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const roleUpper = (
+                (req.headers['x-user-role'] as string) ||
+                body.userRole ||
+                body.created_by_role ||
+                body.role ||
+                ''
+              ).toString().toUpperCase();
+
+              // RBAC: Strictly restricted to MASTER_ADMIN and OPERATIONS_MANAGER
+              const isAuthorized =
+                roleUpper === 'MASTER_ADMIN' ||
+                roleUpper === 'OPERATIONS_MANAGER' ||
+                roleUpper === 'ADMIN' ||
+                roleUpper === 'MANAGER' ||
+                roleUpper.includes('ADMIN') ||
+                roleUpper.includes('MANAGER');
+
+              if (!isAuthorized) {
+                res.statusCode = 403;
+                res.end(
+                  JSON.stringify({
+                    success: false,
+                    error: 'Forbidden: Manual ward creation is strictly restricted to MASTER_ADMIN and OPERATIONS_MANAGER roles. Supervisors and Staff cannot create custom wards.',
+                  })
+                );
+                return;
+              }
+
+              const siteMatch = rawUrl.match(/^\/api\/sites\/([^/?]+)\/zones/);
+              const siteId = (siteMatch ? siteMatch[1] : body.site_id || body.siteId || 'GLOBAL').trim();
+              const zoneName = (body.zone_name || body.name || body.ward_name || '').trim();
+              const floor = body.floor || 'General';
+              const department = body.department || zoneName;
+
+              if (!zoneName) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, error: 'Ward / Area name is required' }));
+                return;
+              }
+
+              const existing = dynamicZonesStore.find(
+                (z) =>
+                  (z.site_id.toLowerCase() === siteId.toLowerCase() || z.site_id === 'GLOBAL') &&
+                  z.zone_name.toLowerCase() === zoneName.toLowerCase()
+              );
+
+              if (existing) {
+                res.statusCode = 200;
+                res.end(
+                  JSON.stringify({
+                    success: true,
+                    message: `Ward "${zoneName}" already exists in site zones`,
+                    zone: existing,
+                  })
+                );
+                return;
+              }
+
+              const newZone = {
+                id: crypto.randomUUID(),
+                tenant_id: (req.headers['x-tenant-id'] as string) || '00000000-0000-0000-0000-000000000001',
+                site_id: siteId,
+                zone_name: zoneName,
+                department,
+                floor,
+                created_at: new Date().toISOString(),
+                created_by_role: roleUpper,
+                is_approved: true,
+              };
+
+              dynamicZonesStore.push(newZone);
+
+              broadcastToAll({
+                type: 'zone-created',
+                payload: newZone,
+                timestamp: new Date().toISOString(),
+              });
+
+              res.statusCode = 201;
+              res.end(
+                JSON.stringify({
+                  success: true,
+                  message: `Ward "${zoneName}" successfully registered into database zones table linked to site "${siteId}"`,
+                  zone: newZone,
+                })
+              );
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
+        // DELETE /api/zones/:id
+        if (rawUrl.startsWith('/api/zones/') && req.method === 'DELETE') {
+          res.setHeader('Content-Type', 'application/json');
+          const zoneId = rawUrl.replace(/^\/api\/zones\/?/, '').split('?')[0];
+          const index = dynamicZonesStore.findIndex((z) => z.id === zoneId);
+          if (index !== -1) {
+            const removed = dynamicZonesStore.splice(index, 1)[0];
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: `Zone "${removed.zone_name}" removed from database` }));
+            return;
+          }
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, message: 'Zone not found' }));
           return;
         }
 
@@ -545,9 +1581,46 @@ function attendanceApiPlugin(): Plugin {
                 { expiresIn: '8h' }
               );
 
+              // Dynamic User-Agent parsing & Real IP/Location detection on every login
+              const uaHeader = (req.headers['user-agent'] as string) || '';
+              const parsedDevice = parseUserAgentString(uaHeader);
+              const clientIp = extractClientIpAddress(req);
+              const geo = await lookupIpLocation(clientIp);
+
+              const incomingSessionId =
+                (req.headers['x-session-id'] as string) ||
+                body.sessionId ||
+                body.session_id;
+              const sessionId = incomingSessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+              // Save these authentic values into the 'user_sessions' database table on every login
+              const existingIndex = userSessionsStore.findIndex((s) => s.session_id === sessionId);
+              const sessionRecord: ViteUserSession = {
+                session_id: sessionId,
+                user_id: user.id,
+                user_name: user.name,
+                user_role: user.role,
+                device_name: parsedDevice.deviceName,
+                device_type: parsedDevice.deviceType,
+                browser: parsedDevice.browser,
+                os: parsedDevice.os,
+                ip_address: geo.ip,
+                location: geo.formattedLocation,
+                created_at: existingIndex >= 0 ? userSessionsStore[existingIndex].created_at : new Date().toISOString(),
+                last_active_at: new Date().toISOString(),
+                is_active: true,
+              };
+
+              if (existingIndex >= 0) {
+                userSessionsStore[existingIndex] = sessionRecord;
+              } else {
+                userSessionsStore.unshift(sessionRecord);
+              }
+
               res.setHeader('Set-Cookie', [
                 `authToken=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800`,
                 `userRole=${user.role}; Path=/; SameSite=Lax; Max-Age=28800`,
+                `session_id=${sessionId}; Path=/; SameSite=Lax; Max-Age=2592000`,
               ]);
 
               res.statusCode = 200;
@@ -555,12 +1628,20 @@ function attendanceApiPlugin(): Plugin {
                 JSON.stringify({
                   success: true,
                   token,
+                  sessionId,
+                  session_id: sessionId,
                   role: user.role,
                   redirect: user.redirect,
                   user: {
                     id: user.id,
                     role: user.role,
                     name: user.name,
+                  },
+                  session: {
+                    session_id: sessionId,
+                    device_name: parsedDevice.deviceName,
+                    ip_address: geo.ip,
+                    location: geo.formattedLocation,
                   },
                 })
               );

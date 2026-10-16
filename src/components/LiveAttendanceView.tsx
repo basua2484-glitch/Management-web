@@ -19,6 +19,8 @@ import {
   History,
   LayoutGrid,
   Table as TableIcon,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import type { StaffUser, AttendanceRecord, SupervisorAccessContext, AppUser } from '../types';
 import {
@@ -55,6 +57,7 @@ interface LiveAttendanceViewProps {
   currentUserDutyStatus?: 'ON_DUTY' | 'OFF_DUTY' | string;
   isOnDuty?: boolean;
   onOpenProfileModal?: (staffId: string) => void;
+  onOpenSocialProfile?: (user: AppUser) => void;
   activeTenantPrefix?: string;
   allUsers?: AppUser[];
   dutyLogs?: LiveDutyLog[];
@@ -77,6 +80,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   currentUserDutyStatus,
   isOnDuty,
   onOpenProfileModal,
+  onOpenSocialProfile,
   activeTenantPrefix: propTenantPrefix,
   allUsers,
   dutyLogs: propDutyLogs,
@@ -89,6 +93,25 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
   const isSupervisor = roleUpper === 'SUPERVISOR';
   const isAdminOrManager = isAdmin || isManager;
   const effectiveSupervisorId = currentUserId || 'supervisor';
+
+  // Persistent collapsible state for overview summary cards
+  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('hk_live_overview_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleOverviewCollapse = () => {
+    setIsOverviewCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('hk_live_overview_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // Supervisor Access Context (Determines if Live updates or Historical view is served)
   const [supervisorContext, setSupervisorContext] = useState<SupervisorAccessContext>(() =>
@@ -229,7 +252,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       if (!s.active || s.role?.toLowerCase() === 'admin' || String(s.staffCode || '').toUpperCase().includes('-ADM-')) {
         return false;
       }
-      if (siteFilter && siteFilter !== 'ALL') {
+      if (siteFilter && siteFilter !== 'ALL' && siteFilter !== 'GLOBAL') {
         const sSite = s.siteId || (s as any).site_id;
         if (sSite && sSite !== siteFilter) return false;
       }
@@ -247,7 +270,7 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       if (!s.active || s.role?.toLowerCase() === 'admin' || String(s.staffCode || '').toUpperCase().includes('-ADM-')) {
         return false;
       }
-      if (siteFilter && siteFilter !== 'ALL') {
+      if (siteFilter && siteFilter !== 'ALL' && siteFilter !== 'GLOBAL') {
         const sSite = s.siteId || (s as any).site_id;
         if (sSite && sSite !== siteFilter) return false;
       }
@@ -334,9 +357,33 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       {/* Top Title & Duty Assign Button */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h3 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">
-            Housekeeping Live Attendance Overview
-          </h3>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h3 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">
+              Housekeeping Live Attendance Overview
+            </h3>
+            {/* Subtle minimize / collapse button */}
+            <button
+              type="button"
+              id="btn-toggle-overview-collapse"
+              onClick={toggleOverviewCollapse}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 transition-colors shadow-2xs cursor-pointer"
+              title={isOverviewCollapsed ? 'Expand summary cards' : 'Minimize summary cards to focus directly on live duty table'}
+              aria-label={isOverviewCollapsed ? 'Expand summary cards' : 'Collapse summary cards'}
+              aria-expanded={!isOverviewCollapsed}
+            >
+              {isOverviewCollapsed ? (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Show Stats</span>
+                </>
+              ) : (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Minimize</span>
+                </>
+              )}
+            </button>
+          </div>
           <p className="text-xs text-slate-500 mt-0.5">
             Real-time duty allocations, daily punch logs, and active overtime monitoring
           </p>
@@ -479,79 +526,125 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
       )}
 
       {/* Live Summary Metrics Cards including Leave & Weekly Off */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        {/* TOTAL HOUSEKEEPERS */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-[#1E3A8A] border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-            TOTAL ROSTER
+      {isOverviewCollapsed ? (
+        <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-xs text-slate-600">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-slate-700">Overview Minimized:</span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-800">
+              Total: {totalStaffCount}
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800">
+              Present: {presentTodayCount}
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800">
+              OT Active: {otActiveCount}
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-orange-50 border border-orange-200 text-orange-800">
+              Leave: {leaveMetrics.onLeaveCount}
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-800">
+              Weekly Off: {leaveMetrics.weeklyOffCount}
+            </span>
+            <span className="inline-flex items-center gap-1 font-mono text-3xs font-semibold px-2 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-800">
+              Absent: {absentCount}
+            </span>
           </div>
-          <div className="text-2xl font-bold text-slate-900">
-            {totalStaffCount}
-          </div>
-          <div className="text-3xs text-slate-400 mt-1">Active Workforce</div>
+          <button
+            type="button"
+            onClick={toggleOverviewCollapse}
+            className="text-xs text-[#1E3A8A] font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer ml-2 shrink-0"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+            <span>Expand Cards</span>
+          </button>
         </div>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+          {/* TOTAL HOUSEKEEPERS */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-[#1E3A8A] border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500">
+              TOTAL ROSTER
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-slate-900 leading-none">
+                {totalStaffCount}
+              </span>
+              <span className="text-3xs text-slate-400 font-medium">Active</span>
+            </div>
+          </div>
 
-        {/* PRESENT TODAY */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-emerald-600 border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-            PRESENT TODAY
+          {/* PRESENT TODAY */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-emerald-600 border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500">
+              PRESENT TODAY
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-emerald-600 leading-none">
+                {presentTodayCount}
+              </span>
+              <span className="text-3xs text-emerald-600/80 font-medium">
+                {totalStaffCount > 0
+                  ? `${Math.round((presentTodayCount / totalStaffCount) * 100)}%`
+                  : '0%'}
+              </span>
+            </div>
           </div>
-          <div className="text-2xl font-bold text-emerald-600">
-            {presentTodayCount}
-          </div>
-          <div className="text-3xs text-emerald-600/80 mt-1">
-            {totalStaffCount > 0
-              ? `${Math.round((presentTodayCount / totalStaffCount) * 100)}% Attendance`
-              : '0%'}
-          </div>
-        </div>
 
-        {/* OVERTIME (OT) ACTIVE */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-amber-500 border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-            OT ACTIVE
+          {/* OVERTIME (OT) ACTIVE */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-amber-500 border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500">
+              OT ACTIVE
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-amber-600 leading-none">
+                {otActiveCount}
+              </span>
+              <span className="text-3xs text-amber-600/80 font-medium">&gt;8.0h base</span>
+            </div>
           </div>
-          <div className="text-2xl font-bold text-amber-600">
-            {otActiveCount} Staff
-          </div>
-          <div className="text-3xs text-amber-600/80 mt-1">Past 8.0 hr baseline</div>
-        </div>
 
-        {/* ON LEAVE TODAY (NEW LIVE COUNTER) */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-orange-500 border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1 flex items-center justify-between">
-            <span>ON LEAVE TODAY</span>
-            <Calendar className="w-3 h-3 text-orange-500" />
+          {/* ON LEAVE TODAY (NEW LIVE COUNTER) */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-orange-500 border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+              <span>ON LEAVE TODAY</span>
+              <Calendar className="w-3 h-3 text-orange-500" />
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-orange-600 leading-none">
+                {leaveMetrics.onLeaveCount < 10 ? `0${leaveMetrics.onLeaveCount}` : leaveMetrics.onLeaveCount}
+              </span>
+              <span className="text-3xs text-orange-600/80 font-medium">Approved</span>
+            </div>
           </div>
-          <div className="text-2xl font-bold text-orange-600">
-            {leaveMetrics.onLeaveCount < 10 ? `0${leaveMetrics.onLeaveCount}` : leaveMetrics.onLeaveCount}
-          </div>
-          <div className="text-3xs text-orange-600/80 mt-1">Approved application</div>
-        </div>
 
-        {/* WEEKLY OFF TODAY (NEW LIVE COUNTER) */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-cyan-600 border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1 flex items-center justify-between">
-            <span>WEEKLY OFF TODAY</span>
-            <CalendarDays className="w-3 h-3 text-cyan-600" />
+          {/* WEEKLY OFF TODAY (NEW LIVE COUNTER) */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-cyan-600 border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+              <span>WEEKLY OFF TODAY</span>
+              <CalendarDays className="w-3 h-3 text-cyan-600" />
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-cyan-700 leading-none">
+                {leaveMetrics.weeklyOffCount < 10 ? `0${leaveMetrics.weeklyOffCount}` : leaveMetrics.weeklyOffCount}
+              </span>
+              <span className="text-3xs text-cyan-600/80 font-medium">Rest Day</span>
+            </div>
           </div>
-          <div className="text-2xl font-bold text-cyan-700">
-            {leaveMetrics.weeklyOffCount < 10 ? `0${leaveMetrics.weeklyOffCount}` : leaveMetrics.weeklyOffCount}
-          </div>
-          <div className="text-3xs text-cyan-600/80 mt-1">Scheduled rest day</div>
-        </div>
 
-        {/* ABSENT / UNPLANNED */}
-        <div className="rounded-xl bg-white p-3.5 shadow-sm border-l-4 border-l-rose-500 border border-slate-200">
-          <div className="text-2xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-            UNPLANNED ABSENT
+          {/* ABSENT / UNPLANNED */}
+          <div className="rounded-lg bg-white p-3 shadow-2xs border-l-4 border-l-rose-500 border border-slate-200 flex flex-col justify-between">
+            <div className="text-3xs sm:text-2xs font-bold uppercase tracking-wider text-slate-500">
+              UNPLANNED ABSENT
+            </div>
+            <div className="flex items-baseline justify-between gap-1 mt-1">
+              <span className="text-xl sm:text-2xl font-bold text-rose-600 leading-none">
+                {absentCount < 10 ? `0${absentCount}` : absentCount}
+              </span>
+              <span className="text-3xs text-rose-600/80 font-medium">Needs Repl.</span>
+            </div>
           </div>
-          <div className="text-2xl font-bold text-rose-600">
-            {absentCount < 10 ? `0${absentCount}` : absentCount}
-          </div>
-          <div className="text-3xs text-rose-600/80 mt-1">Needs replacement</div>
         </div>
-      </div>
+      )}
 
       {/* Live Attendance Log Table Card */}
       <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -774,10 +867,20 @@ export const LiveAttendanceView: React.FC<LiveAttendanceViewProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onOpenProfileModal?.(item.staffCode);
+                            const matched = (allUsers || []).find(
+                              (u) =>
+                                u.id === item.userId ||
+                                u.staff_id?.toLowerCase() === item.staffCode?.toLowerCase() ||
+                                u.username?.toLowerCase() === item.staffCode?.toLowerCase()
+                            );
+                            if (onOpenSocialProfile && matched) {
+                              onOpenSocialProfile(matched);
+                            } else {
+                              onOpenProfileModal?.(item.staffCode);
+                            }
                           }}
                           className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-[#1E3A8A] hover:bg-blue-100 transition-colors cursor-pointer"
-                          title="View Employee Profile drill-down"
+                          title="View & Edit Interactive Social Profile Card"
                         >
                           <UserCheck className="h-3 w-3 text-[#1E3A8A]" />
                           <span>Profile</span>

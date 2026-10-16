@@ -1,5 +1,14 @@
-import React, { useState } from 'react';
-import { X, Check, Clock, Building, User, Calendar, ShieldAlert, Lock, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  X,
+  Check,
+  Building,
+  Lock,
+  Plus,
+  Loader2,
+  Sparkles,
+  AlertCircle,
+} from 'lucide-react';
 import type { StaffUser, AttendanceRecord } from '../types';
 import { SHIFTS, process_shift_attendance } from '../utils/attendanceCalculator';
 import {
@@ -7,8 +16,14 @@ import {
   OFF_DUTY_RESTRICTION_MESSAGE,
   showOffDutyToast,
 } from '../utils/dutyPermissionGuard';
+import {
+  fetchZonesForSite,
+  createZoneInDatabase,
+  isRoleAuthorizedToCreateWard,
+  DEFAULT_HOSPITAL_WARDS,
+} from '../services/zoneService';
 
-interface DutyAssignmentModalProps {
+export interface DutyAssignmentModalProps {
   isOpen: boolean;
   onClose: () => void;
   staff: StaffUser[];
@@ -19,20 +34,12 @@ interface DutyAssignmentModalProps {
   isOnDuty?: boolean;
   isShiftGated?: boolean;
   canPerformAction?: boolean;
+  activeSiteId?: string;
+  activeSiteName?: string;
 }
 
-export const DUTY_AREAS = [
-  'Rooms 101-125 Cleaning',
-  'Rooms 201-225 Deep Clean',
-  'Executive Suites Sanitization',
-  'Lobby & Reception Polish',
-  'Corridors & Elevators Floor Care',
-  'Kitchen & Dining Sanitation',
-  'Laundry & Linen Sorting',
-  'Pool & Restroom Maintenance',
-  'Deep Cleaning & Waste Mgmt',
-  'Banquet Hall Turnover',
-];
+// Clean default hospital wards exported for backwards-compatibility
+export const DUTY_AREAS = DEFAULT_HOSPITAL_WARDS;
 
 export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   isOpen,
@@ -45,13 +52,15 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   isOnDuty,
   isShiftGated,
   canPerformAction,
+  activeSiteId,
+  activeSiteName,
 }) => {
   const [dutyType, setDutyType] = useState<'FIXED' | 'PERMANENT_RELIEVER' | 'TEMP_RELIEVER'>('FIXED');
   const [isTempReliever, setIsTempReliever] = useState<boolean>(false);
   const [tempDepartment, setTempDepartment] = useState<string>('');
   const [staffId, setStaffId] = useState<number>(initialStaffId || staff[0]?.id || 1);
   const [date, setDate] = useState<string>(selectedDate);
-  const [dutyArea, setDutyArea] = useState<string>(DUTY_AREAS[0]);
+  const [dutyArea, setDutyArea] = useState<string>(DEFAULT_HOSPITAL_WARDS[0]);
   const [shift, setShift] = useState<'Morning' | 'Evening' | 'Night'>('Morning');
   const [punchIn, setPunchIn] = useState<string>(SHIFTS.MORNING.start);
   const [punchOut, setPunchOut] = useState<string>(SHIFTS.MORNING.end);
@@ -59,6 +68,86 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   const [regularHours, setRegularHours] = useState<number>(8.0);
   const [otHours, setOtHours] = useState<number>(0.0);
   const [notes, setNotes] = useState<string>('');
+
+  // Dynamic Wards loaded from Database 'zones' table
+  const [availableWards, setAvailableWards] = useState<string[]>(DEFAULT_HOSPITAL_WARDS);
+  const [isLoadingWards, setIsLoadingWards] = useState<boolean>(false);
+
+  // Manual Creatable Ward State (Restricted to MASTER_ADMIN & OPERATIONS_MANAGER)
+  const [customWardInput, setCustomWardInput] = useState<string>('');
+  const [isAddingWard, setIsAddingWard] = useState<boolean>(false);
+  const [wardFeedback, setWardFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // RBAC Permission check
+  const canCreateWard = isRoleAuthorizedToCreateWard(currentUserRole);
+
+  // Fetch dynamic pre-approved zones for the active site
+  useEffect(() => {
+    if (!isOpen) return;
+    let isCancelled = false;
+    setIsLoadingWards(true);
+
+    fetchZonesForSite(activeSiteId, currentUserRole)
+      .then((zones) => {
+        if (isCancelled) return;
+        const wardNames = zones.map((z) => (z.zone_name || z.department || '').trim()).filter(Boolean);
+        if (wardNames.length > 0) {
+          const unique = Array.from(new Set(wardNames));
+          setAvailableWards(unique);
+
+          // If current dutyArea is not in the site's zones, sync it with staff department or first available
+          setDutyArea((currentArea) => {
+            if (unique.includes(currentArea)) return currentArea;
+            const staffMatch = staff.find((s) => s.id === staffId);
+            const staffDept = staffMatch?.fixed_department || staffMatch?.fixedDepartment || staffMatch?.assigned_area || staffMatch?.department;
+            if (staffDept && unique.includes(staffDept)) return staffDept;
+            return unique[0];
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load site zones:', err);
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingWards(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isOpen, activeSiteId, currentUserRole, staffId, staff]);
+
+  // Sync initial staff department when staffId changes or modal opens
+  useEffect(() => {
+    if (initialStaffId) {
+      setStaffId(initialStaffId);
+    }
+  }, [initialStaffId]);
+
+  useEffect(() => {
+    const targetStaff = staff.find((s) => s.id === staffId);
+    if (targetStaff) {
+      const preferred = (
+        targetStaff.fixed_department ||
+        targetStaff.fixedDepartment ||
+        targetStaff.assigned_area ||
+        targetStaff.department ||
+        ''
+      ).trim();
+      if (preferred) {
+        setDutyArea(preferred);
+        setAvailableWards((prev) => (prev.includes(preferred) ? prev : [preferred, ...prev]));
+      }
+    }
+  }, [staffId, staff]);
+
+  // Reset feedback when modal opens/closes
+  useEffect(() => {
+    if (!isOpen) {
+      setWardFeedback(null);
+      setCustomWardInput('');
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -100,6 +189,50 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
   const selectedStaffMember = staff.find((s) => s.id === staffId);
   const shiftCode = shift === 'Night' ? '11-7' : shift === 'Evening' ? '3-11' : '7-3';
   const effectiveDepartment = isTempReliever && tempDepartment.trim() ? tempDepartment.trim() : dutyArea;
+
+  // Manual Ward Creation Handler (saves to database 'zones' table)
+  const handleAddNewWard = async () => {
+    const trimmed = customWardInput.trim();
+    if (!trimmed) {
+      setWardFeedback({ type: 'error', message: 'Ward / Area name cannot be empty.' });
+      return;
+    }
+
+    if (!canCreateWard) {
+      setWardFeedback({
+        type: 'error',
+        message: 'RBAC Restriction: Only MASTER_ADMIN and OPERATIONS_MANAGER can create custom wards.',
+      });
+      return;
+    }
+
+    setIsAddingWard(true);
+    setWardFeedback(null);
+
+    try {
+      const createdZone = await createZoneInDatabase(activeSiteId, trimmed, currentUserRole);
+      const newWardName = createdZone.zone_name || trimmed;
+
+      setAvailableWards((prev) => (prev.includes(newWardName) ? prev : [...prev, newWardName]));
+      setDutyArea(newWardName);
+      setCustomWardInput('');
+      setWardFeedback({
+        type: 'success',
+        message: `✓ Ward "${newWardName}" registered into database 'zones' table linked to active site!`,
+      });
+
+      setTimeout(() => {
+        setWardFeedback(null);
+      }, 4000);
+    } catch (err: any) {
+      setWardFeedback({
+        type: 'error',
+        message: err?.message || 'Failed to save custom ward into database zones table.',
+      });
+    } finally {
+      setIsAddingWard(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,6 +303,11 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
               </h2>
               <p className="text-xs text-slate-500">
                 Housekeeping Staff Shift Allocation & Live Punch Setup
+                {activeSiteName && (
+                  <span className="ml-1 font-medium text-blue-700">
+                    • Site: {activeSiteName}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -177,7 +315,7 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition cursor-pointer"
           >
             <X className="h-5 w-5" />
           </button>
@@ -301,22 +439,120 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
             </div>
           </div>
 
-          {/* Assigned Duty / Area */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Primary Ward / Area (fixed_department)
-            </label>
-            <select
-              value={dutyArea}
-              onChange={(e) => setDutyArea(e.target.value)}
-              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
-            >
-              {DUTY_AREAS.map((area) => (
-                <option key={area} value={area}>
-                  {area}
-                </option>
-              ))}
-            </select>
+          {/* ========================================================================= */}
+          {/* Primary Ward / Area (fixed_department) with Dynamic DB & RBAC Support    */}
+          {/* ========================================================================= */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold text-slate-700">
+                Primary Ward / Area (fixed_department)
+              </label>
+
+              {canCreateWard ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700 border border-blue-200">
+                  <Sparkles className="h-3 w-3 text-blue-600" />
+                  Creatable Zone Access (Admin/Manager)
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 border border-slate-200">
+                  <Lock className="h-3 w-3 text-slate-500" />
+                  Pre-Approved Wards Only
+                </span>
+              )}
+            </div>
+
+            {/* Standard Dropdown of Wards Linked to Active Site */}
+            <div className="relative">
+              <select
+                value={dutyArea}
+                onChange={(e) => setDutyArea(e.target.value)}
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
+              >
+                {availableWards.map((area) => (
+                  <option key={area} value={area}>
+                    {area}
+                  </option>
+                ))}
+              </select>
+
+              {isLoadingWards && (
+                <span className="absolute right-8 top-2.5 text-xs text-slate-400 flex items-center gap-1 pointer-events-none">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Syncing...
+                </span>
+              )}
+            </div>
+
+            {/* RBAC Conditional: Manual Creation Bar strictly for MASTER_ADMIN and OPERATIONS_MANAGER */}
+            {canCreateWard ? (
+              <div className="rounded-lg border border-blue-200/80 bg-blue-50/40 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-blue-900">
+                    + Add New Custom Ward to Database:
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Table: 'zones' (Site-Linked)
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Type custom Ward name & press Enter (e.g., Cardiac ICU, Pediatric Wing)..."
+                    value={customWardInput}
+                    onChange={(e) => setCustomWardInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddNewWard();
+                      }
+                    }}
+                    className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={handleAddNewWard}
+                    disabled={isAddingWard || !customWardInput.trim()}
+                    className="inline-flex items-center gap-1 rounded-md bg-[#1E3A8A] px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-900 disabled:opacity-50 transition cursor-pointer disabled:cursor-not-allowed shrink-0"
+                  >
+                    {isAddingWard ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>+ Add Ward</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {wardFeedback && (
+                  <div
+                    className={`flex items-center gap-1.5 text-xs font-medium pt-1 ${
+                      wardFeedback.type === 'success' ? 'text-emerald-700' : 'text-red-600'
+                    }`}
+                  >
+                    {wardFeedback.type === 'success' ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                    )}
+                    <span>{wardFeedback.message}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-500 flex items-center gap-1 px-1">
+                <Lock className="h-3 w-3 text-slate-400 shrink-0" />
+                <span>
+                  Wards are managed and approved by your Operations Manager or Master Admin.
+                </span>
+              </p>
+            )}
           </div>
 
           {/* Shift Selection */}
@@ -414,7 +650,7 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
             </label>
             <input
               type="text"
-              placeholder="e.g. VIP floor inspection, Deep polish ballroom"
+              placeholder="e.g. VIP floor inspection, Specialized ward sanitation"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-[#1E3A8A] focus:ring-1 focus:ring-[#1E3A8A]"
@@ -426,7 +662,7 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"
             >
               Cancel
             </button>
@@ -449,3 +685,5 @@ export const DutyAssignmentModal: React.FC<DutyAssignmentModalProps> = ({
     </div>
   );
 };
+
+export default DutyAssignmentModal;

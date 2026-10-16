@@ -45,6 +45,7 @@ export interface SidebarProps {
   onOpenStaffModal?: () => void;
   onOpenSheetsModal?: () => void;
   onOpenPdfPreview?: () => void;
+  onOpenProfileModal?: (staffId: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -71,6 +72,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenStaffModal,
   onOpenSheetsModal,
   onOpenPdfPreview,
+  onOpenProfileModal,
 }) => {
   // Close sidebar on Escape key press
   useEffect(() => {
@@ -486,15 +488,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Sidebar Bottom Profile Badge */}
         <div className="border-top border-light-subtle pt-3 d-flex align-items-center justify-content-between gap-2 mt-4">
-          <div className="d-flex align-items-center gap-2 overflow-hidden">
+          <button
+            type="button"
+            id="btn-sidebar-user-profile"
+            onClick={() => {
+              if (onOpenProfileModal) {
+                onOpenProfileModal(currentUser?.staff_id || currentUser?.username || String(currentUser?.id || ''));
+                onClose();
+              }
+            }}
+            className="d-flex align-items-center gap-2 overflow-hidden bg-transparent border-0 text-start p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer w-full group"
+            title="Click to View & Edit Your Social Profile Card"
+          >
             <div
-              className="bg-primary rounded-circle text-center fw-bold text-white shrink-0"
+              className="bg-primary rounded-circle text-center fw-bold text-white shrink-0 group-hover:scale-105 transition-transform"
               style={{ width: '34px', height: '34px', lineHeight: '34px', fontSize: '0.875rem' }}
             >
               {userInitial}
             </div>
             <div className="lh-1 overflow-hidden">
-              <div className="fw-bold small text-white truncate">{userName}</div>
+              <div className="fw-bold small text-white truncate group-hover:text-blue-200 transition-colors">{userName}</div>
               <small className="text-white-50 text-uppercase truncate block font-mono" style={{ fontSize: '0.65rem' }}>
                 {currentUser?.staff_id ? `${currentUser.staff_id} • ` : ''}
                 {isAdmin
@@ -504,13 +517,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'STAFF_USER'}
               </small>
             </div>
-          </div>
+          </button>
           <button
             type="button"
             id="btn-sidebar-logout"
             onClick={onLogout}
             title="Kill Session / Logout"
-            className="text-white-50 hover:text-rose-400 p-1.5 rounded transition-colors bg-transparent border-0 cursor-pointer"
+            className="text-white-50 hover:text-rose-400 p-1.5 rounded transition-colors bg-transparent border-0 cursor-pointer shrink-0"
           >
             <LogOut className="h-4 w-4" />
           </button>

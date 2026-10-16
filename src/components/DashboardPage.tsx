@@ -21,6 +21,7 @@ import {
   AlertCircle,
   CheckCircle2,
   AlertTriangle,
+  Bell,
   Lock,
   Terminal,
   HelpCircle,
@@ -41,7 +42,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole, StaffRequest, DutyAllocation, HospitalSite } from '../types';
+import type { StaffUser, AttendanceRecord, MonthlyStaffSummary, AppUser, FlashMessage, UserRole, UserStatus, StaffRequest, DutyAllocation, HospitalSite } from '../types';
 import {
   getStoredStaff,
   saveStoredStaff,
@@ -64,12 +65,12 @@ import {
   saveStoredRemovalRequests,
   approveRemovalRequest,
   rejectRemovalRequest,
-  HOSPITAL_SITES,
   getTenantSites,
   getSiteNameById,
   DEFAULT_TENANT_CONFIGS,
   getAllLeaveRequests,
   getTodayIso,
+  getSupervisorAccessContext,
 } from '../data/mockHousekeepingData';
 import { canDeleteUser } from './AdminStaffTable';
 import {
@@ -111,6 +112,10 @@ import { getEmptyInitialAttendanceState, fetchStaffDirectory } from '../services
 import { CredentialCardModal, type CredentialCardData } from './CredentialCardModal';
 import { LeaveManagementView } from './LeaveManagementView';
 import { EmployeeProfileModal } from './EmployeeProfileModal';
+import { UserProfileModal } from './UserProfileModal';
+import { CreatePostModal } from './CreatePostModal';
+import { AnnouncementsFeed } from './AnnouncementsFeed';
+import { AccessControlModal } from './AccessControlModal';
 import { GeofenceSettingsPanel } from './GeofenceSettingsPanel';
 import { LiveConnectBadge } from './LiveConnectBadge';
 import { SiteSelector } from './SiteSelector';
@@ -148,6 +153,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Case-insensitive role resolution for robust access controls
   const userRole: UserRole = ((authRole || currentUser?.role || 'staff').toLowerCase() as UserRole);
   const isAdmin = userRole === 'admin';
+  const isMasterAdmin = isAdmin || (currentUser as any)?.staff_id === 'BASU-ADM-001' || (currentUser as any)?.role === 'master_admin';
   const isManager = userRole === 'manager';
   const isSupervisor = userRole === 'supervisor';
   const isStaff = userRole === 'staff';
@@ -230,17 +236,19 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   }, [activeTenantPrefix, userRole, currentUser]);
 
   const availableSites = useMemo(() => {
-    const defaultSites = getTenantSites(activeTenantPrefix);
-    const combined = [...defaultSites, ...dynamicSitesList];
-    const map = new Map<string, HospitalSite>();
-    combined.forEach((s) => {
-      const key = s.siteId || s.id;
-      if (key && !map.has(key)) {
-        map.set(key, { ...s, id: key, siteId: key });
+    if (!dynamicSitesList || !Array.isArray(dynamicSitesList)) return [];
+
+    const seen = new Set<string>();
+    return dynamicSitesList.filter((site) => {
+      // Unique ID ya Name check
+      const identifier = site.id || site.name || site.siteId || (site as any).site_name;
+      if (!identifier || seen.has(identifier)) {
+        return false; // Skip duplicates
       }
+      seen.add(identifier);
+      return true;
     });
-    return Array.from(map.values());
-  }, [activeTenantPrefix, dynamicSitesList]);
+  }, [dynamicSitesList]);
 
   const handleSiteCreated = (newSite: HospitalSite) => {
     const siteKey = newSite.siteId || newSite.id;
@@ -252,6 +260,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       handleSiteFilterChange(siteKey);
     }
     addFlash(`Site "${newSite.name || newSite.siteName}" registered with GPS geofence successfully!`, 'success');
+  };
+
+  const handleSiteDeleted = (deletedSiteId: string) => {
+    setDynamicSitesList((prev) => prev.filter((s) => (s.siteId || s.id) !== deletedSiteId && s.id !== deletedSiteId));
+    if (selectedSiteFilter === deletedSiteId) {
+      handleSiteFilterChange('ALL');
+    }
+    addFlash('Site removed from operational registry.', 'info');
   };
 
   // 2. Master Admin Site Selector state:
@@ -276,18 +292,20 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // - SUPERVISOR & STAFF: Inherit the 'siteId' of the Operations Manager
   const effectiveSiteFilter = useMemo(() => {
     if (isManager) {
-      return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'SITE_APEX_MAIN';
+      return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'GLOBAL';
     }
     if (isAdmin) {
       return selectedSiteFilter;
     }
-    return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'SITE_APEX_MAIN';
+    return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'GLOBAL';
   }, [isManager, isAdmin, currentUser, selectedSiteFilter, availableSites]);
 
   const activeSiteName = useMemo(() => {
-    if (effectiveSiteFilter === 'ALL' || effectiveSiteFilter === 'GLOBAL') return 'All Sites (Global)';
-    return getSiteNameById(effectiveSiteFilter);
-  }, [effectiveSiteFilter]);
+    if (effectiveSiteFilter === 'ALL' || effectiveSiteFilter === 'GLOBAL' || !effectiveSiteFilter) return 'All Sites (Global)';
+    const siteObj = availableSites.find((s) => s.id === effectiveSiteFilter || s.siteId === effectiveSiteFilter);
+    if (siteObj) return siteObj.name || siteObj.siteName || effectiveSiteFilter;
+    return getSiteNameById(effectiveSiteFilter) || effectiveSiteFilter;
+  }, [effectiveSiteFilter, availableSites]);
 
   // Leave Requests state for badge indicator
   const [allLeaveRequests, setAllLeaveRequests] = useState(() => getAllLeaveRequests());
@@ -330,6 +348,12 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     setFlashes((prev) => prev.filter((f) => f.id !== id));
   };
 
+  // Standard function declaration for app logout - hoisted and fully initialized before any useEffect or event listeners
+  async function handleAppLogout() {
+    addFlash('Aap safaltapurvak logout ho gaye hain.', 'info');
+    authLogout(navigate);
+  }
+
   // Navigation tab: 'live', 'monthly', 'portal', 'admin-staff', 'staff-vault', 'pending-approvals', 'leaves', 'geofence'
   const [activeTab, setActiveTab] = useState<'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence'>(() => {
     if (defaultTab) return defaultTab;
@@ -357,6 +381,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
   const [isPunchModalOpen, setIsPunchModalOpen] = useState(false);
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+  const [socialProfileUser, setSocialProfileUser] = useState<AppUser | StaffUser | null>(null);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [isDutyModalOpen, setIsDutyModalOpen] = useState(false);
   const [dutyModalStaffId, setDutyModalStaffId] = useState<number | null>(null);
@@ -366,6 +391,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const [isRegisterStaffModalOpen, setIsRegisterStaffModalOpen] = useState(false);
   const [isPendingModalOpen, setIsPendingModalOpen] = useState(false);
   const [isAdminVaultModalOpen, setIsAdminVaultModalOpen] = useState(false);
+  const [isCreatePostModalOpen, setIsCreatePostModalOpen] = useState(false);
+  const [isAccessControlModalOpen, setIsAccessControlModalOpen] = useState(false);
   const [isStaffRequestModalOpen, setIsStaffRequestModalOpen] = useState(false);
   const [isSystemInfoOpen, setIsSystemInfoOpen] = useState(false);
   const [activeCredentialSlip, setActiveCredentialSlip] = useState<CredentialCardData | null>(null);
@@ -402,7 +429,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         return false;
       }
       if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
-        const uSite = u.siteId || u.site_id || 'SITE_APEX_MAIN';
+        const uSite = u.siteId || u.site_id || '';
         if (!isAdmin && uSite !== effectiveSiteFilter) {
           return false;
         }
@@ -414,34 +441,109 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   // Unified staffList representing the deduplicated, scoped workforce accounts
   const staffList = scopedUsers;
 
+  // Centralized Staff Roster: Synchronized with scopedUsers (exact same centralized single state array)
+  // Both Staff Vault (Admin Directory) and Housekeeping Staff Roster modal read from and write to this exact same centralized state
+  // 1. ACTIVE EMPLOYEES FILTER ONLY: fetches and displays ONLY active/existing employees (status = 'ACTIVE' and deleted_at IS NULL).
+  // Terminated or deleted staff must never appear in the roster.
   const scopedStaff = useMemo(() => {
-    const deduped = deduplicateDataset(staff);
-    return deduped.filter((s) => {
-      const staffTenant = (s.company_prefix || s.tenant_id || s.tenantId || '').toUpperCase();
-      const staffCode = String(s.staffCode || s.id || '').toUpperCase();
-      const isAdmin = (s as any).role === 'admin' || staffCode === 'BASU-ADM-001';
+    return scopedUsers
+      .filter((u) => {
+        const sStatus = (u.status || '').toUpperCase();
+        if (sStatus === 'TERMINATED' || sStatus === 'DELETED') return false;
+        if (u.deleted_at || (u as any).deletedAt || (u as any).is_deleted) return false;
+        if (sStatus === 'DISABLED') return false;
+        return sStatus === 'ACTIVE' || (u.active !== false && u.is_approved !== false);
+      })
+      .map((u, idx) => {
+        const extra = staff.find(
+          (s) =>
+            (u.staffId && s.id === u.staffId) ||
+            (u.id && (s.id === u.id || String(s.id) === String(u.id))) ||
+            (u.staff_id && s.staffCode?.toLowerCase() === u.staff_id.toLowerCase())
+        );
+        const shiftNamed: 'Morning' | 'Evening' | 'Night' | string =
+          (u.shift as any) ||
+          (u.assigned_shift === '11-7'
+            ? 'Night'
+            : u.assigned_shift === '3-11'
+            ? 'Evening'
+            : u.assigned_shift === '7-3'
+            ? 'Morning'
+            : u.assigned_shift || 'Morning');
 
-      if (activeTenantPrefix && !isAdmin && !staffCode.startsWith(activeTenantPrefix) && staffTenant !== activeTenantPrefix) {
+        return {
+          id: typeof u.id === 'number' ? u.id : (extra?.id || 1000 + idx),
+          staffCode: u.staff_id || u.username || String(u.id || ''),
+          name: u.full_name || u.name,
+          role: (u.role as any) || 'staff',
+          department: u.fixed_department || u.department || u.assigned_area || extra?.department || 'Floors & Rooms',
+          shift: shiftNamed,
+          phone: u.phone || u.mobile || extra?.phone || extra?.mobile,
+          mobile: u.mobile || u.phone || extra?.mobile || extra?.phone,
+          email: u.email || extra?.email,
+          active: true,
+          siteId: u.siteId || u.site_id || extra?.siteId,
+          siteName: u.siteName || u.site_name || extra?.siteName,
+          company_prefix: u.company_prefix || extra?.company_prefix || activeTenantPrefix,
+          tenant_id: u.tenant_id || u.tenantId || extra?.tenant_id || activeTenantPrefix,
+          dutyType: u.duty_type || extra?.dutyType || 'FIXED',
+          attendanceLogs: u.attendanceLogs || extra?.attendanceLogs || [],
+          presentDays: u.presentDays || extra?.presentDays || 0,
+          regularHours: u.regularHours || extra?.regularHours || 0,
+          overtimeHours: u.overtimeHours || extra?.overtimeHours || 0,
+        } as StaffUser;
+      });
+  }, [scopedUsers, staff, activeTenantPrefix]);
+
+  // 2. ROLE-BASED ACCESS CONTROL (RBAC) FOR ROSTER:
+  // - MASTER_ADMIN & OPERATIONS_MANAGER: Can view the complete roster of all staff members across the site.
+  // - SUPERVISOR: Can view and manage the roster strictly limited to their assigned Ward, Floor, or Department.
+  // - STAFF: Can view only their own individual roster and attendance entries.
+  const visibleRosterStaff = useMemo(() => {
+    if (userRole === 'staff') {
+      return scopedStaff.filter((s) => {
+        if (currentUser?.staffId && s.id === currentUser.staffId) return true;
+        if (currentUser?.staff_id && s.staffCode?.toLowerCase() === currentUser.staff_id.toLowerCase()) return true;
+        if (currentUser?.username && s.staffCode?.toLowerCase() === currentUser.username.toLowerCase()) return true;
+        return currentUser?.name && s.name?.toLowerCase() === currentUser.name.toLowerCase();
+      });
+    }
+
+    if (userRole === 'supervisor') {
+      const supDept = (currentUser?.fixed_department || currentUser?.department || currentUser?.assigned_area || '').trim().toLowerCase();
+      const supWard = ((currentUser as any)?.ward || (currentUser as any)?.assigned_ward || '').trim().toLowerCase();
+      const supFloor = ((currentUser as any)?.floor || '').trim().toLowerCase();
+      const ctxWard = (getSupervisorAccessContext(currentUser?.username || String(currentUser?.id || 'supervisor')).activeShiftWard || '').trim().toLowerCase();
+
+      return scopedStaff.filter((s) => {
+        const sDept = (s.department || '').trim().toLowerCase();
+        const sFloor = ((s as any).floor || '').trim().toLowerCase();
+        const sWard = ((s as any).ward || '').trim().toLowerCase();
+        const sSupervisorId = String((s as any).supervisorId || (s as any).supervisor_id || '').toLowerCase();
+        const myId = String(currentUser?.id || '').toLowerCase();
+        const myStaffId = String(currentUser?.staff_id || currentUser?.username || '').toLowerCase();
+
+        if (sSupervisorId && (sSupervisorId === myId || sSupervisorId === myStaffId)) return true;
+        if (supDept && sDept.includes(supDept)) return true;
+        if (supWard && (sWard.includes(supWard) || sDept.includes(supWard))) return true;
+        if (ctxWard && ctxWard !== 'all hospital wards' && (sWard.includes(ctxWard) || sDept.includes(ctxWard))) return true;
+        if (supFloor && sFloor.includes(supFloor)) return true;
+        if (!supDept && !supWard && !supFloor && (!ctxWard || ctxWard === 'all hospital wards')) return true;
         return false;
-      }
-      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
-        const sSite = s.siteId || (s as any).site_id || 'SITE_APEX_MAIN';
-        if (!isAdmin && sSite !== effectiveSiteFilter) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [staff, activeTenantPrefix, effectiveSiteFilter, deduplicateDataset]);
+      });
+    }
+
+    return scopedStaff;
+  }, [scopedStaff, userRole, currentUser]);
 
   const scopedRecords = useMemo(() => {
-    if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+    if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
       return records.filter((r) => {
         if (r.siteId || r.site_id) {
           return r.siteId === effectiveSiteFilter || r.site_id === effectiveSiteFilter;
         }
         const userMatch = users.find((u) => (r.userId && u.id === r.userId) || (r.staff_id && u.staff_id === r.staff_id));
-        const resolvedSite = userMatch?.siteId || userMatch?.site_id || 'SITE_APEX_MAIN';
+        const resolvedSite = userMatch?.siteId || userMatch?.site_id || '';
         return resolvedSite === effectiveSiteFilter;
       });
     }
@@ -453,7 +555,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const pendingStaffRequests = useMemo(() => {
     return staffRequests.filter((r) => {
       if (r.status !== 'PENDING') return false;
-      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
         const rSite = r.siteId || r.site_id;
         if (rSite && rSite !== effectiveSiteFilter) return false;
       }
@@ -463,7 +565,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
   const pendingOtRequests = useMemo(() => {
     return dutyAllocations.filter((a) => {
       if (a.ot_status !== 'PENDING' || (a.ot_requested_hours || 0) <= 0) return false;
-      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL') {
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
         const aSite = a.siteId || a.site_id;
         if (aSite && aSite !== effectiveSiteFilter) return false;
       }
@@ -749,8 +851,10 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return unifiedDutyStaff.filter((s) => s.active).length;
   }, [unifiedDutyStaff]);
 
-  // Staff Only View (Sirf apna data dekhne ke liye):
-  // When staff role is logged in, restrict data view to only their own record
+  // Staff Only View (Sirf apna data dekhne ke liye) & Supervisor Scoped View:
+  // - STAFF: restrict data view to only their own individual record
+  // - SUPERVISOR: strictly limited to their assigned Ward, Floor, or Department
+  // - MASTER_ADMIN & OPERATIONS_MANAGER: full site overview
   const visibleStaff = useMemo(() => {
     if (currentUser?.role === 'staff') {
       const filtered = unifiedDutyStaff.filter((s) => {
@@ -759,8 +863,33 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         if (currentUser.username && s.staffCode.toLowerCase() === currentUser.username.toLowerCase()) return true;
         return s.name.toLowerCase() === currentUser.name.toLowerCase();
       });
-      return filtered.length > 0 ? filtered : unifiedDutyStaff.slice(0, 1);
+      return filtered;
     }
+
+    if (currentUser?.role === 'supervisor') {
+      const supDept = (currentUser.fixed_department || currentUser.department || currentUser.assigned_area || '').trim().toLowerCase();
+      const supWard = ((currentUser as any).ward || (currentUser as any).assigned_ward || '').trim().toLowerCase();
+      const supFloor = ((currentUser as any).floor || '').trim().toLowerCase();
+      const ctxWard = (getSupervisorAccessContext(currentUser.username || String(currentUser.id)).activeShiftWard || '').trim().toLowerCase();
+
+      return unifiedDutyStaff.filter((s) => {
+        const sDept = (s.department || '').trim().toLowerCase();
+        const sFloor = ((s as any).floor || '').trim().toLowerCase();
+        const sWard = ((s as any).ward || '').trim().toLowerCase();
+        const sSupervisorId = String((s as any).supervisorId || (s as any).supervisor_id || '').toLowerCase();
+        const myId = String(currentUser.id || '').toLowerCase();
+        const myStaffId = String(currentUser.staff_id || currentUser.username || '').toLowerCase();
+
+        if (sSupervisorId && (sSupervisorId === myId || sSupervisorId === myStaffId)) return true;
+        if (supDept && sDept.includes(supDept)) return true;
+        if (supWard && (sWard.includes(supWard) || sDept.includes(supWard))) return true;
+        if (ctxWard && ctxWard !== 'all hospital wards' && (sWard.includes(ctxWard) || sDept.includes(ctxWard))) return true;
+        if (supFloor && sFloor.includes(supFloor)) return true;
+        if (!supDept && !supWard && !supFloor && (!ctxWard || ctxWard === 'all hospital wards')) return true;
+        return false;
+      });
+    }
+
     return unifiedDutyStaff;
   }, [unifiedDutyStaff, currentUser]);
 
@@ -804,7 +933,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           recordsCount: userRecords.length,
         };
       });
-  }, [visibleStaff, records, year, month]);
+  }, [visibleStaff, scopedRecords, year, month]);
 
   // Totals for stat-row
   const aggregatePresentDays = summaryData.reduce((acc, s) => acc + s.daysPresent, 0);
@@ -882,8 +1011,9 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const newId = numericStaffIds.length > 0 ? Math.max(...numericStaffIds) + 1 : 101;
     const chosenSiteId =
       (newStaffData as any).siteId ||
-      (isManager ? (currentUser?.siteId || currentUser?.site_id) : (effectiveSiteFilter !== 'ALL' ? effectiveSiteFilter : 'SITE_APEX_MAIN')) ||
-      'SITE_APEX_MAIN';
+      (isManager ? (currentUser?.siteId || currentUser?.site_id) : (effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL' ? effectiveSiteFilter : availableSites[0]?.siteId)) ||
+      availableSites[0]?.siteId ||
+      '';
     const chosenSiteName =
       (newStaffData as any).siteName ||
       (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) ||
@@ -902,7 +1032,23 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       regularHours: 0,
       overtimeHours: 0,
     };
-    const updatedStaff = [...staff, newMember];
+    const existingStaffIdx = staff.findIndex(
+      (s) =>
+        (s.staffCode && s.staffCode.toLowerCase() === autoStaffCode.toLowerCase()) ||
+        (newStaffData.staffCode && s.staffCode && s.staffCode.toLowerCase() === newStaffData.staffCode.toLowerCase())
+    );
+    let updatedStaff: StaffUser[];
+    if (existingStaffIdx >= 0) {
+      updatedStaff = [...staff];
+      updatedStaff[existingStaffIdx] = {
+        ...updatedStaff[existingStaffIdx],
+        department: newMember.department,
+        shift: newMember.shift,
+        active: true,
+      };
+    } else {
+      updatedStaff = [...staff, newMember];
+    }
     handleSaveStaff(updatedStaff);
     saveStaffToLiveDb(newMember).catch(console.warn);
 
@@ -933,7 +1079,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         fixed_department: newMember.department,
         is_temp_reliever: false,
         temp_department: null,
-        assigned_shift: newMember.shift === 'Night' ? '11-7' : newMember.shift === 'Evening' ? '3-11' : '7-3',
+        assigned_shift:
+          newMember.shift === 'Night'
+            ? '11-7'
+            : newMember.shift === 'Evening'
+            ? '3-11'
+            : newMember.shift === 'Morning'
+            ? '7-3'
+            : newMember.shift || '7-3',
         password: 'staff123',
         password_hash: createPasswordHash('staff123'),
         raw_password_vault: 'staff123',
@@ -952,12 +1105,79 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       setUsers(updatedUsers);
       saveStoredUsers(updatedUsers);
       saveUserToLiveDb(linkedUser).catch(console.warn);
+    } else {
+      const updatedUser: AppUser = {
+        ...existingUser,
+        status: 'ACTIVE',
+        active: true,
+        department: newMember.department,
+        assigned_area: newMember.department,
+        fixed_department: newMember.department,
+        shift: newMember.shift,
+        assigned_shift:
+          newMember.shift === 'Night'
+            ? '11-7'
+            : newMember.shift === 'Evening'
+            ? '3-11'
+            : newMember.shift === 'Morning'
+            ? '7-3'
+            : newMember.shift || '7-3',
+      };
+      const updatedUsers = users.map((u) => (u.id === existingUser.id ? updatedUser : u));
+      setUsers(updatedUsers);
+      saveStoredUsers(updatedUsers);
+      saveUserToLiveDb(updatedUser).catch(console.warn);
     }
+
+    // Force real-time sync across Roster, Vault, and all listening components
+    window.dispatchEvent(new CustomEvent('staff-data-updated', { detail: { staff: newMember } }));
+    window.dispatchEvent(new CustomEvent('user-data-updated', { detail: { staff: newMember } }));
+    window.dispatchEvent(new CustomEvent('roster-data-updated', { detail: { staff: newMember } }));
+    window.dispatchEvent(new CustomEvent('duty-data-updated', { detail: { staff: newMember } }));
   };
 
-  const handleToggleStaffActive = (staffId: number) => {
-    const updated = staff.map((s) => (s.id === staffId ? { ...s, active: !s.active } : s));
-    handleSaveStaff(updated);
+  const handleToggleStaffActive = (staffId: number | string) => {
+    const targetUser = users.find(
+      (u) =>
+        u.id === staffId ||
+        String(u.id) === String(staffId) ||
+        u.staffId === staffId ||
+        (u.staff_id && u.staff_id.toLowerCase() === String(staffId).toLowerCase())
+    );
+    const targetStaff = staff.find(
+      (s) => s.id === staffId || String(s.id) === String(staffId) || s.staffCode?.toLowerCase() === String(staffId).toLowerCase()
+    );
+    const newActive = targetStaff ? !targetStaff.active : targetUser ? targetUser.status !== 'ACTIVE' : true;
+
+    const updatedStaff = staff.map((s) => {
+      if (
+        s.id === staffId ||
+        String(s.id) === String(staffId) ||
+        (targetUser?.staff_id && s.staffCode?.toLowerCase() === targetUser.staff_id.toLowerCase())
+      ) {
+        return { ...s, active: newActive };
+      }
+      return s;
+    });
+    handleSaveStaff(updatedStaff);
+
+    const updatedUsers = users.map((u) => {
+      if (
+        u.id === staffId ||
+        String(u.id) === String(staffId) ||
+        u.staffId === staffId ||
+        (targetStaff?.staffCode && u.staff_id?.toLowerCase() === targetStaff.staffCode.toLowerCase())
+      ) {
+        return { ...u, status: (newActive ? 'ACTIVE' : 'DISABLED') as UserStatus };
+      }
+      return u;
+    });
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+
+    window.dispatchEvent(new Event('staff-data-updated'));
+    window.dispatchEvent(new Event('user-data-updated'));
+    window.dispatchEvent(new Event('roster-data-updated'));
   };
 
   const handleOpenAssignModal = (staffId?: number) => {
@@ -1055,11 +1275,6 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     );
   };
 
-  const handleAppLogout = async () => {
-    addFlash('Aap safaltapurvak logout ho gaye hain.', 'info');
-    authLogout(navigate);
-  };
-
   // Role Access Control Decorator: @admin_required & @role_required
   const handleNavigateTab = (targetTab: 'live' | 'monthly' | 'portal' | 'admin-staff' | 'staff-vault' | 'pending-approvals' | 'leaves' | 'geofence') => {
     if (!currentUser) {
@@ -1153,53 +1368,121 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     addFlash(`Updated ${updatedUser.full_name || updatedUser.name} duty profile & credentials.`, 'success');
   };
 
-  const handleDeleteUser = async (userId: number) => {
+  const handleDeleteUser = async (userId: number | string) => {
     if (isSupervisor && !canPerformSupervisorAction) {
       handleRestrictedActionAttempt('delete user');
       return;
     }
-    const target = users.find((u) => u.id === userId);
-    if (!target) return;
+    const target = users.find(
+      (u) =>
+        u.id === userId ||
+        String(u.id) === String(userId) ||
+        (u.staff_id && String(u.staff_id).toLowerCase() === String(userId).toLowerCase()) ||
+        (u.username && String(u.username).toLowerCase() === String(userId).toLowerCase())
+    );
 
-    // Check delete permission using canDeleteUser matrix
-    const allowed = canDeleteUser(userRole, target.role, currentUser?.id, target.id);
-    if (!allowed) {
-      addFlash(`Unauthorized: Your role (${(userRole || '').toUpperCase()}) cannot delete ${target.role || 'this'} account.`, 'danger');
+    // Protect Master Admin account from deletion under all circumstances
+    if (
+      (target && ((target.role || '').toLowerCase() === 'admin' || String(target.staff_id || '').toUpperCase() === 'BASU-ADM-001' || String(target.username || '').toUpperCase() === 'BASU-ADM-001')) ||
+      String(userId).toUpperCase() === 'BASU-ADM-001' ||
+      String(userId).toLowerCase() === 'basu-adm-001'
+    ) {
+      addFlash('Master Admin account is protected and cannot be deleted.', 'warning');
       return;
     }
 
-    const updatedUsers = users.filter((u) => u.id !== userId);
+    // Check delete permission using canDeleteUser matrix
+    if (target) {
+      const allowed = canDeleteUser(userRole, target.role, currentUser?.id, target.id);
+      if (!allowed) {
+        addFlash(`Unauthorized: Your role (${(userRole || '').toUpperCase()}) cannot delete ${target.role || 'this'} account.`, 'danger');
+        return;
+      }
+    } else if (!isAdminOrManager) {
+      addFlash(`Unauthorized: Admin or Manager authorization required to delete staff accounts.`, 'danger');
+      return;
+    }
+
+    const targetIdStr = String(userId).toLowerCase();
+    const targetStaffCodes = new Set<string>([
+      targetIdStr,
+      ...(target?.staff_id ? [target.staff_id.toLowerCase()] : []),
+      ...(target?.username ? [target.username.toLowerCase()] : []),
+      ...(typeof userId === 'string' ? [userId.toLowerCase()] : [String(userId).toLowerCase()]),
+    ]);
+
+    // 1. Cascade delete from 'users' centralized state/database
+    const updatedUsers = users.filter((u) => {
+      if (u.id === userId || String(u.id) === String(userId)) return false;
+      if (u.staff_id && targetStaffCodes.has(u.staff_id.toLowerCase())) return false;
+      if (u.username && targetStaffCodes.has(u.username.toLowerCase())) return false;
+      if (target && (u.id === target.id || (u.staff_id && target.staff_id && u.staff_id.toLowerCase() === target.staff_id.toLowerCase()))) return false;
+      return true;
+    });
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
-    // Delete matching staff member by id, staffCode, or name
+    // 2. Cascade delete from 'staff' / 'roster' entries simultaneously
     const updatedStaff = staff.filter((s) => {
-      if (target?.staffId && s.id === target.staffId) return false;
-      if (s.id === userId) return false;
-      if (target?.staff_id && s.staffCode?.toLowerCase() === target.staff_id.toLowerCase()) return false;
-      if (target?.name && s.name.toLowerCase() === target.name.toLowerCase()) return false;
+      if (s.id === userId || String(s.id) === String(userId)) return false;
+      if (s.staffCode && targetStaffCodes.has(s.staffCode.toLowerCase())) return false;
+      if ((s as any).staff_id && targetStaffCodes.has(String((s as any).staff_id).toLowerCase())) return false;
+      if (target) {
+        if (target.staffId && s.id === target.staffId) return false;
+        if (s.id === target.id || String(s.id) === String(target.id)) return false;
+        if (target.staff_id && s.staffCode?.toLowerCase() === target.staff_id.toLowerCase()) return false;
+        if (target.name && s.name.toLowerCase() === target.name.toLowerCase()) return false;
+      }
       return true;
     });
     setStaff(updatedStaff);
     saveStoredStaff(updatedStaff);
 
-    // Also persist deletion to Firestore
+    // 3. Cascade delete from 'engagements' / 'duty_allocations' simultaneously
+    const updatedDutyAllocations = dutyAllocations.filter((a) => {
+      const aStaffId = String(a.staffId || a.staff_id || '').toLowerCase();
+      if (aStaffId && targetStaffCodes.has(aStaffId)) return false;
+      if (target && (String(target.id).toLowerCase() === aStaffId || (target.staffId && String(target.staffId).toLowerCase() === aStaffId))) return false;
+      return true;
+    });
+    setDutyAllocations(updatedDutyAllocations);
+    saveStoredDutyAllocations(updatedDutyAllocations);
+
+    // 4. Cascade delete via backend API call to update server tables
+    const backendId = target?.staff_id || target?.id || userId;
+    try {
+      await fetch(`/api/staff/${backendId}`, {
+        method: 'DELETE',
+        headers: {
+          'x-user-role': String(userRole || '').toUpperCase(),
+          'x-user-id': String(currentUser?.id || currentUser?.staff_id || ''),
+        },
+      });
+    } catch (err) {
+      console.warn('API cascade deletion request warning:', err);
+    }
+
+    // 5. Also persist deletion to Firestore live database
     try {
       if (target) {
         await deleteUserFromLiveDb(target, target.staff_id);
       } else {
-        await deleteUserFromLiveDb(userId);
+        await deleteUserFromLiveDb(typeof userId === 'number' ? userId : 0, String(userId));
       }
-      if (target?.staffId || target?.staff_id) {
-        await deleteStaffFromLiveDb(target.staffId || userId, target.staff_id);
+      if (target?.staffId || target?.staff_id || userId) {
+        await deleteStaffFromLiveDb(target?.staffId || (typeof userId === 'number' ? userId : 0), target?.staff_id || String(userId));
       }
     } catch (err) {
       console.warn('Firestore deletion error:', err);
     }
 
-    window.dispatchEvent(new Event('staff-data-updated'));
-    window.dispatchEvent(new Event('user-data-updated'));
-    addFlash(`User account ${target?.full_name || target?.name || ''} deleted successfully from database and vault.`, 'info');
+    // 6. Force immediate sync across Roster, Vault, and all listening components
+    window.dispatchEvent(new CustomEvent('staff-data-updated', { detail: { deletedId: userId } }));
+    window.dispatchEvent(new CustomEvent('user-data-updated', { detail: { deletedId: userId } }));
+    window.dispatchEvent(new CustomEvent('roster-data-updated', { detail: { deletedId: userId } }));
+    window.dispatchEvent(new CustomEvent('duty-data-updated', { detail: { deletedId: userId } }));
+
+    addFlash(`User account ${target?.full_name || target?.name || targetIdStr} and all linked engagements/rosters deleted successfully.`, 'info');
   };
 
   // Supervisor Staff Removal Request Handlers (Admin/Manager Approval)
@@ -1516,7 +1799,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const companyPrefix = activeTenantPrefix;
     const activeTenantId = activeTenantPrefix;
 
-    const chosenSiteId = data.siteId || (isManager ? (currentUser?.siteId || currentUser?.site_id) : 'SITE_APEX_MAIN') || 'SITE_APEX_MAIN';
+    const chosenSiteId = data.siteId || (isManager ? (currentUser?.siteId || currentUser?.site_id) : (effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL' ? effectiveSiteFilter : availableSites[0]?.siteId)) || availableSites[0]?.siteId || '';
     const chosenSiteName = data.siteName || (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) || getSiteNameById(chosenSiteId);
 
     const newAppUser: AppUser = {
@@ -1789,6 +2072,27 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             {/* Online Live Connect 24/7 WebSocket Status Badge & Modal Trigger */}
             <LiveConnectBadge />
 
+            {/* Interactive Social-Style User Profile Trigger */}
+            <button
+              type="button"
+              id="btn-open-user-profile-header"
+              onClick={() => setSocialProfileUser(currentUser as any)}
+              className="badge bg-white text-slate-800 border border-slate-300 d-flex align-items-center gap-1.5 px-2.5 py-1.5 rounded-lg shadow-2xs font-semibold text-xs cursor-pointer hover:bg-slate-100 hover:border-slate-400 transition-colors"
+              title="Click to view & edit your interactive social profile card"
+            >
+              <div className="h-4 w-4 rounded-full bg-[#1E3A8A] text-white flex items-center justify-center text-3xs font-bold overflow-hidden shrink-0">
+                {(currentUser as any)?.avatar ? (
+                  <img src={(currentUser as any).avatar} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  ((currentUser as any)?.name || (currentUser as any)?.full_name || 'U')[0]
+                )}
+              </div>
+              <span className="font-bold">{(currentUser as any)?.name || (currentUser as any)?.full_name || 'My Profile'}</span>
+              <span className="text-3xs font-mono text-slate-500">
+                ({currentUser?.staff_id || (currentUser as any)?.username || 'HK-001'})
+              </span>
+            </button>
+
             {/* Single Profile Header Badge */}
             <span className="badge bg-light text-dark border d-flex align-items-center gap-1.5 px-2.5 py-1.5 rounded shadow-2xs font-semibold text-xs">
               <ShieldCheck className="text-success inline" style={{ width: '0.85rem', height: '0.85rem' }} />
@@ -1897,6 +2201,32 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                   >
                     <KeyRound className="me-1 inline text-amber-500" style={{ width: '0.875rem', height: '0.875rem' }} />
                     <span>Vault</span>
+                  </button>
+                )}
+
+                {isMasterAdmin && (
+                  <button
+                    type="button"
+                    id="btn-open-access-control"
+                    onClick={() => setIsAccessControlModalOpen(true)}
+                    className="btn btn-outline-primary btn-sm cursor-pointer font-bold inline-flex items-center gap-1"
+                    title="Open Granular Access Control & Permissions Settings Panel (Master Admin Only)"
+                  >
+                    <ShieldCheck className="inline text-blue-600" style={{ width: '0.875rem', height: '0.875rem' }} />
+                    <span>Permissions</span>
+                  </button>
+                )}
+
+                {(isAdmin || isManager) && (
+                  <button
+                    type="button"
+                    id="btn-open-create-notice"
+                    onClick={() => setIsCreatePostModalOpen(true)}
+                    className="btn btn-outline-warning btn-sm cursor-pointer font-bold inline-flex items-center gap-1 text-slate-800"
+                    title="Publish Operational Notice, Bulletin, or Emergency Directive"
+                  >
+                    <Bell className="inline text-amber-600" style={{ width: '0.875rem', height: '0.875rem' }} />
+                    <span>+ Notice</span>
                   </button>
                 )}
 
@@ -2009,6 +2339,15 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
           </div>
         </div>
 
+        {/* Dynamic Operational Bulletins & Announcements Module */}
+        <AnnouncementsFeed
+          currentUser={currentUser}
+          currentRole={userRole}
+          activeSiteId={effectiveSiteFilter}
+          onOpenCreatePostModal={() => setIsCreatePostModalOpen(true)}
+          canPublish={isAdmin || isManager}
+        />
+
         {/* DATA TABLE SECTION / FULL WIDTH ACTIVE VIEW */}
         <div className="custom-card p-3 shadow-xs">
           {activeTab === 'monthly' ? (
@@ -2037,6 +2376,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
               onOpenPendingApprovals={() => handleNavigateTab('pending-approvals')}
               pendingCount={totalPendingCount}
               onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+              onOpenSocialProfile={(user) => setSocialProfileUser(user)}
               siteFilter={effectiveSiteFilter}
               currentUserSiteId={currentUser?.siteId || currentUser?.site_id}
             />
@@ -2286,8 +2626,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             <LeaveManagementView
               currentUser={currentUser}
               selectedDate={selectedLiveDate}
-              selectedSite={effectiveSiteFilter !== 'ALL' ? effectiveSiteFilter : 'SITE_APEX_MAIN'}
-              sites={availableSites.length > 0 ? availableSites : HOSPITAL_SITES}
+              selectedSite={effectiveSiteFilter || 'GLOBAL'}
+              sites={availableSites}
               onOpenDutyModal={() => handleOpenAssignModal()}
             />
           ) : activeTab === 'geofence' ? (
@@ -2334,6 +2674,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
                 currentUserDutyStatus={currentUser?.dutyStatus || (isOnDuty ? 'ON_DUTY' : 'OFF_DUTY')}
                 isOnDuty={isOnDuty}
                 onOpenProfileModal={(staffId) => setProfileModalStaffId(staffId)}
+                onOpenSocialProfile={(user) => setSocialProfileUser(user)}
                 activeTenantPrefix={activeTenantPrefix}
                 allUsers={scopedUsers}
                 onRefresh={handleLiveAttendanceRefresh}
@@ -2391,6 +2732,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         currentUserRole={userRole}
         isOnDuty={isOnDuty}
         canPerformAction={canPerformSupervisorAction}
+        activeSiteId={effectiveSiteFilter !== 'ALL' ? effectiveSiteFilter : undefined}
+        activeSiteName={activeSiteName}
       />
 
       {/* Google Sheets Modal */}
@@ -2430,12 +2773,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       <StaffManagementModal
         isOpen={isStaffModalOpen}
         onClose={() => setIsStaffModalOpen(false)}
-        staff={scopedStaff}
+        staff={visibleRosterStaff}
         users={scopedUsers}
+        currentUser={currentUser}
         currentUserRole={userRole}
         companyPrefix={activeTenantPrefix}
         onAddStaff={handleAddStaffMember}
         onToggleActive={handleToggleStaffActive}
+        onDeleteStaff={handleDeleteUser}
         onViewCredentialSlip={(slip) => setActiveCredentialSlip(slip)}
       />
 
@@ -2471,6 +2816,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         activeTenantPrefix={activeTenantPrefix}
         currentUserSiteId={currentUser?.siteId || currentUser?.site_id}
         currentUserSiteName={currentUser?.siteName || currentUser?.site_name}
+        sites={availableSites}
         onStaffAccountCreated={(slip) => setActiveCredentialSlip(slip)}
         onRegister={handleCreateStaffAccount}
       />
@@ -2535,6 +2881,24 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
             setStaff(getStoredStaff());
             setRecords(getStoredAttendance());
             setDutyAllocations(getStoredDutyAllocations());
+          }}
+        />
+      )}
+
+      {/* Role-Based Rich Interactive User Profile Modal (Social App Style Profile Card) */}
+      {socialProfileUser && (
+        <UserProfileModal
+          isOpen={Boolean(socialProfileUser)}
+          onClose={() => setSocialProfileUser(null)}
+          targetUser={socialProfileUser}
+          currentUser={currentUser}
+          currentUserRole={userRole}
+          availableSites={availableSites.map((s) => ({ siteId: s.id || (s as any).siteId, siteName: s.name || (s as any).siteName }))}
+          onUpdateUser={(updated) => {
+            handleUpdateUser(updated);
+            setUsers(getStoredUsers());
+            setStaff(getStoredStaff());
+            setRecords(getStoredAttendance());
           }}
         />
       )}
@@ -2719,7 +3083,29 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         isOpen={isCreateSiteModalOpen}
         onClose={() => setIsCreateSiteModalOpen(false)}
         onSiteCreated={handleSiteCreated}
+        onSiteDeleted={handleSiteDeleted}
+        existingSites={availableSites}
         availableManagers={staffList}
+      />
+
+      {/* Operational Notices & Emergency Directive Creator Modal */}
+      <CreatePostModal
+        isOpen={isCreatePostModalOpen}
+        onClose={() => setIsCreatePostModalOpen(false)}
+        currentUser={currentUser}
+        availableSites={availableSites.map((s) => ({ siteId: s.id || (s as any).siteId, siteName: s.name || (s as any).siteName }))}
+        onPostCreated={() => {
+          window.dispatchEvent(new CustomEvent('announcements-refresh'));
+        }}
+      />
+
+      {/* Granular Permission & Access Control Matrix Modal (Strictly MASTER_ADMIN) */}
+      <AccessControlModal
+        isOpen={isAccessControlModalOpen}
+        onClose={() => setIsAccessControlModalOpen(false)}
+        currentUser={currentUser}
+        allStaffUsers={staffList as any}
+        onFlash={addFlash}
       />
     </div>
   );

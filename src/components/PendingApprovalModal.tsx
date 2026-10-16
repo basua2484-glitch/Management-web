@@ -19,6 +19,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { AppUser, UserRole, StaffRequest, DutyAllocation, RemovalRequest } from '../types';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 
 interface PendingApprovalModalProps {
   isOpen: boolean;
@@ -63,6 +64,8 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
   const [selectedRoles, setSelectedRoles] = useState<Record<number, UserRole>>({});
   const [selectedAreas, setSelectedAreas] = useState<Record<number, string>>({});
   const [requestFilter, setRequestFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
+  const [removalToConfirm, setRemovalToConfirm] = useState<RemovalRequest | null>(null);
+  const [isDeletingRemoval, setIsDeletingRemoval] = useState(false);
 
   if (!isOpen) return null;
 
@@ -704,7 +707,10 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
                               {onApproveRemovalRequest && (
                                 <button
                                   type="button"
-                                  onClick={() => onApproveRemovalRequest(req.id)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRemovalToConfirm(req);
+                                  }}
                                   className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-1.5 text-xs font-bold shadow-xs cursor-pointer"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -735,6 +741,42 @@ export const PendingApprovalModal: React.FC<PendingApprovalModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Delete User Account Confirmation Modal upon Removal Request Approval */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(removalToConfirm)}
+        title="Approve Removal & Delete User"
+        itemType="Staff User Account"
+        itemName={removalToConfirm ? `${removalToConfirm.staff_name} (${removalToConfirm.staff_id})` : undefined}
+        message={
+          removalToConfirm ? (
+            <p>
+              Are you sure you want to approve this supervisor removal request and permanently delete account{' '}
+              <strong className="text-slate-900">{removalToConfirm.staff_name}</strong> (<span className="font-mono text-[#1E3A8A] font-semibold">{removalToConfirm.staff_id}</span>)?
+              Reason submitted: <em className="text-slate-700">"{removalToConfirm.reason}"</em>
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Security note: Approving will immediately terminate this employee's active shift allocations and delete credentials from the vault."
+        confirmText="Approve & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingRemoval}
+        onCancel={() => {
+          if (!isDeletingRemoval) setRemovalToConfirm(null);
+        }}
+        onConfirm={async () => {
+          if (!removalToConfirm) return;
+          try {
+            setIsDeletingRemoval(true);
+            if (onApproveRemovalRequest) {
+              await onApproveRemovalRequest(removalToConfirm.id);
+            }
+          } finally {
+            setIsDeletingRemoval(false);
+            setRemovalToConfirm(null);
+          }
+        }}
+      />
     </div>
   );
 };

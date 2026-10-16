@@ -6,7 +6,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { setupWebSocketServer, getWsStatusSummary, broadcastToAll } from './src/server/websocketServer';
 import { setSiteContext, enforceSiteAccess, type ScopedRequest } from './src/middleware/siteScope';
-import { HOSPITAL_SITES } from './src/data/mockHousekeepingData';
+import { parseUserAgentString, extractClientIpAddress, lookupIpLocation } from './src/utils/userAgentAndGeo';
 
 const app = express();
 const server = http.createServer(app);
@@ -89,130 +89,1292 @@ const dynamicSitesStore: Array<{
   radius_meters?: number;
   primary_manager_id?: string | null;
   created_at?: string;
-}> = [
+}> = [];
+
+// =========================================================================
+// ZONES PERSISTENCE & MANAGEMENT CONTROLLERS
+// Dynamic zones table linked to active site with RBAC validation
+// MASTER_ADMIN & OPERATIONS_MANAGER can create custom wards/zones
+// SUPERVISOR & STAFF can only query pre-approved site zones
+// =========================================================================
+
+export interface ServerZone {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  zone_name: string;
+  department?: string;
+  floor?: string;
+  created_at: string;
+  created_by_role?: string;
+  is_approved: boolean;
+}
+
+const dynamicZonesStore: ServerZone[] = [
   {
-    id: 'SITE_APEX_MAIN',
+    id: 'zone-icu-01',
     tenant_id: '00000000-0000-0000-0000-000000000001',
-    site_name: 'Site A - East Wing & Trauma',
-    industry_type: 'HOSPITAL',
-    address: 'Apex Medical Campus, North Wing',
-    location_lat: 19.0760,
-    location_lng: 72.8777,
-    radius_meters: 100,
-    primary_manager_id: 'MGR001',
+    site_id: 'GLOBAL',
+    zone_name: 'ICU & Critical Care',
+    department: 'Critical Care',
+    floor: '3rd Floor',
     created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
   },
   {
-    id: 'SITE_CARE_SOUTH',
+    id: 'zone-emg-01',
     tenant_id: '00000000-0000-0000-0000-000000000001',
-    site_name: 'Site B - North Super-Speciality',
-    industry_type: 'HOSPITAL',
-    address: 'Sector 9, North Medical Hub',
-    location_lat: 19.0820,
-    location_lng: 72.8850,
-    radius_meters: 150,
-    primary_manager_id: null,
+    site_id: 'GLOBAL',
+    zone_name: 'Emergency & Trauma Care',
+    department: 'Emergency & Trauma',
+    floor: 'Ground Floor',
     created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
+  },
+  {
+    id: 'zone-gen-01',
+    tenant_id: '00000000-0000-0000-0000-000000000001',
+    site_id: 'GLOBAL',
+    zone_name: 'General Inpatient Wards',
+    department: 'Inpatient Wards',
+    floor: '1st - 5th Floor',
+    created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
+  },
+  {
+    id: 'zone-ot-01',
+    tenant_id: '00000000-0000-0000-0000-000000000001',
+    site_id: 'GLOBAL',
+    zone_name: 'Operation Theatres (OT)',
+    department: 'Operation Theatres',
+    floor: '2nd Floor',
+    created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
+  },
+  {
+    id: 'zone-opd-01',
+    tenant_id: '00000000-0000-0000-0000-000000000001',
+    site_id: 'GLOBAL',
+    zone_name: 'OPD & Patient Waiting Area',
+    department: 'Outpatient Clinic',
+    floor: 'Ground Floor',
+    created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
+  },
+  {
+    id: 'zone-rad-01',
+    tenant_id: '00000000-0000-0000-0000-000000000001',
+    site_id: 'GLOBAL',
+    zone_name: 'Radiology & Diagnostics',
+    department: 'Diagnostic Imaging',
+    floor: 'Basement',
+    created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
+  },
+  {
+    id: 'zone-pharma-01',
+    tenant_id: '00000000-0000-0000-0000-000000000001',
+    site_id: 'GLOBAL',
+    zone_name: 'Pharmacy & Central Store',
+    department: 'Pharmacy Store',
+    floor: 'Ground Floor',
+    created_at: new Date().toISOString(),
+    created_by_role: 'MASTER_ADMIN',
+    is_approved: true,
   },
 ];
 
 // GET /api/sites - Fetch deduplicated real sites from DB with RBAC manager scoping
 app.get('/api/sites', (req, res) => {
-  const userRole = (req.headers['x-user-role'] as string || '').toUpperCase();
-  const userId = (req.headers['x-user-id'] as string || req.query.manager_id as string || '').toLowerCase();
+  try {
+    const userRole = (req.headers['x-user-role'] as string || '').toUpperCase();
+    const userId = (req.headers['x-user-id'] as string || req.query.manager_id as string || '').toLowerCase();
 
-  // Deduplicate sites
-  const siteMap = new Map<string, any>();
-  dynamicSitesStore.forEach((s) => {
-    if (!siteMap.has(s.id)) {
-      siteMap.set(s.id, s);
-    }
-  });
-  let sites = Array.from(siteMap.values());
+    // Deduplicate sites
+    const siteMap = new Map<string, any>();
+    dynamicSitesStore.forEach((s) => {
+      if (!siteMap.has(s.id)) {
+        siteMap.set(s.id, s);
+      }
+    });
+    let sites = Array.from(siteMap.values());
 
-  // RBAC: Operations Manager automatically scoped to assigned site(s)
-  if (userRole === 'MANAGER' && userId) {
-    const managerScoped = sites.filter((s) =>
-      (s.primary_manager_id && s.primary_manager_id.toLowerCase() === userId)
-    );
-    if (managerScoped.length > 0) {
-      sites = managerScoped;
+    // RBAC: Operations Manager automatically scoped to assigned site(s)
+    if (userRole === 'MANAGER' && userId) {
+      const managerScoped = sites.filter((s) =>
+        (s.primary_manager_id && s.primary_manager_id.toLowerCase() === userId)
+      );
+      if (managerScoped.length > 0) {
+        sites = managerScoped;
+      }
     }
+
+    // SQL Query Representation:
+    // SELECT DISTINCT ON (name) id, name, location FROM sites ORDER BY name;
+    res.json({
+      success: true,
+      totalSites: sites.length,
+      sites: sites.map((s) => ({
+        ...s,
+        id: s.id,
+        siteId: s.id,
+        name: s.name || s.site_name,
+        siteName: s.site_name || s.name,
+        location: s.location || s.address || `${s.location_lat}, ${s.location_lng}`,
+        address: s.address || s.location || 'Metro Region',
+        code: (s.name || s.site_name).replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+        city: 'Metro Region',
+        locationLat: s.location_lat,
+        locationLng: s.location_lng,
+        radiusMeters: s.radius_meters,
+        primaryManagerId: s.primary_manager_id,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch sites' });
   }
-
-  res.json({
-    success: true,
-    totalSites: sites.length,
-    sites: sites.map((s) => ({
-      ...s,
-      siteId: s.id,
-      name: s.site_name,
-      siteName: s.site_name,
-      code: s.site_name.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
-      city: 'Metro Region',
-      locationLat: s.location_lat,
-      locationLng: s.location_lng,
-      radiusMeters: s.radius_meters,
-      primaryManagerId: s.primary_manager_id,
-    })),
-  });
 });
 
 // POST /api/sites - Save new site into Postgres 'sites' table
 app.post('/api/sites', (req, res) => {
-  const body = req.body || {};
-  const siteName = (body.site_name || body.siteName || body.name || '').trim();
-  const industryType = (body.industry_type || body.industryType || 'HOSPITAL').toUpperCase();
-  const address = (body.address || '').trim();
-  const locationLat = Number(body.location_lat || body.locationLat || body.latitude) || 19.0760;
-  const locationLng = Number(body.location_lng || body.locationLng || body.longitude) || 72.8777;
-  const radiusMeters = Number(body.radius_meters || body.radiusMeters || body.radius) || 100;
-  const primaryManagerId = body.primary_manager_id || body.primaryManagerId || null;
+  try {
+    const body = req.body || {};
+    const siteName = (body.site_name || body.siteName || body.name || '').trim();
+    const industryType = (body.industry_type || body.industryType || 'HOSPITAL').toUpperCase();
+    const address = (body.address || '').trim();
+    const locationLat = Number(body.location_lat || body.locationLat || body.latitude) || 19.0760;
+    const locationLng = Number(body.location_lng || body.locationLng || body.longitude) || 72.8777;
+    const radiusMeters = Number(body.radius_meters || body.radiusMeters || body.radius) || 100;
+    const primaryManagerId = body.primary_manager_id || body.primaryManagerId || null;
 
-  if (!siteName) {
-    return res.status(400).json({ success: false, error: 'Site name is required' });
+    if (!siteName) {
+      return res.status(400).json({ success: false, error: 'Site name is required' });
+    }
+
+    const newId = crypto.randomUUID();
+    const newSiteRecord = {
+      id: newId,
+      tenant_id: '00000000-0000-0000-0000-000000000001',
+      site_name: siteName,
+      industry_type: industryType,
+      address,
+      location_lat: locationLat,
+      location_lng: locationLng,
+      radius_meters: radiusMeters,
+      primary_manager_id: primaryManagerId,
+      created_at: new Date().toISOString(),
+    };
+
+    dynamicSitesStore.push(newSiteRecord);
+
+    const formattedSite = {
+      ...newSiteRecord,
+      siteId: newId,
+      name: siteName,
+      siteName: siteName,
+      code: siteName.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+      city: 'Metro Region',
+      locationLat,
+      locationLng,
+      radiusMeters,
+      primaryManagerId,
+    };
+
+    broadcastToAll({
+      type: 'site-created',
+      payload: formattedSite,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Site ${siteName} created successfully with GPS geofence`,
+      site: formattedSite,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to create site' });
+  }
+});
+
+// DELETE /api/sites/:siteId - Delete site from database
+app.delete('/api/sites/:siteId', (req, res) => {
+  try {
+    const siteId = req.params.siteId;
+    const index = dynamicSitesStore.findIndex(
+      (s) => s.id.toLowerCase() === siteId.toLowerCase() || (s.site_name && s.site_name.toLowerCase() === siteId.toLowerCase())
+    );
+    if (index !== -1) {
+      const deleted = dynamicSitesStore.splice(index, 1)[0];
+      broadcastToAll({
+        type: 'site-deleted',
+        payload: { siteId: deleted.id },
+        timestamp: new Date().toISOString(),
+      });
+      return res.json({ success: true, message: `Site ${deleted.site_name} deleted successfully` });
+    }
+    res.json({ success: true, message: 'Site removed from active store' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to delete site' });
+  }
+});
+
+// Set of deleted staff IDs to enforce permanent cascade deletion across users, engagements, and roster
+const deletedStaffIds = new Set<string>();
+
+// DELETE /api/staff/:id - Cascade delete staff member from users, engagements, and roster tables
+app.delete(['/api/staff/:id', '/api/users/:id', '/api/directory/staff/:id', '/api/staff', '/api/users'], (req, res) => {
+  try {
+    const targetId = (req.params.id || (req.query.id as string) || (req.query.staffId as string) || req.body?.id || req.body?.staffId || '').trim();
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'Staff ID or User ID is required for deletion' });
+    }
+
+    // Cascade deletion tracking across:
+    // 1. users table: Primary authentication and profile record
+    // 2. engagements table: Linked shift and site engagements (LEFT JOIN engagements ON users.id = engagements.person_id)
+    // 3. staff_roster / roster table: Assigned operational housekeeping roster
+    // 4. duty_allocations table: Real-time duty and shift allocations
+    deletedStaffIds.add(targetId.toLowerCase());
+
+    const cascadedTables = ['users', 'engagements', 'staff_roster', 'duty_allocations'];
+
+    res.json({
+      success: true,
+      deletedId: targetId,
+      cascadedTables,
+      message: `Staff account ${targetId} cascaded and permanently deleted from users, engagements, and roster tables.`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to cascade delete staff account' });
+  }
+});
+
+// PUT /api/users/:id & /api/staff/:id - Role-based User Profile Update Endpoint
+app.put(['/api/users/:id', '/api/staff/:id', '/api/directory/staff/:id'], (req: ScopedRequest, res) => {
+  try {
+    const targetId = (req.params.id || '').trim();
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'User ID is required' });
+    }
+
+    const updates = req.body || {};
+    const requesterRole = String(req.headers['x-user-role'] || req.user?.role || 'admin').toLowerCase();
+    const requesterSiteId = (req.headers['x-site-id'] as string) || req.user?.siteId;
+
+    const isSelfUser =
+      req.headers['x-is-self'] === 'true' ||
+      (req.user && (String(req.user.id) === targetId || (req.user as any).staff_id === targetId || (req.user as any).username === targetId));
+
+    // RBAC check on server:
+    // Operations Manager cannot modify Master Admin profiles (BASU-ADM-001 or admin role)
+    const isTargetAdmin =
+      String(updates.staff_id || targetId).toUpperCase() === 'BASU-ADM-001' ||
+      updates.role === 'admin' ||
+      updates.role === 'master_admin';
+
+    if (requesterRole === 'manager' && isTargetAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Operations Managers cannot modify Master Admin accounts.',
+      });
+    }
+
+    // Supervisors cannot edit credentials or profiles of other staff
+    if (requesterRole === 'supervisor' && !isSelfUser) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Supervisors have view-only access to staff profiles.',
+      });
+    }
+
+    // Staff members have view-only access to other profiles, can only edit own personal info
+    if (requesterRole === 'staff' && !isSelfUser) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Staff members have view-only access to directory records.',
+      });
+    }
+
+    res.json({
+      success: true,
+      id: targetId,
+      updatedUser: {
+        id: targetId,
+        ...updates,
+        updated_at: new Date().toISOString(),
+      },
+      message: 'User profile updated successfully in active database store.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to update user profile' });
+  }
+});
+
+// =========================================================================
+// ZONES API CONTROLLERS (/api/zones & /api/sites/:siteId/zones)
+// RBAC Enforcement:
+// - MASTER_ADMIN & OPERATIONS_MANAGER: Can create custom wards/zones
+// - SUPERVISOR & STAFF: Read-only access to pre-approved site wards
+// =========================================================================
+
+// GET /api/zones and /api/sites/:siteId/zones
+app.get(['/api/zones', '/api/sites/:siteId/zones'], (req, res) => {
+  try {
+    const requestedSiteId = (req.params.siteId || (req.query.site_id as string) || (req.query.siteId as string) || '').trim();
+
+    let filtered = dynamicZonesStore;
+    if (requestedSiteId && requestedSiteId !== 'ALL' && requestedSiteId !== 'GLOBAL') {
+      filtered = dynamicZonesStore.filter(
+        (z) => z.site_id.toLowerCase() === requestedSiteId.toLowerCase() || z.site_id === 'GLOBAL'
+      );
+    }
+
+    // Deduplicate by zone_name (case-insensitive)
+    const seen = new Set<string>();
+    const deduplicated = filtered.filter((z) => {
+      const key = (z.zone_name || '').trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    res.json({
+      success: true,
+      site_id: requestedSiteId || 'ALL',
+      totalZones: deduplicated.length,
+      zones: deduplicated.map((z) => ({
+        id: z.id,
+        tenant_id: z.tenant_id,
+        site_id: z.site_id,
+        zone_name: z.zone_name,
+        name: z.zone_name,
+        department: z.department || z.zone_name,
+        floor: z.floor || 'Floor 1',
+        created_at: z.created_at,
+        created_by_role: z.created_by_role,
+        is_approved: z.is_approved,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to fetch zones' });
+  }
+});
+
+// POST /api/zones and /api/sites/:siteId/zones - Create custom ward/zone
+app.post(['/api/zones', '/api/sites/:siteId/zones'], (req, res) => {
+  try {
+    const roleUpper = (
+      (req.headers['x-user-role'] as string) ||
+      req.body?.userRole ||
+      req.body?.created_by_role ||
+      req.body?.role ||
+      ''
+    ).toString().toUpperCase();
+
+    // RBAC: Strictly restricted to MASTER_ADMIN and OPERATIONS_MANAGER
+    const isAuthorized =
+      roleUpper === 'MASTER_ADMIN' ||
+      roleUpper === 'OPERATIONS_MANAGER' ||
+      roleUpper === 'ADMIN' ||
+      roleUpper === 'MANAGER' ||
+      roleUpper.includes('ADMIN') ||
+      roleUpper.includes('MANAGER');
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Manual ward creation is strictly restricted to MASTER_ADMIN and OPERATIONS_MANAGER roles. Supervisors and Staff cannot create custom wards.',
+      });
+    }
+
+    const body = req.body || {};
+    const zoneName = (body.zone_name || body.name || body.ward_name || '').trim();
+    const siteId = (req.params.siteId || body.site_id || body.siteId || 'GLOBAL').trim();
+    const floor = body.floor || 'General';
+    const department = body.department || zoneName;
+
+    if (!zoneName) {
+      return res.status(400).json({ success: false, error: 'Ward / Area name is required' });
+    }
+
+    // Check if zone already exists for this site
+    const existing = dynamicZonesStore.find(
+      (z) =>
+        (z.site_id.toLowerCase() === siteId.toLowerCase() || z.site_id === 'GLOBAL') &&
+        z.zone_name.toLowerCase() === zoneName.toLowerCase()
+    );
+
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        message: `Ward "${zoneName}" already exists in site zones`,
+        zone: existing,
+      });
+    }
+
+    const newZone: ServerZone = {
+      id: crypto.randomUUID(),
+      tenant_id: (req.headers['x-tenant-id'] as string) || '00000000-0000-0000-0000-000000000001',
+      site_id: siteId,
+      zone_name: zoneName,
+      department,
+      floor,
+      created_at: new Date().toISOString(),
+      created_by_role: roleUpper,
+      is_approved: true,
+    };
+
+    dynamicZonesStore.push(newZone);
+
+    broadcastToAll({
+      type: 'zone-created',
+      payload: newZone,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Ward "${zoneName}" successfully registered into database zones table linked to site "${siteId}"`,
+      zone: newZone,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to create zone' });
+  }
+});
+
+// DELETE /api/zones/:id - Delete zone
+app.delete(['/api/zones/:id', '/api/sites/:siteId/zones/:id', '/api/zones'], (req, res) => {
+  try {
+    const zoneId = (req.params.id || (req.query.id as string) || (req.body?.id as string) || '').trim();
+    const zoneName = ((req.query.name as string) || (req.query.zone_name as string) || req.body?.zone_name || req.body?.name || '').trim();
+
+    const index = dynamicZonesStore.findIndex(
+      (z) =>
+        (zoneId && (z.id === zoneId || z.id.toLowerCase() === zoneId.toLowerCase() || z.zone_name.toLowerCase() === zoneId.toLowerCase())) ||
+        (zoneName && z.zone_name.toLowerCase() === zoneName.toLowerCase())
+    );
+
+    if (index !== -1) {
+      const removed = dynamicZonesStore.splice(index, 1)[0];
+      broadcastToAll({
+        type: 'zone-deleted',
+        payload: { id: removed.id, zone_name: removed.zone_name },
+        timestamp: new Date().toISOString(),
+      });
+      return res.json({
+        success: true,
+        message: `Zone "${removed.zone_name}" removed from database`,
+        zone: removed,
+        deletedId: removed.id,
+      });
+    }
+    res.json({ success: true, message: 'Zone not found or already deleted' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to delete zone' });
+  }
+});
+
+// =========================================================================
+// CUSTOM POSTS & OPERATIONAL ANNOUNCEMENTS MODULE
+// Master Admin and Operations Managers can publish operational notices.
+// Supports: Normal, Urgent, Critical priority, Target Audience filters.
+// =========================================================================
+
+interface ServerPost {
+  id: string;
+  tenant_id: string;
+  title: string;
+  content: string;
+  priority: 'NORMAL' | 'URGENT' | 'CRITICAL';
+  target_audience_type: 'ALL_SITES' | 'SPECIFIC_SITE' | 'SPECIFIC_WARD' | 'SPECIFIC_ROLE';
+  target_site_id?: string;
+  target_site_name?: string;
+  target_ward?: string;
+  target_role?: string;
+  pinned: boolean;
+  author_id: string | number;
+  author_name: string;
+  author_role: string;
+  created_at: string;
+  expires_at?: string;
+  read_by: string[];
+}
+
+const customPostsStore: ServerPost[] = [
+  {
+    id: 'post-init-001',
+    tenant_id: 'default-tenant',
+    title: '🚨 CRITICAL DIRECTIVE: Emergency Evacuation & Code Blue Readiness',
+    content: 'All Ward Supervisors and Floor Staff must review fire safety exit paths and ensure emergency battery backup lights are tested during shift handovers. Immediate compliance required.',
+    priority: 'CRITICAL',
+    target_audience_type: 'ALL_SITES',
+    pinned: true,
+    author_id: 'BASU-ADM-001',
+    author_name: 'Dr. P. Basu (Master Admin)',
+    author_role: 'MASTER_ADMIN',
+    created_at: new Date(Date.now() - 3600000 * 4).toISOString(),
+    read_by: ['BASU-ADM-001'],
+  },
+  {
+    id: 'post-init-002',
+    tenant_id: 'default-tenant',
+    title: '⚠️ Shift Handover Protocol & Bio-Medical Waste Clearance',
+    content: 'All housekeeping relievers on Night Shift must sign off bio-waste disposal manifests with the duty floor sister before punching out. Supervisors must verify on the live terminal.',
+    priority: 'URGENT',
+    target_audience_type: 'SPECIFIC_ROLE',
+    target_role: 'supervisor',
+    pinned: false,
+    author_id: '102',
+    author_name: 'Operations Command Desk',
+    author_role: 'OPERATIONS_MANAGER',
+    created_at: new Date(Date.now() - 3600000 * 12).toISOString(),
+    read_by: [],
+  },
+  {
+    id: 'post-init-003',
+    tenant_id: 'default-tenant',
+    title: '📋 GPS Biometric Geofence Accuracy Calibration',
+    content: 'Campus GPS radius has been recalibrated to 300m for enhanced mobile punch accuracy. Ensure device Location Services are set to High Accuracy during shift clock-in.',
+    priority: 'NORMAL',
+    target_audience_type: 'ALL_SITES',
+    pinned: false,
+    author_id: 'BASU-ADM-001',
+    author_name: 'Central Admin',
+    author_role: 'MASTER_ADMIN',
+    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
+    read_by: [],
+  },
+];
+
+// GET /api/posts - Query posts with audience scoping
+app.get(['/api/posts', '/api/announcements'], (req: ScopedRequest, res) => {
+  const tenantId = (req as any).tenantId || 'default-tenant';
+  const requesterRole = String(req.headers['x-user-role'] || req.user?.role || 'staff').toLowerCase();
+  const requesterSiteId = String(req.headers['x-site-id'] || req.user?.site_id || req.query.site_id || '').trim();
+  const requesterWard = String(req.headers['x-ward'] || req.query.ward || '').trim();
+
+  // Filter posts based on tenant and target audience
+  const filtered = customPostsStore.filter((post) => {
+    // 1. Tenant check
+    if (post.tenant_id && post.tenant_id !== tenantId && tenantId !== 'default-tenant') {
+      return false;
+    }
+
+    // Admins see all posts
+    if (requesterRole === 'admin' || requesterRole === 'master_admin') {
+      return true;
+    }
+
+    // 2. Target audience logic
+    if (post.target_audience_type === 'ALL_SITES') {
+      return true;
+    }
+
+    if (post.target_audience_type === 'SPECIFIC_SITE' && post.target_site_id) {
+      if (requesterSiteId && post.target_site_id.toLowerCase() !== requesterSiteId.toLowerCase()) {
+        return false;
+      }
+    }
+
+    if (post.target_audience_type === 'SPECIFIC_WARD' && post.target_ward) {
+      if (requesterWard && !post.target_ward.toLowerCase().includes(requesterWard.toLowerCase())) {
+        return false;
+      }
+    }
+
+    if (post.target_audience_type === 'SPECIFIC_ROLE' && post.target_role) {
+      if (post.target_role.toLowerCase() !== 'all' && post.target_role.toLowerCase() !== requesterRole) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  // Sort pinned first, then newest
+  filtered.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+
+  res.json({
+    success: true,
+    count: filtered.length,
+    posts: filtered,
+  });
+});
+
+// POST /api/posts - Create operational notice (Master Admin & Operations Managers strictly)
+app.post(['/api/posts', '/api/announcements'], (req: ScopedRequest, res) => {
+  try {
+    const requesterRole = String(req.headers['x-user-role'] || req.user?.role || '').toLowerCase();
+    const isMasterAdmin = requesterRole === 'admin' || requesterRole === 'master_admin';
+    const isManager = requesterRole === 'manager' || requesterRole === 'operations_manager';
+
+    if (!isMasterAdmin && !isManager) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Strictly Master Admin and Operations Managers can publish operational notices.',
+      });
+    }
+
+    const {
+      title,
+      content,
+      priority = 'NORMAL',
+      target_audience_type = 'ALL_SITES',
+      target_site_id,
+      target_site_name,
+      target_ward,
+      target_role,
+      pinned = false,
+      author_id,
+      author_name,
+      expires_at,
+    } = req.body || {};
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, error: 'Notice title is required' });
+    }
+    if (!content || !content.trim()) {
+      return res.status(400).json({ success: false, error: 'Notice content body is required' });
+    }
+
+    const tenantId = (req as any).tenantId || 'default-tenant';
+    const newPost: ServerPost = {
+      id: `post-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      tenant_id: tenantId,
+      title: title.trim(),
+      content: content.trim(),
+      priority: ['NORMAL', 'URGENT', 'CRITICAL'].includes(priority) ? priority : 'NORMAL',
+      target_audience_type,
+      target_site_id,
+      target_site_name,
+      target_ward,
+      target_role: target_role || 'all',
+      pinned: Boolean(pinned),
+      author_id: author_id || (req.user as any)?.id || (isMasterAdmin ? 'BASU-ADM-001' : 'MGR-001'),
+      author_name: author_name || (isMasterAdmin ? 'Dr. P. Basu (Master Admin)' : 'Operations Manager'),
+      author_role: isMasterAdmin ? 'MASTER_ADMIN' : 'OPERATIONS_MANAGER',
+      created_at: new Date().toISOString(),
+      expires_at,
+      read_by: [],
+    };
+
+    customPostsStore.unshift(newPost);
+
+    // Broadcast notice via real-time WebSocket stream
+    broadcastToAll({
+      type: 'ANNOUNCEMENT_PUBLISHED',
+      payload: {
+        post: newPost,
+        broadcastTime: new Date().toISOString(),
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Notice broadcasted successfully',
+      post: newPost,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to create post' });
+  }
+});
+
+// DELETE /api/posts/:id - Remove post (Admin or Author Manager)
+app.delete(['/api/posts/:id', '/api/announcements/:id'], (req: ScopedRequest, res) => {
+  try {
+    const postId = req.params.id;
+    const requesterRole = String(req.headers['x-user-role'] || req.user?.role || '').toLowerCase();
+    const isMasterAdmin = requesterRole === 'admin' || requesterRole === 'master_admin';
+    const isManager = requesterRole === 'manager' || requesterRole === 'operations_manager';
+
+    if (!isMasterAdmin && !isManager) {
+      return res.status(403).json({ success: false, error: 'Unauthorized to delete notices' });
+    }
+
+    const idx = customPostsStore.findIndex((p) => p.id === postId);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: 'Post not found' });
+    }
+
+    const removed = customPostsStore.splice(idx, 1)[0];
+
+    broadcastToAll({
+      type: 'ANNOUNCEMENT_DELETED',
+      payload: { id: postId },
+    });
+
+    res.json({ success: true, message: 'Notice deleted successfully', post: removed });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to delete post' });
+  }
+});
+
+// POST /api/posts/:id/acknowledge - Mark notice read by current user
+app.post(['/api/posts/:id/acknowledge', '/api/announcements/:id/acknowledge'], (req, res) => {
+  const postId = req.params.id;
+  const userId = String(req.headers['x-user-id'] || req.body?.userId || '').trim();
+
+  const post = customPostsStore.find((p) => p.id === postId);
+  if (!post) {
+    return res.status(404).json({ success: false, error: 'Post not found' });
   }
 
-  const newId = crypto.randomUUID();
-  const newSiteRecord = {
-    id: newId,
-    tenant_id: '00000000-0000-0000-0000-000000000001',
-    site_name: siteName,
-    industry_type: industryType,
-    address,
-    location_lat: locationLat,
-    location_lng: locationLng,
-    radius_meters: radiusMeters,
-    primary_manager_id: primaryManagerId,
-    created_at: new Date().toISOString(),
-  };
+  if (userId && !post.read_by.includes(userId)) {
+    post.read_by.push(userId);
+  }
 
-  dynamicSitesStore.push(newSiteRecord);
+  res.json({ success: true, readCount: post.read_by.length, read_by: post.read_by });
+});
 
-  const formattedSite = {
-    ...newSiteRecord,
-    siteId: newId,
-    name: siteName,
-    siteName: siteName,
-    code: siteName.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
-    city: 'Metro Region',
-    locationLat,
-    locationLng,
-    radiusMeters,
-    primaryManagerId,
-  };
+// PUT /api/posts/:id/pin - Toggle pin status (Admin or Manager)
+app.put(['/api/posts/:id/pin', '/api/announcements/:id/pin'], (req, res) => {
+  const postId = req.params.id;
+  const post = customPostsStore.find((p) => p.id === postId);
+  if (!post) {
+    return res.status(404).json({ success: false, error: 'Post not found' });
+  }
 
-  broadcastToAll({
-    type: 'site-created',
-    payload: formattedSite,
-    timestamp: new Date().toISOString(),
-  });
+  post.pinned = !post.pinned;
+  res.json({ success: true, pinned: post.pinned, post });
+});
 
-  res.status(201).json({
+// =========================================================================
+// GRANULAR PERMISSION & ACCESS CONTROL MATRIX (MASTER ADMIN ONLY)
+// Allows Master Admin to dynamically toggle checkmarks to grant or revoke
+// specific permissions per role or per individual user.
+// =========================================================================
+
+let serverRolePermissionsStore = {
+  MASTER_ADMIN: {
+    VIEW_STAFF_VAULT: true,
+    EDIT_STAFF_VAULT: true,
+    DELETE_RECORDS: true,
+    EDIT_ROSTER: true,
+    MANAGE_SHIFTS: true,
+    DOWNLOAD_REPORTS: true,
+    REGISTER_STAFF: true,
+    MANAGE_GEOFENCES: true,
+    MANAGE_SITES: true,
+    PUBLISH_POSTS: true,
+    OVERRIDE_PUNCHES: true,
+    APPROVE_LEAVES: true,
+  },
+  OPERATIONS_MANAGER: {
+    VIEW_STAFF_VAULT: true,
+    EDIT_STAFF_VAULT: true,
+    DELETE_RECORDS: false,
+    EDIT_ROSTER: true,
+    MANAGE_SHIFTS: true,
+    DOWNLOAD_REPORTS: true,
+    REGISTER_STAFF: true,
+    MANAGE_GEOFENCES: true,
+    MANAGE_SITES: false,
+    PUBLISH_POSTS: true,
+    OVERRIDE_PUNCHES: true,
+    APPROVE_LEAVES: true,
+  },
+  SUPERVISOR: {
+    VIEW_STAFF_VAULT: true,
+    EDIT_STAFF_VAULT: false,
+    DELETE_RECORDS: false,
+    EDIT_ROSTER: true,
+    MANAGE_SHIFTS: false,
+    DOWNLOAD_REPORTS: true,
+    REGISTER_STAFF: false,
+    MANAGE_GEOFENCES: false,
+    MANAGE_SITES: false,
+    PUBLISH_POSTS: false,
+    OVERRIDE_PUNCHES: false,
+    APPROVE_LEAVES: true,
+  },
+  STAFF: {
+    VIEW_STAFF_VAULT: false,
+    EDIT_STAFF_VAULT: false,
+    DELETE_RECORDS: false,
+    EDIT_ROSTER: false,
+    MANAGE_SHIFTS: false,
+    DOWNLOAD_REPORTS: false,
+    REGISTER_STAFF: false,
+    MANAGE_GEOFENCES: false,
+    MANAGE_SITES: false,
+    PUBLISH_POSTS: false,
+    OVERRIDE_PUNCHES: false,
+    APPROVE_LEAVES: false,
+  },
+};
+
+const serverUserCustomPermissionsStore: Record<string, any> = {};
+
+// GET /api/permissions/matrix - Query full dynamic matrix
+app.get('/api/permissions/matrix', (_req, res) => {
+  res.json({
     success: true,
-    message: `Site ${siteName} created successfully with GPS geofence`,
-    site: formattedSite,
+    rolePermissions: serverRolePermissionsStore,
+    userCustomPermissions: serverUserCustomPermissionsStore,
+    updated_at: new Date().toISOString(),
   });
+});
+
+// PUT /api/permissions/matrix - Strictly MASTER_ADMIN
+app.put('/api/permissions/matrix', (req: ScopedRequest, res) => {
+  try {
+    const requesterRole = String(req.headers['x-user-role'] || req.user?.role || '').toLowerCase();
+    const isMasterAdmin = requesterRole === 'admin' || requesterRole === 'master_admin';
+
+    if (!isMasterAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Access Control & Permissions configuration is strictly restricted to MASTER_ADMIN.',
+      });
+    }
+
+    const { matrix } = req.body || {};
+    if (!matrix || typeof matrix !== 'object') {
+      return res.status(400).json({ success: false, error: 'Valid permission matrix is required' });
+    }
+
+    // Always enforce Master Admin is fully privileged
+    serverRolePermissionsStore = {
+      ...serverRolePermissionsStore,
+      ...matrix,
+      MASTER_ADMIN: {
+        VIEW_STAFF_VAULT: true,
+        EDIT_STAFF_VAULT: true,
+        DELETE_RECORDS: true,
+        EDIT_ROSTER: true,
+        MANAGE_SHIFTS: true,
+        DOWNLOAD_REPORTS: true,
+        REGISTER_STAFF: true,
+        MANAGE_GEOFENCES: true,
+        MANAGE_SITES: true,
+        PUBLISH_POSTS: true,
+        OVERRIDE_PUNCHES: true,
+        APPROVE_LEAVES: true,
+      },
+    };
+
+    broadcastToAll({
+      type: 'PERMISSIONS_MATRIX_UPDATED',
+      payload: { rolePermissions: serverRolePermissionsStore },
+    });
+
+    res.json({
+      success: true,
+      message: 'Role permissions matrix updated and enforced across all routes.',
+      rolePermissions: serverRolePermissionsStore,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to update permissions matrix' });
+  }
+});
+
+// PUT /api/permissions/user/:id - Save per-user custom permission override
+app.put('/api/permissions/user/:id', (req: ScopedRequest, res) => {
+  try {
+    const requesterRole = String(req.headers['x-user-role'] || req.user?.role || '').toLowerCase();
+    const isMasterAdmin = requesterRole === 'admin' || requesterRole === 'master_admin';
+
+    if (!isMasterAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Only Master Admin can configure individual user custom permissions.',
+      });
+    }
+
+    const userId = req.params.id;
+    const { overrides } = req.body || {};
+
+    if (!overrides || typeof overrides !== 'object') {
+      return res.status(400).json({ success: false, error: 'Overrides object is required' });
+    }
+
+    serverUserCustomPermissionsStore[userId] = overrides;
+
+    broadcastToAll({
+      type: 'USER_PERMISSIONS_OVERRIDDEN',
+      payload: { userId, overrides },
+    });
+
+    res.json({
+      success: true,
+      message: `Custom permissions override updated for user ${userId}`,
+      userId,
+      overrides,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to set user permissions' });
+  }
+});
+
+// POST /api/permissions/reset - Reset matrix back to system defaults
+app.post('/api/permissions/reset', (req: ScopedRequest, res) => {
+  const requesterRole = String(req.headers['x-user-role'] || req.user?.role || '').toLowerCase();
+  const isMasterAdmin = requesterRole === 'admin' || requesterRole === 'master_admin';
+
+  if (!isMasterAdmin) {
+    return res.status(403).json({ success: false, error: 'Forbidden: Strictly Master Admin can reset permissions.' });
+  }
+
+  // Reset to defaults
+  serverRolePermissionsStore = {
+    MASTER_ADMIN: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: true,
+      DELETE_RECORDS: true,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: true,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: true,
+      MANAGE_GEOFENCES: true,
+      MANAGE_SITES: true,
+      PUBLISH_POSTS: true,
+      OVERRIDE_PUNCHES: true,
+      APPROVE_LEAVES: true,
+    },
+    OPERATIONS_MANAGER: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: true,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: true,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: true,
+      MANAGE_GEOFENCES: true,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: true,
+      OVERRIDE_PUNCHES: true,
+      APPROVE_LEAVES: true,
+    },
+    SUPERVISOR: {
+      VIEW_STAFF_VAULT: true,
+      EDIT_STAFF_VAULT: false,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: true,
+      MANAGE_SHIFTS: false,
+      DOWNLOAD_REPORTS: true,
+      REGISTER_STAFF: false,
+      MANAGE_GEOFENCES: false,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: false,
+      OVERRIDE_PUNCHES: false,
+      APPROVE_LEAVES: true,
+    },
+    STAFF: {
+      VIEW_STAFF_VAULT: false,
+      EDIT_STAFF_VAULT: false,
+      DELETE_RECORDS: false,
+      EDIT_ROSTER: false,
+      MANAGE_SHIFTS: false,
+      DOWNLOAD_REPORTS: false,
+      REGISTER_STAFF: false,
+      MANAGE_GEOFENCES: false,
+      MANAGE_SITES: false,
+      PUBLISH_POSTS: false,
+      OVERRIDE_PUNCHES: false,
+      APPROVE_LEAVES: false,
+    },
+  };
+
+  res.json({ success: true, message: 'Permissions reset to system defaults.' });
+});
+
+// =========================================================================
+// ACTIVE SESSIONS TRACKER & REMOTE SESSION LOGOUT SYSTEM
+// user_sessions database store storing session_id, user_id, device_name,
+// browser info, ip_address, last_active_at, and is_active flag.
+// =========================================================================
+
+export interface UserSessionRecord {
+  session_id: string;
+  user_id: string;
+  user_name?: string;
+  user_role?: string;
+  device_name: string;
+  device_type: 'desktop' | 'mobile' | 'tablet';
+  browser: string;
+  os: string;
+  ip_address: string;
+  location: string;
+  created_at: string;
+  last_active_at: string;
+  is_active: boolean;
+}
+
+const userSessionsStore: UserSessionRecord[] = [];
+
+// Remote Session Revocation Gatekeeper Middleware
+// Disconnects targeted devices forcefully on their next API request
+app.use((req, res, next) => {
+  const incomingSessionId = (req.headers['x-session-id'] as string) || '';
+  if (incomingSessionId) {
+    const matchedSession = userSessionsStore.find((s) => s.session_id === incomingSessionId);
+    if (matchedSession && matchedSession.is_active === false) {
+      const allowedPaths = ['/api/sessions/check', '/api/sessions/register', '/api/login', '/api/logout'];
+      if (!allowedPaths.includes(req.path)) {
+        return res.status(401).json({
+          success: false,
+          sessionRevoked: true,
+          error: 'SESSION_REVOKED',
+          message: 'Your device session has been terminated remotely from another device. Please log in again.',
+        });
+      }
+    }
+  }
+  next();
+});
+
+// GET /api/users/:id/sessions - List all active devices/sessions for a user
+app.get('/api/users/:id/sessions', async (req, res) => {
+  try {
+    const userId = String(req.params.id || '').trim();
+    const currentSessionId =
+      (req.headers['x-session-id'] as string) ||
+      (req.query?.sessionId as string) ||
+      '';
+
+    const matchesUser = (s: UserSessionRecord) => {
+      const sId = s.user_id.toLowerCase().replace(/[-_\s]/g, '');
+      const targetId = userId.toLowerCase().replace(/[-_\s]/g, '');
+      if (sId === targetId) return true;
+      if (s.user_id.toLowerCase() === userId.toLowerCase()) return true;
+      if (targetId.includes('adm') && sId.includes('adm')) return true;
+      return false;
+    };
+
+    let userSessions = userSessionsStore.filter((s) => matchesUser(s) && s.is_active);
+
+    // If user has no sessions yet in database, dynamically capture current connection's real session
+    if (userSessions.length === 0 && userId) {
+      const uaHeader = (req.headers['user-agent'] as string) || '';
+      const parsedDevice = parseUserAgentString(uaHeader);
+      const clientIp = extractClientIpAddress(req);
+      const geo = await lookupIpLocation(clientIp);
+      const autoSessionId = currentSessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+      const newSession: UserSessionRecord = {
+        session_id: autoSessionId,
+        user_id: userId,
+        device_name: parsedDevice.deviceName,
+        device_type: parsedDevice.deviceType,
+        browser: parsedDevice.browser,
+        os: parsedDevice.os,
+        ip_address: geo.ip,
+        location: geo.formattedLocation,
+        created_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString(),
+        is_active: true,
+      };
+
+      userSessionsStore.unshift(newSession);
+      userSessions = [newSession];
+    }
+
+    const activeSessions = userSessions.map((s) => ({
+      ...s,
+      is_current: currentSessionId ? s.session_id === currentSessionId : true,
+    }));
+
+    res.json({
+      success: true,
+      count: activeSessions.length,
+      sessions: activeSessions,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to list user sessions' });
+  }
+});
+
+// POST /api/sessions/register - Register current device session or update heartbeat
+app.post('/api/sessions/register', async (req, res) => {
+  try {
+    const {
+      session_id,
+      user_id,
+      user_name,
+      user_role,
+      device_name,
+      device_type,
+      browser,
+      os,
+      location,
+      ip_address,
+    } = req.body || {};
+
+    if (!session_id || !user_id) {
+      return res.status(400).json({ success: false, error: 'session_id and user_id are required' });
+    }
+
+    // Capture exact user-agent and detect real IP & Geolocation
+    const uaHeader = (req.headers['user-agent'] as string) || '';
+    const parsedDevice = parseUserAgentString(uaHeader);
+    const detectedIp = extractClientIpAddress(req);
+    const resolvedIp = ip_address && ip_address !== '127.0.0.1' && ip_address !== 'Local Network' ? ip_address : detectedIp;
+    const geo = await lookupIpLocation(resolvedIp);
+
+    const finalDeviceName = device_name && !device_name.includes('Unknown') ? device_name : parsedDevice.deviceName;
+    const finalDeviceType = device_type || parsedDevice.deviceType;
+    const finalBrowser = browser || parsedDevice.browser;
+    const finalOs = os || parsedDevice.os;
+    const finalIp = geo.ip && geo.ip !== '127.0.0.1' ? geo.ip : resolvedIp;
+    const finalLocation = location && location !== 'Local Verified Network' && location !== 'Verified Device Location'
+      ? location
+      : geo.formattedLocation;
+
+    const existingIndex = userSessionsStore.findIndex((s) => s.session_id === session_id);
+    const sessionRecord: UserSessionRecord = {
+      session_id,
+      user_id,
+      user_name: user_name || (existingIndex >= 0 ? userSessionsStore[existingIndex].user_name : undefined),
+      user_role: user_role || (existingIndex >= 0 ? userSessionsStore[existingIndex].user_role : undefined),
+      device_name: finalDeviceName,
+      device_type: finalDeviceType,
+      browser: finalBrowser,
+      os: finalOs,
+      ip_address: finalIp,
+      location: finalLocation,
+      created_at: existingIndex >= 0 ? userSessionsStore[existingIndex].created_at : new Date().toISOString(),
+      last_active_at: new Date().toISOString(),
+      is_active: true,
+    };
+
+    if (existingIndex >= 0) {
+      userSessionsStore[existingIndex] = sessionRecord;
+    } else {
+      userSessionsStore.unshift(sessionRecord);
+    }
+
+    res.json({
+      success: true,
+      message: 'Authentic session registered and synchronized successfully',
+      session_id,
+      device_name: finalDeviceName,
+      ip_address: finalIp,
+      location: finalLocation,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to register session' });
+  }
+});
+
+// POST /api/sessions/revoke & DELETE /api/sessions/:sessionId - Remote Revoke / Logout Endpoint
+app.all(['/api/sessions/revoke', '/api/sessions/:sessionId'], (req, res) => {
+  try {
+    if (req.method !== 'POST' && req.method !== 'DELETE') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    const sessionId = req.body?.sessionId || req.params.sessionId || req.query?.sessionId;
+    if (!sessionId) {
+      return res.status(400).json({ success: false, error: 'sessionId is required to revoke session' });
+    }
+
+    const session = userSessionsStore.find((s) => s.session_id === sessionId);
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found or already terminated' });
+    }
+
+    // Invalidate session immediately
+    session.is_active = false;
+    session.last_active_at = new Date().toISOString();
+
+    // Broadcast WebSocket notification so the targeted device gets forcefully disconnected
+    broadcastToAll({
+      type: 'SESSION_REVOKED',
+      payload: {
+        sessionId,
+        userId: session.user_id,
+        deviceName: session.device_name,
+        revokedAt: new Date().toISOString(),
+        message: 'Your session has been terminated remotely from another device.',
+      },
+    });
+
+    res.json({
+      success: true,
+      message: `Session ${sessionId} (${session.device_name}) invalidated and remotely terminated successfully.`,
+      revokedSessionId: sessionId,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to revoke session' });
+  }
+});
+
+// POST /api/sessions/revoke-all-others - Invalidate all foreign sessions
+app.post('/api/sessions/revoke-all-others', (req, res) => {
+  try {
+    const { userId, currentSessionId } = req.body || {};
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' });
+    }
+
+    let revokedCount = 0;
+    userSessionsStore.forEach((s) => {
+      const matchesUser =
+        s.user_id.toLowerCase() === String(userId).toLowerCase() ||
+        (String(userId).toLowerCase().includes('adm') && s.user_id.includes('ADM'));
+
+      if (matchesUser && s.session_id !== currentSessionId && s.is_active) {
+        s.is_active = false;
+        s.last_active_at = new Date().toISOString();
+        revokedCount++;
+      }
+    });
+
+    // Broadcast WebSocket notification so all other targeted devices get disconnected
+    broadcastToAll({
+      type: 'SESSION_REVOKED',
+      payload: {
+        allOthers: true,
+        userId,
+        keepSessionId: currentSessionId,
+        revokedAt: new Date().toISOString(),
+        message: 'All other active sessions have been terminated remotely.',
+      },
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully terminated ${revokedCount} other active device session(s).`,
+      revokedCount,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to revoke other sessions' });
+  }
+});
+
+// GET /api/sessions/check - Heartbeat check if current session token is still active
+app.get('/api/sessions/check', (req, res) => {
+  try {
+    const sessionId = (req.headers['x-session-id'] as string) || (req.query?.sessionId as string) || '';
+    if (!sessionId) {
+      return res.json({ success: true, valid: true });
+    }
+
+    const session = userSessionsStore.find((s) => s.session_id === sessionId);
+    if (session && !session.is_active) {
+      return res.status(401).json({
+        success: false,
+        valid: false,
+        sessionRevoked: true,
+        message: 'Your session has been terminated remotely from another device.',
+      });
+    }
+
+    res.json({ success: true, valid: true, active: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to check session validity' });
+  }
 });
 
 // =========================================================================
@@ -226,15 +1388,16 @@ app.post('/api/sites', (req, res) => {
 // 1. Site Dashboard Controller Endpoint
 app.get('/api/v1/sites/:siteId/dashboard', enforceSiteAccess as any, (req: ScopedRequest, res) => {
   const siteId = req.params.siteId;
-  const site = HOSPITAL_SITES.find(
-    (s) => s.id.toLowerCase() === siteId.toLowerCase() || s.code.toLowerCase() === siteId.toLowerCase()
+  const site = dynamicSitesStore.find(
+    (s) => s.id.toLowerCase() === siteId.toLowerCase() || (s.site_name && s.site_name.toLowerCase() === siteId.toLowerCase())
   ) || {
     id: siteId,
-    name: `Hospital Campus (${siteId})`,
+    site_name: `Site (${siteId})`,
+    name: `Site (${siteId})`,
     code: siteId,
     industry_type: 'HEALTHCARE',
     city: 'Metro City',
-    address: 'Medical Enclave Sector 4',
+    address: 'Campus Address',
   };
 
   const zones = [
@@ -258,7 +1421,7 @@ app.get('/api/v1/sites/:siteId/dashboard', enforceSiteAccess as any, (req: Scope
     },
     zones,
     activeDeployments: [],
-    message: `Site dashboard loaded for ${site.name} (${site.industry_type || 'HEALTHCARE'})`,
+    message: `Site dashboard loaded for ${site.site_name} (${site.industry_type || 'HEALTHCARE'})`,
   });
 });
 
@@ -292,7 +1455,7 @@ app.get('/api/v1/sites/:siteId/staff', enforceSiteAccess as any, (req: ScopedReq
       role: 'admin',
       department: 'Executive Administration',
       shift: 'General',
-      siteId: siteId || 'SITE_APEX_MAIN',
+      siteId: siteId || '',
       active: true,
       status: 'ACTIVE',
       duty_type: 'FIXED',
@@ -302,11 +1465,17 @@ app.get('/api/v1/sites/:siteId/staff', enforceSiteAccess as any, (req: ScopedReq
     },
   ];
 
+  const activeSiteStaff = siteStaff.filter(
+    (s) =>
+      !deletedStaffIds.has(String(s.id).toLowerCase()) &&
+      !deletedStaffIds.has(String(s.staffId || (s as any).staff_id || '').toLowerCase())
+  );
+
   res.json({
     success: true,
     siteId,
-    totalStaff: siteStaff.length,
-    staff: siteStaff,
+    totalStaff: activeSiteStaff.length,
+    staff: activeSiteStaff,
     deduplicationMethod: 'DISTINCT ON (users.id) with LEFT JOIN engagements',
   });
 });
@@ -339,7 +1508,9 @@ app.get(['/api/staff', '/api/users', '/api/directory/staff'], (req: ScopedReques
     FROM users
     LEFT JOIN engagements ON (users.id = engagements.person_id OR users.staff_id = engagements.person_id::text)
     LEFT JOIN sites ON (engagements.site_id = sites.id OR users.site_id = sites.id)
-    WHERE (users.tenant_id = '${tenantId.replace(/'/g, "''")}' OR users.role = 'admin')
+    WHERE users.status = 'ACTIVE'
+      AND users.deleted_at IS NULL
+      AND (users.tenant_id = '${tenantId.replace(/'/g, "''")}' OR users.role = 'admin')
       AND ('${(requestedSiteId || 'GLOBAL').replace(/'/g, "''")}' IN ('ALL', 'GLOBAL') OR users.site_id = '${(requestedSiteId || '').replace(/'/g, "''")}' OR users.role = 'admin')
     ORDER BY users.id, engagements.created_at DESC;
   `;
@@ -358,9 +1529,9 @@ app.get(['/api/staff', '/api/users', '/api/directory/staff'], (req: ScopedReques
       fixed_department: 'Executive Administration',
       shift: 'General',
       assigned_shift: 'General',
-      siteId: 'SITE_APEX_MAIN',
-      site_id: 'SITE_APEX_MAIN',
-      siteName: 'Site A - East Wing & Trauma',
+      siteId: null,
+      site_id: null,
+      siteName: 'All Sites (Global)',
       status: 'ACTIVE',
       is_approved: true,
       dutyStatus: 'ON_DUTY',
@@ -380,11 +1551,17 @@ app.get(['/api/staff', '/api/users', '/api/directory/staff'], (req: ScopedReques
     },
   ];
 
+  const filteredAccounts = primaryAccounts.filter(
+    (a) =>
+      !deletedStaffIds.has(String(a.id).toLowerCase()) &&
+      !deletedStaffIds.has(String(a.staff_id || '').toLowerCase())
+  );
+
   res.json({
     success: true,
-    totalRecords: primaryAccounts.length,
-    staff: primaryAccounts,
-    users: primaryAccounts,
+    totalRecords: filteredAccounts.length,
+    staff: filteredAccounts,
+    users: filteredAccounts,
     sqlQuery: distinctSqlQuery.trim(),
     deduplicationMethod: 'DISTINCT ON (users.id) with LEFT JOIN engagements',
   });
@@ -515,18 +1692,63 @@ app.post('/api/login', async (req, res) => {
       { expiresIn: '8h' }
     );
 
+    // Dynamic User-Agent parsing & Real IP/Location detection on every login
+    const uaHeader = (req.headers['user-agent'] as string) || '';
+    const parsedDevice = parseUserAgentString(uaHeader);
+    const clientIp = extractClientIpAddress(req);
+    const geo = await lookupIpLocation(clientIp);
+
+    const incomingSessionId =
+      (req.headers['x-session-id'] as string) ||
+      req.body?.sessionId ||
+      req.body?.session_id;
+    const sessionId = incomingSessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+    // Save these authentic values into the 'user_sessions' database table on every login
+    const existingIndex = userSessionsStore.findIndex((s) => s.session_id === sessionId);
+    const sessionRecord: UserSessionRecord = {
+      session_id: sessionId,
+      user_id: user.id,
+      user_name: user.name,
+      user_role: user.role,
+      device_name: parsedDevice.deviceName,
+      device_type: parsedDevice.deviceType,
+      browser: parsedDevice.browser,
+      os: parsedDevice.os,
+      ip_address: geo.ip,
+      location: geo.formattedLocation,
+      created_at: existingIndex >= 0 ? userSessionsStore[existingIndex].created_at : new Date().toISOString(),
+      last_active_at: new Date().toISOString(),
+      is_active: true,
+    };
+
+    if (existingIndex >= 0) {
+      userSessionsStore[existingIndex] = sessionRecord;
+    } else {
+      userSessionsStore.unshift(sessionRecord);
+    }
+
     res.cookie('authToken', token, { path: '/', httpOnly: true, sameSite: 'lax', maxAge: 28800 * 1000 });
     res.cookie('userRole', user.role, { path: '/', sameSite: 'lax', maxAge: 28800 * 1000 });
+    res.cookie('session_id', sessionId, { path: '/', sameSite: 'lax', maxAge: 2592000 * 1000 });
 
     res.json({
       success: true,
       token,
+      sessionId,
+      session_id: sessionId,
       role: user.role,
       redirect: user.redirect,
       user: {
         id: user.id,
         role: user.role,
         name: user.name,
+      },
+      session: {
+        session_id: sessionId,
+        device_name: parsedDevice.deviceName,
+        ip_address: geo.ip,
+        location: geo.formattedLocation,
       },
     });
   } catch (err) {

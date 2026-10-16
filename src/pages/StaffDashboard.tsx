@@ -28,6 +28,7 @@ import {
   FolderLock,
 } from 'lucide-react';
 import { EmployeeProfileModal } from '../components/EmployeeProfileModal';
+import { AnnouncementsFeed } from '../components/AnnouncementsFeed';
 import { useAuth } from '../context/AuthContext';
 import {
   getStoredUsers,
@@ -748,6 +749,15 @@ export const StaffDashboard: React.FC = () => {
             </button>
           </div>
         )}
+
+        {/* Operational Directives & Emergency Bulletins Feed */}
+        <AnnouncementsFeed
+          currentUser={authUser}
+          currentRole={authRole || 'staff'}
+          activeSiteId={(authUser as any)?.site_id || (authUser as any)?.siteId}
+          activeWard={(staffDashboard as any)?.ward || (staffDashboard as any)?.department || (authUser as any)?.department || ''}
+          canPublish={false}
+        />
 
         {/* Hospital Emergency Recall Alert Banner */}
         {activeEmergencyRecall && (

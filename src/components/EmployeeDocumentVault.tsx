@@ -41,6 +41,7 @@ import {
   isUserInTenant,
   filterRealDocuments,
 } from '../services/documentVaultService';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
 import { compressDocumentWithMetrics, formatBytes, type CompressionResult } from '../utils/fileCompressor';
 
@@ -146,6 +147,8 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
   const [rejectionReason, setRejectionReason] = useState('Document copy is blurry / incomplete.');
 
   const [previewDoc, setPreviewDoc] = useState<{ user: AppUser; doc: EmployeeDocument } | null>(null);
+  const [deletingDocItem, setDeletingDocItem] = useState<{ user: AppUser; doc: EmployeeDocument } | null>(null);
+  const [isDeletingDoc, setIsDeletingDoc] = useState(false);
   const [feedbackNotice, setFeedbackNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
 
   const showNotice = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
@@ -165,8 +168,8 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
       // Must be within tenant
       if (!isUserInTenant(u, activeTenantPrefix)) return false;
       // Must pass site isolation
-      if (effectiveSiteFilter) {
-        const uSite = u.siteId || u.site_id || 'SITE_APEX_MAIN';
+      if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
+        const uSite = u.siteId || u.site_id || '';
         if (uSite !== effectiveSiteFilter) return false;
       }
       // Must pass RBAC permission check
@@ -377,7 +380,14 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
       showNotice('Only Admins can permanently delete documents.', 'error');
       return;
     }
-    if (confirm(`Are you sure you want to permanently delete "${doc.docType}" for ${user.full_name || user.staff_id}?`)) {
+    setDeletingDocItem({ user, doc });
+  };
+
+  const confirmDeleteDoc = async () => {
+    if (!deletingDocItem) return;
+    try {
+      setIsDeletingDoc(true);
+      const { user, doc } = deletingDocItem;
       const res = deleteEmployeeDocument(user.staff_id || user.id, doc.docId, currentUser);
       if (res.success) {
         showNotice('Document removed from vault.', 'success');
@@ -385,6 +395,9 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
       } else {
         showNotice(res.message, 'error');
       }
+    } finally {
+      setIsDeletingDoc(false);
+      setDeletingDocItem(null);
     }
   };
 
@@ -844,7 +857,10 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
                                   {canDeleteDocument(currentUser) && (
                                     <button
                                       type="button"
-                                      onClick={() => handleDelete(user, existing)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDelete(user, existing);
+                                      }}
                                       className="p-1 text-rose-600 hover:text-rose-800 hover:bg-rose-100 rounded transition cursor-pointer"
                                       title="Permanently Delete Document (Admin Only)"
                                     >
@@ -1272,6 +1288,36 @@ export const EmployeeDocumentVault: React.FC<EmployeeDocumentVaultProps> = ({
           </div>
         </div>
       )}
+
+      {/* Reusable Document Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(deletingDocItem)}
+        title="Permanently Delete Document"
+        itemType="Employee Digitized Document"
+        itemName={
+          deletingDocItem
+            ? `${deletingDocItem.doc.docType} — ${deletingDocItem.user.full_name || deletingDocItem.user.staff_id}`
+            : undefined
+        }
+        message={
+          deletingDocItem ? (
+            <p>
+              Are you sure you want to permanently delete the document record{' '}
+              <strong className="text-slate-900">"{deletingDocItem.doc.docType}"</strong> for staff member{' '}
+              <span className="font-semibold text-slate-800">{deletingDocItem.user.full_name || deletingDocItem.user.staff_id}</span>?
+              This will remove the file from the employee's onboarding dossier and mark it as missing.
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Security compliance notice: Digitized documents in the vault require Admin clearance to permanently erase."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingDoc}
+        onCancel={() => {
+          if (!isDeletingDoc) setDeletingDocItem(null);
+        }}
+        onConfirm={confirmDeleteDoc}
+      />
     </div>
   );
 };

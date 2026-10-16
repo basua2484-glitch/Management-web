@@ -138,6 +138,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   // Password criteria for password reset form
   const resetPasswordCriteria = useMemo(() => checkPasswordCriteria(newResetPassword), [newResetPassword]);
 
+  // Check for remote session termination alerts
+  useEffect(() => {
+    try {
+      const alertMsg = sessionStorage.getItem('session_revocation_alert');
+      if (alertMsg) {
+        setError(alertMsg);
+        sessionStorage.removeItem('session_revocation_alert');
+      }
+    } catch {}
+  }, []);
+
   // URL Query Token detection for direct single-click redirection
   useEffect(() => {
     try {

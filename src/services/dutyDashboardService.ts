@@ -415,8 +415,8 @@ export function buildLiveDutyLogs(params: {
       department: u.department || u.fixed_department,
       phone: u.mobile || u.phone,
       notes: userPunchLog?.notes,
-      siteId: u.siteId || u.site_id || 'SITE_APEX_MAIN',
-      siteName: u.siteName || u.site_name || 'Apex Main Hospital',
+      siteId: u.siteId || u.site_id || '',
+      siteName: u.siteName || u.site_name || '',
     });
   });
 
@@ -528,8 +528,8 @@ export function buildLiveDutyLogs(params: {
       department: s.department,
       phone: s.phone || s.mobile,
       notes: userPunchLog?.notes,
-      siteId: s.siteId || (s as any).site_id || 'SITE_APEX_MAIN',
-      siteName: s.siteName || (s as any).site_name || 'Apex Main Hospital',
+      siteId: s.siteId || (s as any).site_id || '',
+      siteName: s.siteName || (s as any).site_name || '',
     });
   });
 

@@ -34,6 +34,8 @@ import {
   updateGeofenceSettings,
   subscribeToGeofenceSettings,
 } from '../services/firestoreService';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
+import { deleteZoneFromDatabase } from '../services/zoneService';
 
 interface GeofenceSettingsPanelProps {
   currentUsername?: string;
@@ -76,6 +78,22 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
   // Persistence status tracking
   const [isRecentlySaved, setIsRecentlySaved] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
+
+  // Delete & Reset Confirmation Modals
+  const [zoneToDelete, setZoneToDelete] = useState<WardZoneGeofence | null>(null);
+  const [isDeletingZone, setIsDeletingZone] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+
+  // Auto-dismiss toast notification
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => {
+        setToastMessage(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
 
   // Active tester radius derived dynamically from the selected ward or global slider
   const activeTesterRadius =
@@ -179,14 +197,17 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
 
   // Revert to hospital standard defaults
   const handleResetDefaults = () => {
-    if (window.confirm('Reset all geofence parameters to ApexCare Hospital standard defaults (19.0760° N, 72.8777° E, 100m)?')) {
-      setConfig({
-        ...DEFAULT_GEOFENCE_CONFIG,
-        updatedAt: new Date().toISOString(),
-        updatedBy: currentUsername,
-      });
-      setSaveSuccess('Reset to defaults. Click "Save Geofence Settings" to persist.');
-    }
+    setIsResetConfirmOpen(true);
+  };
+
+  const confirmResetDefaults = () => {
+    setConfig({
+      ...DEFAULT_GEOFENCE_CONFIG,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUsername,
+    });
+    setSaveSuccess('Reset to defaults. Click "Save Geofence Settings" to persist.');
+    setIsResetConfirmOpen(false);
   };
 
   // Capture Admin's current device GPS coordinates
@@ -282,12 +303,46 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
   };
 
   // Remove Zone
-  const handleDeleteZone = (zoneId: string) => {
-    if (window.confirm('Are you sure you want to remove this ward boundary configuration?')) {
-      setConfig((prev) => ({
-        ...prev,
-        zones: prev.zones.filter((z) => z.id !== zoneId),
-      }));
+  const handleDeleteZone = (zone: WardZoneGeofence) => {
+    setZoneToDelete(zone);
+  };
+
+  const confirmDeleteZone = async () => {
+    if (!zoneToDelete) return;
+    const targetZone = zoneToDelete;
+    setIsDeletingZone(true);
+    setSaveError(null);
+
+    try {
+      // 1. Filter out the deleted item by its unique ID
+      const updatedZones = config.zones.filter((z) => z.id !== targetZone.id);
+      const updatedConfig: GeofenceConfig = {
+        ...config,
+        zones: updatedZones,
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUsername,
+      };
+
+      // 2. Persistent Backend/Storage Deletion: Await real deletion call to the backend API and storage sync
+      await deleteZoneFromDatabase(targetZone.id, targetZone.name, undefined, currentUsername);
+
+      // 3. Persist geofence configuration to storage and database
+      await updateGeofenceSettings(updatedConfig, currentUsername);
+
+      // 4. Synchronize local React state with filtered array so even after page refresh it remains deleted
+      setConfig(updatedConfig);
+      setZoneToDelete(null);
+
+      // 5. Add toast notification upon completion
+      setToastMessage('Zone deleted successfully');
+      if (onSavedNotification) {
+        onSavedNotification('Zone deleted successfully');
+      }
+    } catch (err: any) {
+      console.error('Error deleting zone:', err);
+      setSaveError(err?.message || 'Failed to delete zone from database.');
+    } finally {
+      setIsDeletingZone(false);
     }
   };
 
@@ -667,8 +722,11 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => handleDeleteZone(zone.id)}
-                          className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteZone(zone);
+                          }}
+                          className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                           title="Delete boundary"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -807,6 +865,68 @@ export const GeofenceSettingsPanel: React.FC<GeofenceSettingsPanelProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Ward Zone Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(zoneToDelete)}
+        title="Remove Ward Boundary"
+        itemType="Ward Geofence Zone"
+        itemName={zoneToDelete ? `${zoneToDelete.name} (${zoneToDelete.radiusMeters}m radius)` : undefined}
+        message={
+          zoneToDelete ? (
+            <p>
+              Are you sure you want to remove the geofence perimeter for{' '}
+              <strong className="text-slate-900">{zoneToDelete.name}</strong>? Housekeeping staff assigned
+              to this ward will no longer be restricted to this perimeter.
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Persistent deletion: Removing this boundary immediately executes deletion against database storage and geofence cache."
+        confirmText="Remove Boundary"
+        cancelText="Cancel"
+        isLoading={isDeletingZone}
+        onCancel={() => {
+          if (!isDeletingZone) setZoneToDelete(null);
+        }}
+        onConfirm={confirmDeleteZone}
+      />
+
+      {/* Persistent Toast Notification */}
+      {toastMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-4 py-3 bg-emerald-600 text-white rounded-xl shadow-2xl shadow-emerald-950/30 text-xs font-bold border border-emerald-500 animate-in fade-in slide-in-from-bottom-2 duration-200"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-200" />
+          <span>{toastMessage}</span>
+          <button
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="ml-2 text-emerald-200 hover:text-white p-0.5 rounded transition-colors"
+            title="Dismiss toast"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Reset Factory Defaults Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={isResetConfirmOpen}
+        title="Reset Geofence Defaults"
+        itemType="Hospital Geofence Configuration"
+        variant="warning"
+        message={
+          <p>
+            Are you sure you want to reset all geofence parameters back to default hospital coordinates (19.0760° N, 72.8777° E, 100m radius)? Any customized ward boundaries will be reset.
+          </p>
+        }
+        confirmText="Reset to Defaults"
+        cancelText="Cancel"
+        onCancel={() => setIsResetConfirmOpen(false)}
+        onConfirm={confirmResetDefaults}
+      />
     </div>
   );
 };

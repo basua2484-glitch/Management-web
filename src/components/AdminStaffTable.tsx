@@ -29,6 +29,7 @@ import type { AppUser, UserRole, DutyType, ShiftName, UserStatus } from '../type
 import { decryptVaultPassword, createPasswordHash } from '../services/vaultService';
 import { DUTY_AREAS, createRemovalRequest } from '../data/mockHousekeepingData';
 import { RemovalRequestModal } from './RemovalRequestModal';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import {
   canSupervisorAction,
   OFF_DUTY_RESTRICTION_MESSAGE,
@@ -80,6 +81,7 @@ interface AdminStaffTableProps {
   onRequestRemoval?: (user: AppUser) => void;
   pendingCount?: number;
   onOpenProfileModal?: (staffId: string) => void;
+  onOpenSocialProfile?: (user: AppUser) => void;
   siteFilter?: string;
   currentUserSiteId?: string;
 }
@@ -100,6 +102,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   onRequestRemoval,
   pendingCount = 0,
   onOpenProfileModal,
+  onOpenSocialProfile,
   siteFilter,
   currentUserSiteId,
 }) => {
@@ -138,6 +141,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
 
   // In-app Delete Confirmation State
   const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   // Supervisor Staff Removal Request State
   const [staffForRemoval, setStaffForRemoval] = useState<AppUser | null>(null);
@@ -279,7 +283,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
   }, [currentStaffId, currentUserId]);
 
   // Strict tenant and site isolation filtering:
-  const effectiveSite = isManager ? currentUserSiteId : (siteFilter && siteFilter !== 'ALL' ? siteFilter : null);
+  const effectiveSite = isManager ? currentUserSiteId : (siteFilter && siteFilter !== 'ALL' && siteFilter !== 'GLOBAL' ? siteFilter : null);
 
   // Deduplicate incoming staff/users array in frontend state using a Map filter based on unique record IDs
   const deduplicatedUsers = useMemo(() => {
@@ -307,7 +311,7 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
       }
       // Site Isolation (Admins without specific site mapping are listed under All Sites / Global)
       if (effectiveSite && effectiveSite !== 'ALL' && effectiveSite !== 'GLOBAL') {
-        const uSite = user.siteId || user.site_id || 'SITE_APEX_MAIN';
+        const uSite = user.siteId || user.site_id || '';
         if (!isAdmin && uSite !== effectiveSite) {
           return false;
         }
@@ -602,9 +606,15 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                         <div className="flex flex-wrap items-center gap-1.5 mt-1">
                           <button
                             type="button"
-                            onClick={() => onOpenProfileModal?.(user.staff_id || String(user.id))}
+                            onClick={() => {
+                              if (onOpenSocialProfile) {
+                                onOpenSocialProfile(user);
+                              } else if (onOpenProfileModal) {
+                                onOpenProfileModal(user.staff_id || String(user.id));
+                              }
+                            }}
                             className="font-mono text-2xs font-bold text-[#1E3A8A] bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200 hover:bg-blue-100 transition-colors cursor-pointer"
-                            title="Inspect profile & shift metrics"
+                            title="Inspect social profile & shift metrics"
                           >
                             {user.staff_id || `USER-${user.id}`}
                           </button>
@@ -787,8 +797,14 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
-                            onClick={() => onOpenProfileModal?.(user.staff_id || String(user.id))}
-                            title="View Employee Profile & Duty Modal"
+                            onClick={() => {
+                              if (onOpenSocialProfile) {
+                                onOpenSocialProfile(user);
+                              } else if (onOpenProfileModal) {
+                                onOpenProfileModal(user.staff_id || String(user.id));
+                              }
+                            }}
+                            title="View & Edit Interactive Social Profile Card"
                             className="p-1.5 rounded-md text-slate-500 hover:text-blue-700 hover:bg-blue-50 transition-colors cursor-pointer"
                           >
                             <User className="h-3.5 w-3.5" />
@@ -816,7 +832,10 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
                           {canDeleteUser(roleUpper, user.role, currentUserId, user.id) && (
                             <button
                               type="button"
-                              onClick={() => setUserToDelete(user)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setUserToDelete(user);
+                              }}
                               title="Delete user account"
                               className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition cursor-pointer"
                             >
@@ -1107,45 +1126,53 @@ export const AdminStaffTable: React.FC<AdminStaffTableProps> = ({
         </div>
       )}
 
-      {/* In-App Delete Confirmation Modal */}
-      {userToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-6 text-left">
-            <div className="flex items-center gap-3 text-rose-600 mb-3">
-              <div className="p-2 bg-rose-100 rounded-lg">
-                <Trash2 className="h-5 w-5" />
-              </div>
-              <h3 className="text-base font-bold text-slate-900">Confirm User Deletion</h3>
-            </div>
-            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+      {/* Reusable Global Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(userToDelete)}
+        title="Confirm User Deletion"
+        itemType="Staff User Account"
+        itemName={userToDelete ? `${userToDelete.full_name || userToDelete.name} (${userToDelete.staff_id})` : undefined}
+        message={
+          userToDelete ? (
+            <p>
               Are you sure you want to permanently delete staff account{' '}
               <strong className="text-slate-900">{userToDelete.full_name || userToDelete.name}</strong>{' '}
               (<span className="font-mono font-semibold text-[#1E3A8A]">{userToDelete.staff_id}</span>)? This will remove their credentials from the vault, revoke portal access, and update all rosters.
             </p>
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setUserToDelete(null)}
-                className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onDeleteUser) {
-                    onDeleteUser(userToDelete.id);
-                  }
-                  setUserToDelete(null);
-                }}
-                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs cursor-pointer"
-              >
-                Delete Account
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          ) : undefined
+        }
+        dangerDetails="Security notice: Deleting this user account will immediately purge their credentials, active shift allocations, and access permissions."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingUser}
+        onCancel={() => {
+          if (!isDeletingUser) setUserToDelete(null);
+        }}
+        onConfirm={async () => {
+          if (!userToDelete) return;
+          try {
+            setIsDeletingUser(true);
+            // Execute API DELETE request
+            try {
+              await fetch(`/api/staff/${userToDelete.id || userToDelete.staff_id}`, {
+                method: 'DELETE',
+                headers: {
+                  'x-user-role': roleUpper,
+                  'x-user-id': String(currentUserId || currentStaffId || ''),
+                },
+              });
+            } catch (err) {
+              console.warn('API DELETE request error:', err);
+            }
+            if (onDeleteUser) {
+              await onDeleteUser(userToDelete.id);
+            }
+          } finally {
+            setIsDeletingUser(false);
+            setUserToDelete(null);
+          }
+        }}
+      />
 
       {/* Supervisor Request Removal Modal */}
       <RemovalRequestModal

@@ -87,6 +87,24 @@
         "updated_at": { "type": "string" }
       },
       "required": ["master_admin_registered"]
+    },
+    "user_sessions": {
+      "title": "user_sessions",
+      "description": "Active user sessions and connected devices for remote termination",
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "device_name": { "type": "string" },
+        "browser": { "type": "string" },
+        "os": { "type": "string" },
+        "ip_address": { "type": "string" },
+        "location": { "type": "string" },
+        "created_at": { "type": "string" },
+        "last_active_at": { "type": "string" },
+        "is_active": { "type": "boolean" }
+      },
+      "required": ["session_id", "user_id", "is_active"]
     }
   }
 }

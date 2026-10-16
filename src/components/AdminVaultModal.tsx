@@ -3,6 +3,7 @@ import { X, Shield, KeyRound, Eye, EyeOff, Lock, Copy, Check, Search, ShieldAler
 import type { AppUser, UserRole } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
 import { canDeleteUser } from './AdminStaffTable';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 
 interface AdminVaultModalProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
   const [revealedIds, setRevealedIds] = useState<Record<number, boolean>>({});
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [userToDelete, setUserToDelete] = useState<AppUser | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   if (!isOpen) return null;
 
@@ -342,7 +344,10 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
                                 {onDeleteUser && canDeleteUser(currentUserRole, user.role) && (
                                   <button
                                     type="button"
-                                    onClick={() => setUserToDelete(user)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setUserToDelete(user);
+                                    }}
                                     title={`Permanently delete ${user.full_name || user.name} from vault`}
                                     className="p-1 rounded bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors cursor-pointer"
                                   >
@@ -384,44 +389,50 @@ export const AdminVaultModal: React.FC<AdminVaultModalProps> = ({
       </div>
 
       {/* In-Vault Delete Confirmation Modal */}
-      {userToDelete && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-[#0F172A] rounded-xl shadow-2xl border border-rose-500/40 max-w-md w-full p-6 text-left text-slate-200">
-            <div className="flex items-center gap-3 text-rose-400 mb-3">
-              <div className="p-2 bg-rose-500/20 border border-rose-500/30 rounded-lg">
-                <Trash2 className="h-5 w-5" />
-              </div>
-              <h3 className="text-base font-bold text-white">Permanently Delete from Vault</h3>
-            </div>
-            <p className="text-xs text-slate-300 mb-4 leading-relaxed font-sans">
+      <DeleteConfirmationModal
+        isOpen={Boolean(userToDelete)}
+        title="Permanently Delete from Vault"
+        itemType="Vault Encrypted Record"
+        itemName={userToDelete ? `${userToDelete.full_name || userToDelete.name} (${userToDelete.staff_id})` : undefined}
+        message={
+          userToDelete ? (
+            <p>
               Are you sure you want to permanently delete staff credentials for{' '}
-              <strong className="text-white">{userToDelete.full_name || userToDelete.name}</strong>{' '}
-              (<span className="font-mono text-amber-400 font-semibold">{userToDelete.staff_id}</span>)? This will erase their <code>raw_password_vault</code> record and revoke all portal login permissions.
+              <strong className="text-slate-900">{userToDelete.full_name || userToDelete.name}</strong>{' '}
+              (<span className="font-mono text-amber-600 font-semibold">{userToDelete.staff_id}</span>)? This will erase their encrypted vault credentials and revoke all portal login permissions.
             </p>
-            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800 font-sans">
-              <button
-                type="button"
-                onClick={() => setUserToDelete(null)}
-                className="px-3.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-semibold cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onDeleteUser) {
-                    onDeleteUser(userToDelete.id);
-                  }
-                  setUserToDelete(null);
-                }}
-                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs cursor-pointer"
-              >
-                Delete from Vault
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          ) : undefined
+        }
+        dangerDetails="Security note: Deleting this credentials record cannot be undone and will prevent the staff member from authenticating into any portal."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeleting}
+        onCancel={() => {
+          if (!isDeleting) setUserToDelete(null);
+        }}
+        onConfirm={async () => {
+          if (!userToDelete) return;
+          try {
+            setIsDeleting(true);
+            try {
+              await fetch(`/api/staff/${userToDelete.id || userToDelete.staff_id}`, {
+                method: 'DELETE',
+                headers: {
+                  'x-user-role': String(currentUserRole || '').toUpperCase(),
+                },
+              });
+            } catch (err) {
+              console.warn('API DELETE request warning:', err);
+            }
+            if (onDeleteUser) {
+              await onDeleteUser(userToDelete.id);
+            }
+          } finally {
+            setIsDeleting(false);
+            setUserToDelete(null);
+          }
+        }}
+      />
     </div>
   );
 };

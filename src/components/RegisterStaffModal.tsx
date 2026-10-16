@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, UserPlus, Check, AlertTriangle, Shield, KeyRound, Building2, User, Lock, Sparkles, Building } from 'lucide-react';
-import type { UserRole } from '../types';
+import type { UserRole, HospitalSite } from '../types';
 import type { CredentialCardData } from './CredentialCardModal';
 import { generateSubAccountId } from '../services/firestoreService';
 import { getStoredUsers, getTenantSites, getSiteNameById } from '../data/mockHousekeepingData';
@@ -12,6 +12,7 @@ interface RegisterStaffModalProps {
   activeTenantPrefix?: string;
   currentUserSiteId?: string;
   currentUserSiteName?: string;
+  sites?: HospitalSite[];
   onStaffAccountCreated?: (slip: CredentialCardData) => void;
   onRegister: (data: {
     staff_id?: string;
@@ -39,6 +40,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   activeTenantPrefix,
   currentUserSiteId,
   currentUserSiteName,
+  sites,
   onStaffAccountCreated,
   onRegister,
 }) => {
@@ -69,22 +71,27 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   ).toUpperCase();
 
   const availableSites = useMemo(() => {
-    const raw = getTenantSites(companyPrefix);
+    const raw = sites && sites.length > 0 ? sites : getTenantSites(companyPrefix);
+    if (!raw || !Array.isArray(raw)) return [];
+
     const seen = new Set<string>();
-    return raw.filter((s) => {
-      const key = s.siteId || s.id;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
+    return raw.filter((site) => {
+      // Unique ID ya Name check
+      const identifier = site.id || site.name || site.siteId;
+      if (!identifier || seen.has(identifier)) {
+        return false; // Skip duplicates
+      }
+      seen.add(identifier);
       return true;
     });
-  }, [companyPrefix]);
+  }, [sites, companyPrefix]);
 
   // Site selection state:
   // Operations Manager creator: forces inheritance of their own siteId
   // Master Admin creator: forces selection of site if creating Manager, or selection of site for others
   const [assignedSiteId, setAssignedSiteId] = useState<string>(() => {
     if (isManagerCreating && currentUserSiteId) return currentUserSiteId;
-    return availableSites[0]?.siteId || availableSites[0]?.id || 'SITE_APEX_MAIN';
+    return availableSites[0]?.siteId || availableSites[0]?.id || '';
   });
 
   useEffect(() => {
@@ -134,7 +141,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
     }
 
     // When an Operations Manager creates a Supervisor or Staff, automatically inherit their active 'siteId'.
-    const finalSiteId = isManagerCreating ? (currentUserSiteId || 'SITE_APEX_MAIN') : assignedSiteId;
+    const finalSiteId = isManagerCreating ? (currentUserSiteId || '') : assignedSiteId;
     const finalSiteName = isManagerCreating ? (currentUserSiteName || getSiteNameById(finalSiteId)) : getSiteNameById(finalSiteId);
 
     const result = onRegister({

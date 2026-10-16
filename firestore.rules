@@ -36,5 +36,11 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    // Active User Sessions & Connected Devices
+    match /user_sessions/{sessionId} {
+      allow read: if true;
+      allow write: if true;
+    }
   }
 }

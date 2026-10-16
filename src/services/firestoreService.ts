@@ -155,6 +155,8 @@ export interface MasterAdminRegistrationData {
   email?: string;
   department?: string;
   siteId?: string;
+  siteName?: string;
+  sites?: any[];
   securityPasskey?: string;
   username?: string; // Optional alias for backward compatibility
 }
@@ -265,8 +267,8 @@ export function ensureInjectedFirestoreIdentity(): Promise<void> {
       tenantId: 'BASU',
       company_name: 'Basu Healthcare',
       company_prefix: 'BASU',
-      siteId: 'SITE_A',
-      siteName: 'Site A - East Wing & Trauma',
+      siteId: null,
+      siteName: 'All Sites (Global)',
       duty_type: 'FIXED',
       assigned_shift: '7-3',
       password_hash: createPasswordHash('admin123'),
@@ -474,10 +476,10 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
     password: data.password,
     status: 'ACTIVE',
     is_approved: true,
-    site_id: data.siteId || 'SITE_APEX_MAIN',
-    siteId: data.siteId || 'SITE_APEX_MAIN',
-    site_name: `${companyName} Central Hospital`,
-    siteName: `${companyName} Central Hospital`,
+    site_id: data.siteId || null,
+    siteId: data.siteId || null,
+    site_name: data.siteId ? (data.siteName || `${companyName} Facility`) : 'All Sites (Global)',
+    siteName: data.siteId ? (data.siteName || `${companyName} Facility`) : 'All Sites (Global)',
     weeklyOffDay: 'Sunday',
     leaveBalance: { casual: 15, sick: 12, paid: 20 },
     leaveRequests: [],
@@ -488,12 +490,13 @@ export async function registerMasterAdmin(data: MasterAdminRegistrationData): Pr
     tenantId: tenantId,
     company_name: companyName,
     company_prefix: companyPrefix,
+    rootAdminId: rootAdminId,
     root_admin_id: rootAdminId,
     admin_name: data.fullName.trim(),
     admin_email: data.email || `${rootAdminId.toLowerCase()}@${companyPrefix.toLowerCase()}.org`,
     created_at: new Date().toISOString(),
     status: 'ACTIVE',
-    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH', 'SITE_A', 'SITE_B'],
+    sites: data.sites || [],
   };
 
   // 1. Write to Firestore if connected
@@ -1428,7 +1431,7 @@ export async function fetchLiveGeofenceSettings(): Promise<GeofenceConfig> {
             : localConfig.maxAllowedRadiusMeters,
         requireHighAccuracyGps: data.requireHighAccuracyGps ?? true,
         gpsTimeoutSeconds: typeof data.gpsTimeoutSeconds === 'number' ? data.gpsTimeoutSeconds : 5,
-        zones: Array.isArray(data.zones) && data.zones.length > 0 ? data.zones : localConfig.zones,
+        zones: Array.isArray(data.zones) ? data.zones : localConfig.zones,
         updatedAt: data.updatedAt || new Date().toISOString(),
         updatedBy: data.updatedBy || 'Admin',
       };
@@ -1574,7 +1577,7 @@ export function subscribeToGeofenceSettings(
                 : base.maxAllowedRadiusMeters,
             requireHighAccuracyGps: data.requireHighAccuracyGps ?? true,
             gpsTimeoutSeconds: typeof data.gpsTimeoutSeconds === 'number' ? data.gpsTimeoutSeconds : 5,
-            zones: Array.isArray(data.zones) && data.zones.length > 0 ? data.zones : base.zones,
+            zones: Array.isArray(data.zones) ? data.zones : base.zones,
             updatedAt: data.updatedAt || new Date().toISOString(),
             updatedBy: data.updatedBy || 'Admin',
           };

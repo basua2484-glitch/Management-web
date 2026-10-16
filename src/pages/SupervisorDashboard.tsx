@@ -60,6 +60,7 @@ import type { AppUser, AttendanceRecord, DutyAllocation, StaffUser, EmergencyRec
 import { DutyAssignmentModal } from '../components/DutyAssignmentModal';
 import { RemovalRequestModal } from '../components/RemovalRequestModal';
 import { EmployeeProfileModal } from '../components/EmployeeProfileModal';
+import { AnnouncementsFeed } from '../components/AnnouncementsFeed';
 import { GeofenceRejectionModal } from '../components/GeofenceRejectionModal';
 import { GpsHardwareAlertModal } from '../components/GpsHardwareAlertModal';
 import {
@@ -84,8 +85,8 @@ export const SupervisorDashboard: React.FC = () => {
 
   const effectiveSupervisorId = authUser?.staff_id || authUser?.username || 'SUPERVISOR';
   const supervisorName = authUser?.full_name || authUser?.name || 'Supervisor';
-  const supervisorSiteId = authUser?.siteId || authUser?.site_id || 'SITE_APEX_MAIN';
-  const supervisorSiteName = authUser?.siteName || authUser?.site_name || 'Apex Main Hospital';
+  const supervisorSiteId = authUser?.siteId || authUser?.site_id || '';
+  const supervisorSiteName = authUser?.siteName || authUser?.site_name || '';
 
   // Selected date for attendance (defaults to current dynamic system date)
   const [selectedDate, setSelectedDate] = useState<string>(() => getTodayIso());
@@ -234,6 +235,9 @@ export const SupervisorDashboard: React.FC = () => {
     window.addEventListener('emergency-recall-dispatched', handleUpdate);
     window.addEventListener('continuous-ot-assigned', handleUpdate);
     window.addEventListener('supervisor-duty-punch-changed', handleDutyPunch);
+    window.addEventListener('staff-data-updated', handleUpdate);
+    window.addEventListener('user-data-updated', handleUpdate);
+    window.addEventListener('roster-data-updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
     const handleRestrictedEvent = (e: any) => {
@@ -251,6 +255,9 @@ export const SupervisorDashboard: React.FC = () => {
       window.removeEventListener('emergency-recall-dispatched', handleUpdate);
       window.removeEventListener('continuous-ot-assigned', handleUpdate);
       window.removeEventListener('supervisor-duty-punch-changed', handleDutyPunch);
+      window.removeEventListener('staff-data-updated', handleUpdate);
+      window.removeEventListener('user-data-updated', handleUpdate);
+      window.removeEventListener('roster-data-updated', handleUpdate);
       window.removeEventListener('off-duty-action-restricted', handleRestrictedEvent);
       window.removeEventListener('storage', handleUpdate);
     };
@@ -358,9 +365,21 @@ export const SupervisorDashboard: React.FC = () => {
   };
 
   // Housekeeping staff list (Strict exclusion of Admin, Supervisor, Manager)
+  // 1. ACTIVE EMPLOYEES FILTER ONLY: status = 'ACTIVE' and deleted_at IS NULL
+  // 2. RBAC FOR SUPERVISOR: strictly limited to assigned Ward, Floor, or Department
   const staffList: StaffUser[] = useMemo(() => {
+    const supDept = (authUser?.fixed_department || authUser?.department || authUser?.assigned_area || '').trim().toLowerCase();
+    const supWard = ((authUser as any)?.ward || (authUser as any)?.assigned_ward || '').trim().toLowerCase();
+    const supFloor = ((authUser as any)?.floor || '').trim().toLowerCase();
+
     return users
       .filter((u) => {
+        // Active-only check: status = 'ACTIVE' and deleted_at IS NULL
+        const sStatus = String(u.status || '').toUpperCase();
+        if (sStatus === 'TERMINATED' || sStatus === 'DELETED' || sStatus === 'DISABLED') return false;
+        if (u.deleted_at || (u as any).deletedAt || (u as any).is_deleted) return false;
+        if (sStatus !== 'ACTIVE' && u.active === false) return false;
+
         const r = (u.role || '').toUpperCase();
         const staffCode = String(u.staff_id || '').toUpperCase();
         if (r === 'ADMIN' || r === 'ADM' || staffCode.includes('-ADM-')) return false;
@@ -369,6 +388,26 @@ export const SupervisorDashboard: React.FC = () => {
         // Site Isolation: supervisor strictly scopes to their assigned siteId
         const uSite = u.siteId || u.site_id;
         if (supervisorSiteId && uSite && uSite !== supervisorSiteId) return false;
+
+        // RBAC: strictly limited to assigned Ward, Floor, or Department if configured
+        if (supDept || supWard || supFloor) {
+          const uDept = (u.assigned_area || u.department || u.fixed_department || '').trim().toLowerCase();
+          const uWard = ((u as any).ward || '').trim().toLowerCase();
+          const uFloor = ((u as any).floor || '').trim().toLowerCase();
+          const uSupervisorId = String((u as any).supervisor_id || (u as any).supervisorId || '').toLowerCase();
+          const myId = String(authUser?.id || '').toLowerCase();
+          const myStaffId = String(authUser?.staff_id || authUser?.username || '').toLowerCase();
+
+          const matchesSupervisor = Boolean(uSupervisorId && (uSupervisorId === myId || uSupervisorId === myStaffId));
+          const matchesDept = Boolean(supDept && (uDept.includes(supDept) || supDept.includes(uDept)));
+          const matchesWard = Boolean(supWard && (uWard.includes(supWard) || uDept.includes(supWard)));
+          const matchesFloor = Boolean(supFloor && uFloor.includes(supFloor));
+
+          if (!matchesSupervisor && !matchesDept && !matchesWard && !matchesFloor) {
+            return false;
+          }
+        }
+
         return r === 'STAFF' || r === 'STF' || staffCode.includes('-STF-') || !u.role;
       })
       .map((u) => {
@@ -382,12 +421,12 @@ export const SupervisorDashboard: React.FC = () => {
           shift: (u.assigned_shift === '7-3' ? 'Morning' : u.assigned_shift === '3-11' ? 'Evening' : 'Night') as any,
           hourlyRate: uAny.hourly_rate || uAny.hourlyRate || 15,
           phone: uAny.phone || '',
-          active: u.status !== 'DISABLED',
+          active: true,
           siteId: u.siteId || u.site_id || supervisorSiteId,
           siteName: u.siteName || u.site_name || supervisorSiteName,
         };
       });
-  }, [users, supervisorSiteId, supervisorSiteName]);
+  }, [users, supervisorSiteId, supervisorSiteName, authUser]);
 
   // Active pending Overtime requests submitted by staff
   const pendingOtRequests = useMemo(() => {
@@ -1242,6 +1281,15 @@ export const SupervisorDashboard: React.FC = () => {
               )}
             </section>
 
+            {/* Operational Directives & Emergency Bulletins Feed */}
+            <AnnouncementsFeed
+              currentUser={authUser}
+              currentRole={authRole || 'supervisor'}
+              activeSiteId={supervisorSiteId}
+              activeWard={(authUser as any)?.ward || (authUser as any)?.assigned_ward || ''}
+              canPublish={false}
+            />
+
             {/* Reliever & Dynamic Shift Allocation Tools Bar */}
             <section
               id="supervisor-reliever-tools"
@@ -1854,6 +1902,8 @@ export const SupervisorDashboard: React.FC = () => {
         currentUserRole="SUPERVISOR"
         isOnDuty={isOnDuty}
         canPerformAction={canPerformAction}
+        activeSiteId={supervisorSiteId}
+        activeSiteName={supervisorSiteName}
         onSaveAssignment={handleSaveDutyAssignment}
       />
 
@@ -1870,6 +1920,8 @@ export const SupervisorDashboard: React.FC = () => {
         currentUserRole="SUPERVISOR"
         isOnDuty={isOnDuty}
         canPerformAction={canPerformAction}
+        activeSiteId={supervisorSiteId}
+        activeSiteName={supervisorSiteName}
         onSaveAssignment={handleSaveDutyAssignment}
       />
 

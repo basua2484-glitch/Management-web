@@ -27,16 +27,20 @@ export const SiteSelector: React.FC<SiteSelectorProps> = ({
   const isSuperAdmin = roleUpper === 'SUPER_ADMIN' || roleUpper === 'ADMIN' || roleUpper === 'MASTER_ADMIN';
   const selectedValue = currentSite === 'ALL' ? 'GLOBAL' : currentSite;
 
-  // Deduplicate sites ensuring unique 'site.id'
-  const deduplicatedSites = useMemo(() => {
-    const map = new Map<string, HospitalSite>();
-    (sites || []).forEach((s) => {
-      const siteIdKey = s.id || s.siteId || '';
-      if (siteIdKey && !map.has(siteIdKey)) {
-        map.set(siteIdKey, s);
+  // Unique Sites Filter Logic
+  const uniqueSites = useMemo(() => {
+    if (!sites || !Array.isArray(sites)) return [];
+    
+    const seen = new Set<string>();
+    return sites.filter((site) => {
+      // Unique ID ya Name check
+      const identifier = site.id || site.name;
+      if (!identifier || seen.has(identifier)) {
+        return false; // Skip duplicates
       }
+      seen.add(identifier);
+      return true;
     });
-    return Array.from(map.values());
   }, [sites]);
 
   return (
@@ -53,9 +57,9 @@ export const SiteSelector: React.FC<SiteSelectorProps> = ({
         <option value="GLOBAL">All Sites (Global)</option>
       )}
 
-      {deduplicatedSites.length > 0 ? (
-        deduplicatedSites.map((site) => {
-          const siteKey = site.id || site.siteId || '';
+      {uniqueSites.length > 0 ? (
+        uniqueSites.map((site) => {
+          const siteKey = site.id || site.siteId || site.name;
           const siteLabel = site.name || site.siteName || siteKey;
           return (
             <option key={siteKey} value={siteKey}>
@@ -64,10 +68,9 @@ export const SiteSelector: React.FC<SiteSelectorProps> = ({
           );
         })
       ) : (
-        <>
-          <option value="SITE_A_UUID">Site A - East Wing & Trauma</option>
-          <option value="SITE_B_UUID">Site B - North Super-Speciality</option>
-        </>
+        !(roleUpper === 'SUPER_ADMIN' || isSuperAdmin) && (
+          <option value="" disabled>No sites configured</option>
+        )
       )}
     </select>
   );

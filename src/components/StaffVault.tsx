@@ -17,12 +17,15 @@ import {
   FileText,
   FolderLock,
   Building2,
+  User,
 } from 'lucide-react';
 import type { AppUser, UserRole, UserStatus, DutyType } from '../types';
 import { decryptVaultPassword } from '../services/vaultService';
 import { getStoredUsers, getStoredCurrentUser } from '../data/mockHousekeepingData';
 import { getEmptyInitialAttendanceState, type InitialAttendanceState } from '../services/userService';
 import { EmployeeDocumentVault } from './EmployeeDocumentVault';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
+import { UserProfileModal } from './UserProfileModal';
 
 export { getEmptyInitialAttendanceState, type InitialAttendanceState };
 
@@ -42,6 +45,7 @@ export interface StaffVaultProps {
   onDeleteUser?: (userId: number | string) => void;
   onOpenAddUser?: () => void;
   onOpenVaultModal?: () => void;
+  onOpenProfileModal?: (staffId: string) => void;
   siteFilter?: string;
 }
 
@@ -55,8 +59,11 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
   onDeleteUser,
   onOpenAddUser,
   onOpenVaultModal,
+  onOpenProfileModal,
   siteFilter,
 }) => {
+  const [selectedProfileUser, setSelectedProfileUser] = useState<AppUser | null>(null);
+
   // 1. Retrieve active user session from state/localStorage (e.g., currentUser)
   const currentUser: { id?: string; [key: string]: any } | null = useMemo(() => {
     if (propCurrentUser) {
@@ -126,7 +133,7 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
   // Master Admin: Filter by specific site if selected in Top Bar Site Selector
   const isManager = (currentUserRole || currentUser?.role || '').toLowerCase() === 'manager';
   const managerSiteId = currentUser?.siteId || currentUser?.site_id;
-  const effectiveSiteFilter = isManager ? managerSiteId : (siteFilter && siteFilter !== 'ALL' ? siteFilter : null);
+  const effectiveSiteFilter = isManager ? managerSiteId : (siteFilter && siteFilter !== 'ALL' && siteFilter !== 'GLOBAL' ? siteFilter : null);
 
   const tenantScopedUsers = useMemo(() => {
     return allUsers.filter((user) => {
@@ -140,7 +147,7 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
       }
       // Site Isolation
       if (effectiveSiteFilter && effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL') {
-        const uSite = user.siteId || user.site_id || 'SITE_APEX_MAIN';
+        const uSite = user.siteId || user.site_id || '';
         if (!isAdmin && uSite !== effectiveSiteFilter) {
           return false;
         }
@@ -160,6 +167,8 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
   const [statusFilter, setStatusFilter] = useState<'ALL' | UserStatus>('ALL');
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [userToDelete, setUserToDelete] = useState<any | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   const isAdmin = (currentUserRole || currentUser?.role || '').toLowerCase() === 'admin';
 
@@ -471,14 +480,34 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
 
                       {/* Personnel Name */}
                       <td className="py-3 px-3.5">
-                        <div className="font-semibold text-slate-900">
-                          {user.full_name || user.name || user.username}
-                        </div>
-                        {user.username && user.username !== (user.staff_id || user.id) && (
-                          <div className="text-[10px] text-slate-400 font-mono">
-                            @{user.username}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onOpenProfileModal) {
+                              onOpenProfileModal(String(user.staff_id || user.username || user.id));
+                            } else {
+                              setSelectedProfileUser(user);
+                            }
+                          }}
+                          className="font-semibold text-slate-900 hover:text-[#1E3A8A] text-left cursor-pointer flex items-center gap-2 group transition-colors"
+                          title="Click to view & edit rich interactive profile card"
+                        >
+                          <div className="h-7 w-7 rounded-full overflow-hidden bg-blue-100 border border-blue-200 text-[#1E3A8A] flex items-center justify-center text-xs font-black shrink-0 group-hover:scale-105 transition-transform">
+                            {user.avatar || user.avatarUrl ? (
+                              <img src={user.avatar || user.avatarUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <span>{(user.full_name || user.name || 'U')[0]}</span>
+                            )}
                           </div>
-                        )}
+                          <div>
+                            <span className="group-hover:underline block">{user.full_name || user.name || user.username}</span>
+                            {user.username && user.username !== (user.staff_id || user.id) && (
+                              <div className="text-[10px] text-slate-400 font-mono">
+                                @{user.username}
+                              </div>
+                            )}
+                          </div>
+                        </button>
                       </td>
 
                       {/* Role */}
@@ -570,6 +599,19 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
                       <td className="py-3 px-3.5 text-right space-x-1">
                         <button
                           type="button"
+                          id={`btn-profile-${user.id || user.staff_id}`}
+                          onClick={() => {
+                            setSelectedProfileUser(user);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-sm bg-indigo-50 hover:bg-indigo-100 text-indigo-900 text-2xs font-bold cursor-pointer transition-colors border border-indigo-200"
+                          title="View & Edit Interactive Social Profile Card"
+                        >
+                          <User className="h-3 w-3 text-indigo-700" />
+                          <span>Profile</span>
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => {
                             setSelectedStaffDocId(String(user.staff_id || user.username || user.id));
                             setVaultActiveTab('documents');
@@ -600,16 +642,25 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
                           </button>
                         )}
 
-                        {onDeleteUser && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteUser(user._originalId !== undefined ? user._originalId : user.id)}
-                            className="p-1 text-rose-600 hover:text-rose-800 rounded-sm hover:bg-rose-50 cursor-pointer transition-colors"
-                            title="Delete user"
-                            aria-label="Delete user"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 inline" />
-                          </button>
+                        {user.role === 'admin' || String(user.staff_id || '').toUpperCase() === 'BASU-ADM-001' ? (
+                          <span className="text-3xs font-semibold text-slate-400 px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200" title="Master Admin is protected from deletion">
+                            Protected
+                          </span>
+                        ) : (
+                          onDeleteUser && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setUserToDelete(user);
+                              }}
+                              className="p-1 text-rose-600 hover:text-rose-800 rounded-sm hover:bg-rose-50 cursor-pointer transition-colors"
+                              title="Delete user"
+                              aria-label="Delete user"
+                            >
+                              <Trash2 className="h-3.5 w-3.5 inline" />
+                            </button>
+                          )
                         )}
                       </td>
                     </tr>
@@ -629,6 +680,75 @@ export const StaffVault: React.FC<StaffVaultProps> = ({
         </div>
       </div>
         </>
+      )}
+
+      {/* Global Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(userToDelete)}
+        title="Confirm User Deletion"
+        itemType="Staff Account"
+        itemName={userToDelete ? `${userToDelete.full_name || userToDelete.name || ''} (${userToDelete.staff_id || userToDelete.id})` : undefined}
+        message={
+          userToDelete ? (
+            <p>
+              Are you sure you want to permanently delete staff credentials for{' '}
+              <strong className="text-slate-900">{userToDelete.full_name || userToDelete.name}</strong>{' '}
+              (<span className="font-mono text-[#1E3A8A] font-semibold">{userToDelete.staff_id || userToDelete.id}</span>)? This will erase their vault record and revoke all portal login permissions.
+            </p>
+          ) : undefined
+        }
+        dangerDetails="Security note: This user will be permanently deleted from the staff directory and encrypted vault."
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingUser}
+        onCancel={() => {
+          if (!isDeletingUser) setUserToDelete(null);
+        }}
+        onConfirm={async () => {
+          if (!userToDelete) return;
+          if (userToDelete.role === 'admin' || String(userToDelete.staff_id || '').toUpperCase() === 'BASU-ADM-001') {
+            setUserToDelete(null);
+            return;
+          }
+          try {
+            setIsDeletingUser(true);
+            const targetId = userToDelete._originalId !== undefined ? userToDelete._originalId : userToDelete.id;
+            // Execute API DELETE
+            try {
+              await fetch(`/api/staff/${targetId}`, {
+                method: 'DELETE',
+                headers: {
+                  'x-user-role': String(currentUserRole || '').toUpperCase(),
+                  'x-user-id': String(currentUserId || currentStaffId || ''),
+                },
+              });
+            } catch (err) {
+              console.warn('API DELETE request warning:', err);
+            }
+            if (onDeleteUser) {
+              await onDeleteUser(targetId);
+            }
+          } finally {
+            setIsDeletingUser(false);
+            setUserToDelete(null);
+          }
+        }}
+      />
+
+      {/* Interactive Social-Style User Profile Modal */}
+      {selectedProfileUser && (
+        <UserProfileModal
+          isOpen={Boolean(selectedProfileUser)}
+          onClose={() => setSelectedProfileUser(null)}
+          targetUser={selectedProfileUser}
+          currentUser={propCurrentUser as any}
+          currentUserRole={currentUserRole}
+          onUpdateUser={(updated) => {
+            if (onUpdateUser) {
+              onUpdateUser(updated);
+            }
+          }}
+        />
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { getStoredUsers, saveStoredUsers, saveStoredCurrentUser } from '../data/
 import { logout as firebaseLogout } from './firebase';
 import { getApiEndpoint } from './apiConfig';
 import { fetchLiveUsers, ensureInjectedFirestoreIdentity } from './firestoreService';
+import { getOrCreateCurrentSessionId } from './sessionService';
 
 export interface LogoutResult {
   success: boolean;
@@ -357,15 +358,22 @@ export const handleLogin = async (
 
   // 3. Fallback: Server-side /api/login endpoint with bcrypt & signed JWT (for default & system accounts)
   try {
+    const activeSessionId = getOrCreateCurrentSessionId();
     const res = await fetch(getApiEndpoint('/api/login'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ staffId: cleanId, password: cleanPass }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-session-id': activeSessionId,
+      },
+      body: JSON.stringify({ staffId: cleanId, password: cleanPass, sessionId: activeSessionId }),
     });
 
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.token) {
+        if (data.sessionId || data.session_id) {
+          localStorage.setItem('basu_device_session_id_v1', data.sessionId || data.session_id);
+        }
         const roleUpper = (data.role || 'STAFF').toUpperCase();
         const derivedPrefix = 'APEX';
         localStorage.setItem("userToken", data.token);
@@ -389,9 +397,9 @@ export const handleLogin = async (
           tenant_id: derivedPrefix,
           tenantId: derivedPrefix,
           company_prefix: derivedPrefix,
-          company_name: 'ApexCare Hospital',
-          siteId: 'SITE_APEX_MAIN',
-          siteName: 'Apex Main Hospital',
+          company_name: 'ApexCare Facility',
+          siteId: null,
+          siteName: 'All Sites (Global)',
           duty_type: 'FIXED',
           assigned_shift: '7-3',
           password_hash: `pbkdf2:sha256:600000$vault_salt$${cleanPass}`,

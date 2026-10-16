@@ -23,39 +23,29 @@ import type {
 import { createPasswordHash } from '../services/vaultService';
 import { isMockDocument } from '../services/documentVaultService';
 
-export const HOSPITAL_SITES: HospitalSite[] = [
-  { id: 'SITE_APEX_MAIN', siteId: 'SITE_APEX_MAIN', name: 'Apex Main Hospital', siteName: 'Apex Main Hospital', code: 'APEX-MAIN', city: 'Metro Central', address: 'Plot 42, Medical Enclave', industry_type: 'HEALTHCARE' },
-  { id: 'SITE_CARE_SOUTH', siteId: 'SITE_CARE_SOUTH', name: 'Care South Campus', siteName: 'Care South Campus', code: 'CARE-SOUTH', city: 'South District', address: 'Sector 15, Healthcare Blvd', industry_type: 'HEALTHCARE' },
-  { id: 'SITE_A', siteId: 'SITE_A', name: 'Site A - East Wing & Trauma', siteName: 'Site A - East Wing & Trauma', code: 'SITE-A', city: 'East Zone', address: 'Tower B, East Campus', industry_type: 'HEALTHCARE' },
-  { id: 'SITE_B', siteId: 'SITE_B', name: 'Site B - North Super-Speciality', siteName: 'Site B - North Super-Speciality', code: 'SITE-B', city: 'North Enclave', address: 'Sector 9, North Hub', industry_type: 'HEALTHCARE' },
-];
+export const HOSPITAL_SITES: HospitalSite[] = [];
+export const INITIAL_SITES: HospitalSite[] = [];
 
-export const SITE_ALIAS_MAP: Record<string, string> = {
-  'site-main': 'SITE_APEX_MAIN',
-  'site-east': 'SITE_A',
-  'site-north': 'SITE_B',
-};
+export const SITE_ALIAS_MAP: Record<string, string> = {};
 
 /**
- * Tenant Configurations with attached Site IDs:
- * e.g. { tenantId: 'BASU', sites: ['SITE_A', 'SITE_B'] }
- *      { tenantId: 'APEX', sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH'] }
+ * Tenant Configurations with attached Site IDs (Empty by default, populated only by real user-created sites)
  */
 export const DEFAULT_TENANT_CONFIGS: Record<string, { tenantId: string; companyName: string; sites: string[] }> = {
   APEX: {
     tenantId: 'APEX',
     companyName: 'ApexCare Hospital',
-    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH', 'SITE_A'],
+    sites: [],
   },
   BASU: {
     tenantId: 'BASU',
     companyName: 'Basu Healthcare',
-    sites: ['SITE_A', 'SITE_B'],
+    sites: [],
   },
   GLOBAL: {
     tenantId: 'GLOBAL',
     companyName: 'ApexCare Global',
-    sites: ['SITE_APEX_MAIN', 'SITE_CARE_SOUTH'],
+    sites: [],
   },
 };
 
@@ -70,35 +60,16 @@ export function getTenantSites(tenantId?: string | null): HospitalSite[] {
       const match = tenants.find(t => (t.tenant_id || t.tenantId || '').toUpperCase() === tid);
       if (match && Array.isArray(match.sites) && match.sites.length > 0) {
         match.sites.forEach((s: any) => {
-          const rawId = typeof s === 'string' ? s : s.id || s.siteId;
-          const normId = normalizeSiteId(rawId);
-          const found = HOSPITAL_SITES.find(hs => hs.id === normId || hs.siteId === normId || hs.id === rawId || hs.siteId === rawId);
-          if (found) {
-            const canonicalKey = found.siteId || found.id;
-            if (!siteMap.has(canonicalKey)) {
-              siteMap.set(canonicalKey, { ...found, id: canonicalKey, siteId: canonicalKey });
-            }
-          } else if (typeof s === 'object') {
-            const customId = s.siteId || s.id || 'SITE_CUSTOM';
-            if (!siteMap.has(customId)) {
+          if (typeof s === 'object' && s) {
+            const customId = s.siteId || s.id;
+            if (customId && !siteMap.has(customId)) {
               siteMap.set(customId, {
                 id: customId,
                 siteId: customId,
-                name: s.name || s.siteName || 'Hospital Unit',
-                siteName: s.siteName || s.name || 'Hospital Unit',
+                name: s.name || s.siteName || s.site_name || 'Hospital Unit',
+                siteName: s.siteName || s.site_name || s.name || 'Hospital Unit',
                 code: s.code || 'UNIT',
                 city: s.city || 'Metro Area',
-              });
-            }
-          } else if (rawId) {
-            if (!siteMap.has(normId)) {
-              siteMap.set(normId, {
-                id: normId,
-                siteId: normId,
-                name: normId.replace(/^SITE_/, '').replace(/_/g, ' '),
-                siteName: normId.replace(/^SITE_/, '').replace(/_/g, ' '),
-                code: normId.replace(/^SITE_/, '').slice(0, 4),
-                city: 'Central Campus',
               });
             }
           }
@@ -108,30 +79,43 @@ export function getTenantSites(tenantId?: string | null): HospitalSite[] {
     } catch {}
   }
 
-  const defaultCfg = DEFAULT_TENANT_CONFIGS[tid] || DEFAULT_TENANT_CONFIGS.APEX;
-  const allowedSites = new Set(defaultCfg.sites.map(s => normalizeSiteId(s)));
-
-  HOSPITAL_SITES.forEach((hs) => {
-    const canonicalKey = hs.siteId || hs.id;
-    if (allowedSites.has(canonicalKey) || allowedSites.has(hs.id)) {
-      if (!siteMap.has(canonicalKey)) {
-        siteMap.set(canonicalKey, { ...hs, id: canonicalKey, siteId: canonicalKey });
+  // Check stored dynamic sites if any created by user
+  const storedSitesStr = typeof localStorage !== 'undefined' ? localStorage.getItem('hk_dynamic_sites_v1') : null;
+  if (storedSitesStr) {
+    try {
+      const dyn: any[] = JSON.parse(storedSitesStr);
+      if (Array.isArray(dyn)) {
+        dyn.forEach((s) => {
+          const key = s.id || s.siteId;
+          if (key && !siteMap.has(key)) {
+            siteMap.set(key, {
+              id: key,
+              siteId: key,
+              name: s.name || s.siteName || s.site_name || 'Operational Unit',
+              siteName: s.siteName || s.site_name || s.name || 'Operational Unit',
+              code: s.code || 'UNIT',
+              city: s.city || 'Metro Area',
+            });
+          }
+        });
       }
-    }
-  });
+    } catch {}
+  }
 
   return Array.from(siteMap.values());
 }
 
 export function getSiteNameById(siteId?: string | null): string {
+  if (!siteId || siteId === 'ALL' || siteId === 'GLOBAL') return 'All Sites (Global)';
   const normId = normalizeSiteId(siteId);
-  const found = HOSPITAL_SITES.find(s => s.id === normId || s.siteId === normId || s.id === siteId || s.siteId === siteId);
-  if (found) return found.name || found.siteName || 'Apex Main Hospital';
-  return (siteId || 'SITE_APEX_MAIN').replace(/^SITE_/, '').replace(/_/g, ' ');
+  const allKnownSites = [...HOSPITAL_SITES, ...getTenantSites()];
+  const found = allKnownSites.find(s => s.id === normId || s.siteId === normId || s.id === siteId || s.siteId === siteId);
+  if (found) return found.name || found.siteName || '';
+  return siteId.replace(/^SITE_/, '').replace(/_/g, ' ');
 }
 
 export function normalizeSiteId(siteId?: string | null): string {
-  if (!siteId) return 'SITE_APEX_MAIN';
+  if (!siteId) return '';
   const trimmed = siteId.trim();
   if (SITE_ALIAS_MAP[trimmed]) return SITE_ALIAS_MAP[trimmed];
   return trimmed;
@@ -177,9 +161,8 @@ export function normalizeUser(u: any): AppUser {
   const temp_department = u.temp_department ?? null;
 
   // Site normalization
-  const rawSiteId = u.siteId || u.site_id || 'SITE_APEX_MAIN';
-  const siteId = rawSiteId === 'site-main' ? 'SITE_APEX_MAIN' : rawSiteId;
-  const siteName = u.siteName || u.site_name || getSiteNameById(siteId);
+  const siteId = u.siteId || u.site_id || '';
+  const siteName = u.siteName || u.site_name || (siteId ? getSiteNameById(siteId) : '');
 
   // 1. Ensure weeklyOffDay defaults to "Sunday"
   const weeklyOffDay: string = u.weeklyOffDay || u.weekly_off_day || 'Sunday';
@@ -341,9 +324,9 @@ export const PRIMARY_MASTER_ADMIN: AppUser = {
   assigned_area: 'Executive Administration',
   fixed_department: 'Executive Administration',
   assigned_shift: 'General',
-  siteId: 'SITE_APEX_MAIN',
-  site_id: 'SITE_APEX_MAIN',
-  siteName: 'Apex Main Hospital',
+  siteId: null,
+  site_id: null,
+  siteName: 'All Sites (Global)',
   tenant_id: 'BASU',
   tenantId: 'BASU',
   company_prefix: 'BASU',
@@ -1253,7 +1236,7 @@ export function submitLeaveRequest(data: {
     userId: user.id,
     userName: user.full_name || user.name,
     role: user.role,
-    siteId: user.siteId || user.site_id || 'SITE_APEX_MAIN',
+    siteId: user.siteId || user.site_id || '',
     leaveType: data.leaveType,
     startDate: data.startDate,
     endDate: data.endDate,
@@ -1450,7 +1433,7 @@ export function getLeaveMetricsForDate(
   weeklyOffUsers: AppUser[];
 } {
   const allUsers = getStoredUsers().filter((u) => u.role === 'staff' && u.status === 'ACTIVE');
-  const scopedUsers = siteId && siteId !== 'ALL'
+  const scopedUsers = siteId && siteId !== 'ALL' && siteId !== 'GLOBAL'
     ? allUsers.filter((u) => normalizeSiteId(u.siteId || u.site_id) === normalizeSiteId(siteId))
     : allUsers;
 

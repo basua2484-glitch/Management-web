@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Plus, Check, Trash2, Clock, CalendarDays } from 'lucide-react';
 import type { StaffUser, AttendanceRecord, AppUser, AttendanceSession } from '../types';
 import { calculateDailyAttendance } from '../utils/attendanceCalculator';
+import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 
 interface DailyAttendanceModalProps {
   isOpen: boolean;
@@ -60,6 +61,10 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
   const [formOtHours, setFormOtHours] = useState<number>(1.5);
   const [formStatus, setFormStatus] = useState<AttendanceRecord['status']>('Present');
   const [formNotes, setFormNotes] = useState('');
+
+  // Delete Log Modal State
+  const [recordToDelete, setRecordToDelete] = useState<AttendanceRecord | null>(null);
+  const [isDeletingRecord, setIsDeletingRecord] = useState(false);
 
   // Keep filter synced if selectedStaffId changes or role changes
   useEffect(() => {
@@ -495,9 +500,12 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
                           <td className="py-2.5 px-3 text-center">
                             <button
                               type="button"
-                              onClick={() => onDeleteRecord(log.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRecordToDelete(log);
+                              }}
                               title="Delete log record"
-                              className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                              className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -527,6 +535,42 @@ export const DailyAttendanceModal: React.FC<DailyAttendanceModalProps> = ({
 
         </div>
       </div>
+
+      {/* Delete Record Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={Boolean(recordToDelete)}
+        title="Delete Attendance Log"
+        itemType="Attendance Log Entry"
+        itemName={recordToDelete ? `${recordToDelete.date} — Staff ID: ${recordToDelete.staff_id || recordToDelete.userId}` : undefined}
+        message={
+          recordToDelete ? (
+            <p>
+              Are you sure you want to permanently delete the attendance punch log for{' '}
+              <strong className="text-slate-900">{recordToDelete.date}</strong> (Status: {recordToDelete.status}, Regular: {recordToDelete.regularHours || recordToDelete.regular_hours || 0}h)?
+              This will update monthly summary hours and compliance calculations.
+            </p>
+          ) : undefined
+        }
+        confirmText="Accept & Delete"
+        cancelText="Cancel"
+        isLoading={isDeletingRecord}
+        onCancel={() => {
+          if (!isDeletingRecord) setRecordToDelete(null);
+        }}
+        onConfirm={async () => {
+          if (!recordToDelete) return;
+          try {
+            setIsDeletingRecord(true);
+            onDeleteRecord(recordToDelete.id);
+            if (onFlash) {
+              onFlash(`Attendance log for ${recordToDelete.date} deleted successfully.`, 'info');
+            }
+          } finally {
+            setIsDeletingRecord(false);
+            setRecordToDelete(null);
+          }
+        }}
+      />
     </div>
   );
 };
