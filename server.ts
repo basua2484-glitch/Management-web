@@ -1616,6 +1616,17 @@ app.get('/api/ws/status', (req, res) => {
   res.json(getWsStatusSummary());
 });
 
+// Lightweight silent heartbeat ping endpoint for live status & deployment recovery
+app.get(['/api/health', '/api/ping'], (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json({
+    status: 'ok',
+    live: true,
+    is24x7Live: true,
+    serverTime: new Date().toISOString(),
+  });
+});
+
 // Authentication Route
 app.post('/api/login', async (req, res) => {
   try {

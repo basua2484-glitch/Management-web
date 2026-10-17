@@ -1486,8 +1486,31 @@ function attendanceApiPlugin(): Plugin {
         // 24/7 WebSocket Health & Status Route
         if (req.url === '/api/ws/status' || req.url?.startsWith('/api/ws/status?')) {
           res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
           res.statusCode = 200;
           res.end(JSON.stringify(getWsStatusSummary()));
+          return;
+        }
+
+        // Lightweight silent heartbeat ping route for live status & deployment recovery
+        if (
+          (req.url === '/api/health' ||
+            req.url?.startsWith('/api/health?') ||
+            req.url === '/api/ping' ||
+            req.url?.startsWith('/api/ping?')) &&
+          req.method === 'GET'
+        ) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              status: 'ok',
+              live: true,
+              is24x7Live: true,
+              serverTime: new Date().toISOString(),
+            })
+          );
           return;
         }
 

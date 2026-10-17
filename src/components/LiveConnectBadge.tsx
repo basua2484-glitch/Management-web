@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Radio, RefreshCw, Wifi, WifiOff, Users, Zap } from 'lucide-react';
+import { Radio, RefreshCw, Users, Zap } from 'lucide-react';
 import { websocketService, type WsState } from '../services/websocketService';
 import { LiveConnectModal } from './LiveConnectModal';
 
@@ -14,7 +14,6 @@ export const LiveConnectBadge: React.FC<LiveConnectBadgeProps> = ({
 }) => {
   const [wsState, setWsState] = useState<WsState>(() => websocketService.getState());
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isPinging, setIsPinging] = useState(false);
 
   useEffect(() => {
     const unsub = websocketService.subscribe((state) => {
@@ -34,9 +33,13 @@ export const LiveConnectBadge: React.FC<LiveConnectBadgeProps> = ({
   };
 
   const getStatusColor = () => {
-    if (isConnected) return 'text-emerald-700 bg-emerald-50 border-emerald-300 hover:bg-emerald-100';
-    if (isReconnecting) return 'text-amber-700 bg-amber-50 border-amber-300 hover:bg-amber-100';
-    return 'text-rose-700 bg-rose-50 border-rose-300 hover:bg-rose-100';
+    if (isConnected) {
+      return 'text-emerald-700 bg-emerald-50 border-emerald-300 hover:bg-emerald-100 hover:border-emerald-400';
+    }
+    if (isReconnecting) {
+      return 'text-amber-800 bg-amber-50 border-amber-300 hover:bg-amber-100 hover:border-amber-400';
+    }
+    return 'text-rose-700 bg-rose-50 border-rose-300 hover:bg-rose-100 hover:border-rose-400';
   };
 
   const getDotColor = () => {
@@ -45,39 +48,55 @@ export const LiveConnectBadge: React.FC<LiveConnectBadgeProps> = ({
     return 'bg-rose-500';
   };
 
+  const getTitleText = () => {
+    if (isConnected) {
+      return `24/7 WebSocket Live Active • Latency: ${wsState.latencyMs}ms • ${wsState.onlineCount} Online. Click for Command Center.`;
+    }
+    if (isReconnecting) {
+      const attemptStr = wsState.reconnectAttempts > 0 ? ` (Attempt ${wsState.reconnectAttempts})` : '';
+      return `Reconnecting to 24/7 Live Status${attemptStr}... Auto-retry with exponential backoff & silent heartbeat active.`;
+    }
+    return `Connection Offline. Click for details & manual reconnect.`;
+  };
+
   return (
     <>
       <button
         type="button"
         id="btn-online-live-connect-badge"
         onClick={handleClick}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold shadow-2xs transition-all cursor-pointer select-none ${getStatusColor()} ${className}`}
-        title={
-          isConnected
-            ? `24/7 WebSocket Live Active • Latency: ${wsState.latencyMs}ms • ${wsState.onlineCount} Online. Click for Command Center.`
-            : `WebSocket ${wsState.status}. Click for details & manual reconnect.`
-        }
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold shadow-2xs transition-all duration-300 ease-in-out cursor-pointer select-none ${getStatusColor()} ${className}`}
+        title={getTitleText()}
       >
         <span className="relative flex h-2 w-2 shrink-0">
           {isConnected && (
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
           )}
-          <span className={`relative inline-flex rounded-full h-2 w-2 ${getDotColor()}`}></span>
+          {isReconnecting && (
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-60"></span>
+          )}
+          <span
+            className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${getDotColor()}`}
+          ></span>
         </span>
 
-        <Radio className={`h-3 w-3 shrink-0 ${isConnected ? 'text-emerald-700' : 'text-amber-700'}`} />
+        <Radio
+          className={`h-3 w-3 shrink-0 transition-colors duration-300 ${
+            isConnected ? 'text-emerald-700' : isReconnecting ? 'text-amber-700' : 'text-rose-700'
+          }`}
+        />
 
-        <span className="font-bold tracking-tight">
+        <span className="font-bold tracking-tight transition-colors duration-300">
           {isConnected ? '24/7 Live' : isReconnecting ? 'Reconnecting...' : 'Offline'}
         </span>
 
         {isConnected ? (
           <>
-            <span className="hidden sm:inline-flex items-center gap-1 text-2xs font-mono font-bold opacity-80">
+            <span className="hidden sm:inline-flex items-center gap-1 text-2xs font-mono font-bold opacity-80 transition-opacity duration-300">
               <Zap className="h-2.5 w-2.5 text-emerald-600" />
               {wsState.latencyMs}ms
             </span>
-            <span className="hidden md:inline-flex items-center gap-1 text-2xs font-mono font-medium opacity-80 border-l border-emerald-300/60 pl-1.5">
+            <span className="hidden md:inline-flex items-center gap-1 text-2xs font-mono font-medium opacity-80 border-l border-emerald-300/60 pl-1.5 transition-opacity duration-300">
               <Users className="h-2.5 w-2.5" />
               {wsState.onlineCount}
             </span>
