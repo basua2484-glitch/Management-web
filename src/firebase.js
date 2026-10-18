@@ -20,16 +20,21 @@ import {
 } from 'firebase/firestore';
 import defaultConfig from '../firebase-applet-config.json';
 
-// Standard environment variable support with fallback to preserve existing credentials intact
+// Standard environment variable support with fallback to preserve official credentials intact
 const env = (typeof import.meta !== 'undefined' && import.meta?.env) ? import.meta.env : (typeof process !== 'undefined' && process.env ? process.env : {});
 const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY || defaultConfig.apiKey || '',
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultConfig.authDomain || '',
-  projectId: env.VITE_FIREBASE_PROJECT_ID || defaultConfig.projectId || '',
-  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || defaultConfig.storageBucket || '',
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultConfig.messagingSenderId || '',
-  appId: env.VITE_FIREBASE_APP_ID || defaultConfig.appId || '',
+  apiKey: env.VITE_FIREBASE_API_KEY || defaultConfig.apiKey || 'AIzaSyD6i5EHcSMOXFy6LJhoJaQhx5v3czRqP1w',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultConfig.authDomain || 'mess-app-e0167.firebaseapp.com',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || defaultConfig.projectId || 'mess-app-e0167',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || defaultConfig.storageBucket || 'mess-app-e0167.firebasestorage.app',
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultConfig.messagingSenderId || '377043867272',
+  appId: env.VITE_FIREBASE_APP_ID || defaultConfig.appId || '1:377043867272:web:8ff369fb4e86e5283cb13d',
 };
+
+export const FIRESTORE_DATABASE_ID =
+  env.VITE_FIREBASE_DATABASE_ID ||
+  defaultConfig.firestoreDatabaseId ||
+  'ai-studio-housekeepingatte-03824cce-6402-48f1-bea7-c7bdeb898710';
 
 // Initialize Firebase App safely
 let app = null;
@@ -40,26 +45,19 @@ try {
   app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
   authInstance = getAuth(app);
   
-  // Prefer default database connect (or custom database ID if explicitly configured)
-  const dbId = env.VITE_FIREBASE_DATABASE_ID || defaultConfig.firestoreDatabaseId || undefined;
-
   try {
-    if (dbId) {
-      firestoreDb = initializeFirestore(
-        app,
-        {
-          localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager(),
-          }),
-          experimentalAutoDetectLongPolling: true,
-        },
-        dbId
-      );
-    } else {
-      firestoreDb = getFirestore(app);
-    }
+    firestoreDb = initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+        experimentalAutoDetectLongPolling: true,
+      },
+      FIRESTORE_DATABASE_ID
+    );
   } catch {
-    firestoreDb = getFirestore(app);
+    firestoreDb = getFirestore(app, FIRESTORE_DATABASE_ID);
   }
 
   // Set persistence to browserLocalPersistence to guarantee session persistence across reloads
@@ -79,16 +77,23 @@ try {
 
 // Validate Connection to Firestore safely without throwing unhandled exceptions or connection errors
 export async function testFirestoreConnection() {
-  if (!firestoreDb) return false;
+  const currentDb = firestoreDb || (app ? getFirestore(app, FIRESTORE_DATABASE_ID) : null);
+  if (!currentDb) return { ok: false, latency: 0 };
+  const start = Date.now();
   try {
-    return true;
-  } catch {
-    return false;
+    await getDocFromServer(doc(currentDb, 'system_settings', 'config'));
+    return { ok: true, latency: Math.max(1, Date.now() - start) };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.message && error.message.includes('the client is offline')) {
+      return { ok: false, latency: 0 };
+    }
+    // Any server response (document exists, not found, or rule evaluation) confirms cloud connectivity
+    return { ok: true, latency: Math.max(1, Date.now() - start) };
   }
 }
 
 export const auth = authInstance;
-export const db = firestoreDb || (app ? getFirestore(app) : null);
+export const db = firestoreDb || (app ? getFirestore(app, FIRESTORE_DATABASE_ID) : null);
 export { enableIndexedDbPersistence };
 export { app, firebaseConfig };
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -298,7 +298,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       return selectedSiteFilter;
     }
     return currentUser?.siteId || currentUser?.site_id || availableSites[0]?.siteId || 'GLOBAL';
-  }, [isManager, isAdmin, currentUser, selectedSiteFilter, availableSites]);
+  }, [isManager, isAdmin, currentUser?.siteId, currentUser?.site_id, selectedSiteFilter, availableSites]);
 
   const activeSiteName = useMemo(() => {
     if (effectiveSiteFilter === 'ALL' || effectiveSiteFilter === 'GLOBAL' || !effectiveSiteFilter) return 'All Sites (Global)';
@@ -614,29 +614,28 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       const combinedUsers = [...(cloudUsers || []), ...(apiDirectory || [])];
       if (combinedUsers.length > 0) {
         const dedupedUsers = deduplicateDataset(combinedUsers);
-        setUsers(dedupedUsers);
+        setUsers((prev) => (JSON.stringify(prev) === JSON.stringify(dedupedUsers) ? prev : dedupedUsers));
         saveStoredUsers(dedupedUsers);
       } else if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
         const dedupedUsers = deduplicateDataset(cloudUsers);
-        setUsers(dedupedUsers);
+        setUsers((prev) => (JSON.stringify(prev) === JSON.stringify(dedupedUsers) ? prev : dedupedUsers));
         saveStoredUsers(dedupedUsers);
       }
       if (Array.isArray(cloudStaff) && cloudStaff.length > 0) {
         const dedupedStaff = deduplicateDataset(cloudStaff);
-        setStaff(dedupedStaff);
+        setStaff((prev) => (JSON.stringify(prev) === JSON.stringify(dedupedStaff) ? prev : dedupedStaff));
         saveStoredStaff(dedupedStaff);
       }
       if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
-        setRecords(cloudRecords);
+        setRecords((prev) => (JSON.stringify(prev) === JSON.stringify(cloudRecords) ? prev : cloudRecords));
         saveStoredAttendance(cloudRecords);
       }
       if (Array.isArray(cloudDuties) && cloudDuties.length > 0) {
-        setDutyAllocations(cloudDuties);
+        setDutyAllocations((prev) => (JSON.stringify(prev) === JSON.stringify(cloudDuties) ? prev : cloudDuties));
         saveStoredDutyAllocations(cloudDuties);
       }
       setIsLiveConnected(true);
       setLastSyncTime(new Date());
-      setRealtimeEventsCount((c) => c + 1);
     } catch (err) {
       console.warn('Firestore live sync note:', err);
       setIsLiveConnected(false);
@@ -645,60 +644,61 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     }
   }, [effectiveTenantId, effectiveSiteFilter, deduplicateDataset]);
 
+  const syncWithFirestoreRef = useRef(syncWithFirestore);
+  useEffect(() => {
+    syncWithFirestoreRef.current = syncWithFirestore;
+  }, [syncWithFirestore]);
+
   useEffect(() => {
     let isMounted = true;
-    syncWithFirestore();
+    syncWithFirestoreRef.current();
 
     // 1. Live Realtime Subscriptions via Firestore onSnapshot
     const unsubAttendance = subscribeToAttendance((liveRecords) => {
       if (!isMounted) return;
       if (Array.isArray(liveRecords) && liveRecords.length > 0) {
-        setRecords(liveRecords);
+        setRecords((prev) => (JSON.stringify(prev) === JSON.stringify(liveRecords) ? prev : liveRecords));
         saveStoredAttendance(liveRecords);
       }
       setIsLiveConnected(true);
       setLastSyncTime(new Date());
-      setRealtimeEventsCount((c) => c + 1);
     }, effectiveTenantId);
 
     const unsubDuty = subscribeToDutyAllocations((liveDuties) => {
       if (!isMounted) return;
       if (Array.isArray(liveDuties) && liveDuties.length > 0) {
-        setDutyAllocations(liveDuties);
+        setDutyAllocations((prev) => (JSON.stringify(prev) === JSON.stringify(liveDuties) ? prev : liveDuties));
         saveStoredDutyAllocations(liveDuties);
       }
       setIsLiveConnected(true);
       setLastSyncTime(new Date());
-      setRealtimeEventsCount((c) => c + 1);
     }, effectiveTenantId);
 
     const unsubUsers = subscribeToLiveUsers((liveUsers) => {
       if (!isMounted) return;
       if (Array.isArray(liveUsers) && liveUsers.length > 0) {
         const dedupedUsers = deduplicateDataset(liveUsers);
-        setUsers(dedupedUsers);
+        setUsers((prev) => (JSON.stringify(prev) === JSON.stringify(dedupedUsers) ? prev : dedupedUsers));
         saveStoredUsers(dedupedUsers);
       }
       setIsLiveConnected(true);
       setLastSyncTime(new Date());
-      setRealtimeEventsCount((c) => c + 1);
     }, effectiveTenantId);
 
     const unsubStaff = subscribeToLiveStaff((liveStaff) => {
       if (!isMounted) return;
       if (Array.isArray(liveStaff) && liveStaff.length > 0) {
         const dedupedStaff = deduplicateDataset(liveStaff);
-        setStaff(dedupedStaff);
+        setStaff((prev) => (JSON.stringify(prev) === JSON.stringify(dedupedStaff) ? prev : dedupedStaff));
         saveStoredStaff(dedupedStaff);
       }
       setIsLiveConnected(true);
       setLastSyncTime(new Date());
-      setRealtimeEventsCount((c) => c + 1);
     }, effectiveTenantId);
 
     const handleOnline = () => {
       setIsLiveConnected(true);
-      syncWithFirestore();
+      syncWithFirestoreRef.current();
     };
     const handleOffline = () => {
       setIsLiveConnected(false);
@@ -732,7 +732,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       window.removeEventListener('duty-data-updated', handleDataUpdate);
       window.removeEventListener('attendance-data-updated', handleDataUpdate);
     };
-  }, [effectiveTenantId, syncWithFirestore]);
+  }, [effectiveTenantId, deduplicateDataset]);
 
   useEffect(() => {
     // Expose logout, handleLogout, and admin_required on window for direct testing/scripts

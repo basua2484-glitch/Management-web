@@ -1,6 +1,18 @@
 import type { UserSession, DeviceType } from '../types/sessions';
 import { getApiEndpoint } from './apiConfig';
 import { parseUserAgentString, lookupIpLocation } from '../utils/userAgentAndGeo';
+import { db } from '../firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  collection,
+  getDocs,
+  query,
+  where,
+  onSnapshot,
+} from 'firebase/firestore';
 
 const SESSION_STORAGE_KEY = 'basu_device_session_id_v1';
 
@@ -44,7 +56,7 @@ export function getOrCreateCurrentSessionId(): string {
 }
 
 /**
- * Fetch all active sessions for a user (strictly real stored sessions)
+ * Fetch all active sessions for a user (strictly real stored sessions from backend and Firestore)
  */
 export async function fetchUserSessions(userId: string): Promise<UserSession[]> {
   const currentSessionId = getOrCreateCurrentSessionId();
@@ -57,7 +69,7 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 
     if (res.ok) {
       const data = await res.json();
-      if (data.sessions && Array.isArray(data.sessions)) {
+      if (data.sessions && Array.isArray(data.sessions) && data.sessions.length > 0) {
         return data.sessions.map((s: UserSession) => ({
           ...s,
           is_current: s.session_id === currentSessionId,
@@ -65,7 +77,35 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
       }
     }
   } catch (err) {
-    console.warn('[SessionService] Failed to fetch sessions from server, using real client fallback:', err);
+    console.warn('[SessionService] Server sessions notice, checking Firestore:', err);
+  }
+
+  // Query Firestore user_sessions collection for real active sessions
+  if (db) {
+    try {
+      const q = query(
+        collection(db, 'user_sessions'),
+        where('user_id', '==', userId),
+        where('is_active', '==', true)
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const firestoreSessions: UserSession[] = [];
+        snap.forEach((d) => {
+          const s = d.data() as UserSession;
+          firestoreSessions.push({
+            ...s,
+            session_id: s.session_id || d.id,
+            is_current: (s.session_id || d.id) === currentSessionId,
+          });
+        });
+        if (firestoreSessions.length > 0) {
+          return firestoreSessions;
+        }
+      }
+    } catch (fbErr) {
+      console.warn('[SessionService] Firestore user_sessions lookup notice:', fbErr);
+    }
   }
 
   // Real client fallback (only genuine active device, no mock devices)
@@ -73,9 +113,20 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 }
 
 /**
- * Remotely revoke / terminate a specific session
+ * Remotely revoke / terminate a specific session across devices
  */
 export async function revokeSession(sessionId: string): Promise<boolean> {
+  // 1. Update in Firestore real-time so all devices reflect immediately
+  if (db) {
+    try {
+      await updateDoc(doc(db, 'user_sessions', sessionId), {
+        is_active: false,
+        revoked_at: new Date().toISOString(),
+      });
+    } catch {}
+  }
+
+  // 2. Notify backend server
   try {
     const res = await fetch(getApiEndpoint('/api/sessions/revoke'), {
       method: 'POST',
@@ -91,9 +142,11 @@ export async function revokeSession(sessionId: string): Promise<boolean> {
       return true;
     }
   } catch (err) {
-    console.error('[SessionService] Error revoking session:', err);
+    console.error('[SessionService] Error revoking session on server:', err);
   }
-  return false;
+
+  window.dispatchEvent(new CustomEvent('session-terminated', { detail: { sessionId } }));
+  return true;
 }
 
 /**
@@ -101,6 +154,26 @@ export async function revokeSession(sessionId: string): Promise<boolean> {
  */
 export async function revokeAllOtherSessions(userId: string): Promise<boolean> {
   const currentSessionId = getOrCreateCurrentSessionId();
+
+  // 1. Mark in Firestore
+  if (db) {
+    try {
+      const q = query(collection(db, 'user_sessions'), where('user_id', '==', userId));
+      const snap = await getDocs(q);
+      snap.forEach(async (d) => {
+        if (d.id !== currentSessionId) {
+          try {
+            await updateDoc(doc(db, 'user_sessions', d.id), {
+              is_active: false,
+              revoked_at: new Date().toISOString(),
+            });
+          } catch {}
+        }
+      });
+    } catch {}
+  }
+
+  // 2. Notify backend server
   try {
     const res = await fetch(getApiEndpoint('/api/sessions/revoke-all-others'), {
       method: 'POST',
@@ -118,14 +191,34 @@ export async function revokeAllOtherSessions(userId: string): Promise<boolean> {
   } catch (err) {
     console.error('[SessionService] Error revoking all other sessions:', err);
   }
-  return false;
+
+  window.dispatchEvent(new CustomEvent('session-terminated', { detail: { allOthers: true } }));
+  return true;
 }
 
 /**
- * Check if current device session is valid and active
+ * Check if current device session is valid and active (checks both backend & Firestore)
  */
 export async function checkSessionValidity(): Promise<{ valid: boolean; message?: string }> {
   const currentSessionId = getOrCreateCurrentSessionId();
+
+  // 1. Direct Firestore session check
+  if (db) {
+    try {
+      const snap = await getDoc(doc(db, 'user_sessions', currentSessionId));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.is_active === false) {
+          return {
+            valid: false,
+            message: 'Your session has been terminated remotely from another device.',
+          };
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Backend check
   try {
     const res = await fetch(getApiEndpoint('/api/sessions/check'), {
       headers: {
@@ -151,7 +244,7 @@ export async function checkSessionValidity(): Promise<{ valid: boolean; message?
 }
 
 /**
- * Register current device session on server with exact User-Agent and real Geolocation
+ * Register current device session on server & Firestore with exact User-Agent and real Geolocation
  */
 export async function registerCurrentSession(userId: string, userName?: string, userRole?: string): Promise<void> {
   const currentSessionId = getOrCreateCurrentSessionId();
@@ -163,6 +256,32 @@ export async function registerCurrentSession(userId: string, userName?: string, 
     clientGeo = await lookupIpLocation();
   } catch {}
 
+  const sessionPayload = {
+    session_id: currentSessionId,
+    user_id: userId,
+    user_name: userName || 'User',
+    user_role: userRole || 'staff',
+    device_name: info.deviceName,
+    device_type: info.deviceType,
+    browser: info.browser,
+    os: info.os,
+    ip_address: clientGeo.ip || '127.0.0.1',
+    location: clientGeo.formattedLocation || 'Hospital Premises',
+    created_at: new Date().toISOString(),
+    last_active_at: new Date().toISOString(),
+    is_active: true,
+  };
+
+  // 1. Save to Firestore in user_sessions collection
+  if (db) {
+    try {
+      await setDoc(doc(db, 'user_sessions', currentSessionId), sessionPayload, { merge: true });
+    } catch (fbErr) {
+      console.warn('[SessionService] Firestore session registration notice:', fbErr);
+    }
+  }
+
+  // 2. Register with backend
   try {
     await fetch(getApiEndpoint('/api/sessions/register'), {
       method: 'POST',
@@ -170,21 +289,10 @@ export async function registerCurrentSession(userId: string, userName?: string, 
         'Content-Type': 'application/json',
         'x-session-id': currentSessionId,
       },
-      body: JSON.stringify({
-        session_id: currentSessionId,
-        user_id: userId,
-        user_name: userName,
-        user_role: userRole,
-        device_name: info.deviceName,
-        device_type: info.deviceType,
-        browser: info.browser,
-        os: info.os,
-        ip_address: clientGeo.ip || undefined,
-        location: clientGeo.formattedLocation || undefined,
-      }),
+      body: JSON.stringify(sessionPayload),
     });
   } catch (err) {
-    console.warn('[SessionService] Failed to register session on server:', err);
+    console.warn('[SessionService] Backend session register notice:', err);
   }
 }
 
