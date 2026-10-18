@@ -36,14 +36,16 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 function isSameUser(a: AppUser | null, b: AppUser | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
+  const sameId =
+    String(a.id || '') === String(b.id || '') ||
+    (Boolean(a.staff_id) && Boolean(b.staff_id) && a.staff_id?.toLowerCase() === b.staff_id?.toLowerCase()) ||
+    (Boolean(a.username) && Boolean(b.username) && a.username?.toLowerCase() === b.username?.toLowerCase());
   return (
-    a.id === b.id &&
-    a.username === b.username &&
-    a.role === b.role &&
-    a.staff_id === b.staff_id &&
+    sameId &&
+    (a.role || '').toLowerCase() === (b.role || '').toLowerCase() &&
     a.name === b.name &&
-    a.is_approved === b.is_approved &&
-    a.dutyStatus === b.dutyStatus
+    Boolean(a.is_approved) === Boolean(b.is_approved) &&
+    (a.dutyStatus || 'ON_DUTY') === (b.dutyStatus || 'ON_DUTY')
   );
 }
 

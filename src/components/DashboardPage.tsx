@@ -233,7 +233,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return () => {
       isSubscribed = false;
     };
-  }, [activeTenantPrefix, userRole, currentUser]);
+  }, [activeTenantPrefix, userRole, currentUser?.id, currentUser?.staff_id]);
 
   const availableSites = useMemo(() => {
     if (!dynamicSitesList || !Array.isArray(dynamicSitesList)) return [];
@@ -596,11 +596,14 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     };
   }, []);
 
+  const effectiveTenantId = useMemo(() => {
+    return tenantId || currentUser?.tenant_id || getActiveTenantId();
+  }, [tenantId, currentUser?.tenant_id]);
+
   // Real-time synchronization & Firestore live subscriptions with primary database collections
   const syncWithFirestore = useCallback(async () => {
     setIsSyncingLive(true);
     try {
-      const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
       const [cloudUsers, cloudStaff, cloudRecords, cloudDuties, apiDirectory] = await Promise.all([
         fetchLiveUsers(effectiveTenantId),
         fetchLiveStaff(effectiveTenantId),
@@ -640,13 +643,11 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     } finally {
       setIsSyncingLive(false);
     }
-  }, [tenantId, currentUser]);
+  }, [effectiveTenantId, effectiveSiteFilter, deduplicateDataset]);
 
   useEffect(() => {
     let isMounted = true;
     syncWithFirestore();
-
-    const effectiveTenantId = tenantId || currentUser?.tenant_id || getActiveTenantId();
 
     // 1. Live Realtime Subscriptions via Firestore onSnapshot
     const unsubAttendance = subscribeToAttendance((liveRecords) => {
@@ -731,7 +732,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       window.removeEventListener('duty-data-updated', handleDataUpdate);
       window.removeEventListener('attendance-data-updated', handleDataUpdate);
     };
-  }, [syncWithFirestore, tenantId, currentUser]);
+  }, [effectiveTenantId, syncWithFirestore]);
 
   useEffect(() => {
     // Expose logout, handleLogout, and admin_required on window for direct testing/scripts
@@ -779,7 +780,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     return () => {
       window.removeEventListener('popstate', handleRouteInspection);
     };
-  }, [currentUser, isAdminOrManager, navigate]);
+  }, [currentUser?.username, currentUser?.id, isAdminOrManager, navigate]);
 
   const handleSaveStaff = (updatedStaff: StaffUser[]) => {
     setStaff(updatedStaff);

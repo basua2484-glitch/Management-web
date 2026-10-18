@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   MapPin,
   ShieldCheck,
@@ -64,12 +64,23 @@ export const GeofenceStatusCard: React.FC<GeofenceStatusCardProps> = ({
         reason: 'Hospital Geofence Armed',
       };
 
-  // Notify parent component
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  const lastNotifiedCoordsRef = useRef<string | null>(null);
+
+  // Notify parent component strictly when coordinates change
   useEffect(() => {
     if (coords) {
-      onStatusChange?.(verification);
+      const coordKey = `${coords.lat.toFixed(6)},${coords.lng.toFixed(6)}`;
+      if (lastNotifiedCoordsRef.current !== coordKey) {
+        lastNotifiedCoordsRef.current = coordKey;
+        onStatusChangeRef.current?.(verification);
+      }
     }
-  }, [coords, onStatusChange]);
+  }, [coords, verification]);
 
   // Listen for real location acquired strictly on punch action
   useEffect(() => {

@@ -425,7 +425,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
     if (isOpen) {
       loadSessions();
     }
-  }, [isOpen, resolvedStaffId, targetUser]);
+  }, [isOpen, resolvedStaffId]);
 
   useEffect(() => {
     const handleTerminated = () => {
@@ -433,7 +433,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
     };
     window.addEventListener('session-terminated', handleTerminated);
     return () => window.removeEventListener('session-terminated', handleTerminated);
-  }, [resolvedStaffId, targetUser]);
+  }, [resolvedStaffId]);
 
   const handleTerminateSession = async (session: UserSession) => {
     setTerminatingSessionId(session.session_id);

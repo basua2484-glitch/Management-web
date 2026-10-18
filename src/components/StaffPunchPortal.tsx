@@ -941,7 +941,7 @@ export const StaffPunchPortal: React.FC<StaffPunchPortalProps> = ({
         <div className="mb-3">
           <GeofenceStatusCard
             compact
-            onStatusChange={(res) => setGeofenceResult(res)}
+            onStatusChange={setGeofenceResult}
           />
         </div>
 

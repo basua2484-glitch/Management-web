@@ -214,12 +214,21 @@ export function normalizeUser(u: any): AppUser {
   const parsedNumFromStaffId = staff_id
     ? parseInt(staff_id.replace(/\D/g, ''), 10)
     : NaN;
+  
+  const seedString = String(staff_id || u.username || u.id || 'user').toLowerCase();
+  let deterministicHash = 0;
+  for (let i = 0; i < seedString.length; i++) {
+    deterministicHash = (deterministicHash << 5) - deterministicHash + seedString.charCodeAt(i);
+    deterministicHash |= 0;
+  }
+  const deterministicFallbackId = (Math.abs(deterministicHash) % 899999) + 100000;
+
   const uniqueNumericId =
     typeof u.id === 'number' && !isNaN(u.id) && u.id > 0
       ? u.id
       : !isNaN(parsedNumFromStaffId) && parsedNumFromStaffId > 0
       ? parsedNumFromStaffId
-      : Math.floor(Math.random() * 899999) + 100000;
+      : deterministicFallbackId;
 
   // Role-based duty status resolution
   let dutyStatus: 'ON_DUTY' | 'OFF_DUTY' = 'ON_DUTY';

@@ -157,6 +157,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
 
   // Sync and filter localStaffList when staff prop changes
   useEffect(() => {
+    if (!isOpen) return;
     const activeStaff = staff.filter((s) => {
       const sStatus = String((s as any).status || '').toUpperCase();
       if (sStatus === 'TERMINATED' || sStatus === 'DELETED') return false;
@@ -164,7 +165,7 @@ export const StaffManagementModal: React.FC<StaffManagementModalProps> = ({
       return s.active !== false && sStatus !== 'DISABLED';
     });
     setLocalStaffList(filterByRBAC(activeStaff));
-  }, [staff, currentUser, currentUserRole]);
+  }, [isOpen, staff, currentUser?.id, currentUser?.staff_id, currentUserRole]);
 
   // Real-time synchronization: Force Roster to re-fetch and sync state immediately
   // whenever staff or users are added, updated, or deleted
