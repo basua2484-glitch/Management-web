@@ -37,6 +37,7 @@ import type {
   GeofenceConfig,
   Tenant,
   TaskItem,
+  HospitalSite,
 } from '../types';
 import { createPasswordHash } from './vaultService';
 import {
@@ -65,6 +66,7 @@ export const COLLECTIONS = {
   AUDIT_LOGS: 'audit_logs',
   TENANTS: 'tenants',
   TASKS: 'tasks',
+  SITES: 'sites',
 } as const;
 
 export enum OperationType {
@@ -1359,6 +1361,122 @@ export function subscribeToLiveStaff(
   } catch (e) {
     console.warn('Staff subscription error:', e);
     return () => {};
+  }
+}
+
+/**
+ * Create or save an operational site in Firestore 'sites' collection
+ * Gracefully handles optional fields like 'physical_address' and 'assigned_manager'
+ * Automatically attaches active user's tenant/organization ID to the document
+ */
+export async function createLiveSite(siteData: Partial<HospitalSite> & {
+  site_name?: string;
+  name?: string;
+  physical_address?: string | null;
+  assigned_manager?: string | null;
+}): Promise<HospitalSite> {
+  const activeTid = siteData.tenant_id || siteData.tenantId || getActiveTenantId();
+  const siteName = (siteData.site_name || siteData.siteName || siteData.name || '').trim();
+  if (!siteName) {
+    throw new Error('Site name is required.');
+  }
+
+  const siteId = siteData.id || siteData.siteId || crypto.randomUUID();
+  const physicalAddress = (siteData.physical_address || siteData.address || '').trim() || null;
+  const assignedManager = (siteData.assigned_manager || siteData.primary_manager_id || siteData.primaryManagerId || '').trim() || null;
+
+  const siteDoc: HospitalSite = {
+    id: siteId,
+    siteId: siteId,
+    name: siteName,
+    siteName: siteName,
+    code: siteName.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+    industry_type: (siteData.industry_type || siteData.industryType || 'HOSPITAL').toUpperCase() as any,
+    address: physicalAddress || 'Metro Region',
+    locationLat: Number(siteData.locationLat ?? siteData.location_lat ?? 19.0760),
+    locationLng: Number(siteData.locationLng ?? siteData.location_lng ?? 72.8777),
+    radiusMeters: Number(siteData.radiusMeters ?? siteData.radius_meters ?? 100),
+    primaryManagerId: assignedManager,
+    tenant_id: activeTid,
+    tenantId: activeTid,
+  };
+
+  const firestorePayload = sanitizeFirestorePayload({
+    ...siteDoc,
+    site_name: siteName,
+    physical_address: physicalAddress,
+    assigned_manager: assignedManager,
+    location_lat: siteDoc.locationLat,
+    location_lng: siteDoc.locationLng,
+    radius_meters: siteDoc.radiusMeters,
+    primary_manager_id: assignedManager,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  if (db) {
+    try {
+      await setDoc(doc(db, COLLECTIONS.SITES, siteId), firestorePayload, { merge: true });
+    } catch (fbErr: any) {
+      console.error('[FirestoreService] Error saving site to Firestore collection "sites":', fbErr);
+      handleFirestoreError(fbErr, OperationType.WRITE, `sites/${siteId}`);
+      throw fbErr;
+    }
+  }
+
+  return siteDoc;
+}
+
+/**
+ * Fetch all operational sites from Live Firestore scoped by tenant
+ */
+export async function fetchLiveSites(tenantId?: string): Promise<HospitalSite[]> {
+  const tid = tenantId || getActiveTenantId();
+  if (!db) return [];
+
+  try {
+    const baseRef = collection(db, COLLECTIONS.SITES);
+    const q = tid && tid !== 'ALL' && tid !== 'GLOBAL'
+      ? query(baseRef, where('tenant_id', '==', tid))
+      : query(baseRef);
+    const snap = await getDocs(q);
+    if (snap.empty) return [];
+
+    const sites: HospitalSite[] = [];
+    snap.forEach((d) => {
+      const data = d.data();
+      sites.push({
+        id: data.id || d.id,
+        siteId: data.siteId || data.id || d.id,
+        name: data.site_name || data.name || 'Operational Site',
+        siteName: data.site_name || data.name || 'Operational Site',
+        code: data.code || (data.site_name || data.name || '').replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+        industry_type: data.industry_type || data.industryType || 'HOSPITAL',
+        address: data.physical_address || data.address || 'Metro Region',
+        locationLat: Number(data.location_lat ?? data.locationLat ?? 19.0760),
+        locationLng: Number(data.location_lng ?? data.locationLng ?? 72.8777),
+        radiusMeters: Number(data.radius_meters ?? data.radiusMeters ?? 100),
+        primaryManagerId: data.assigned_manager || data.primary_manager_id || null,
+        tenant_id: data.tenant_id || tid,
+        tenantId: data.tenant_id || tid,
+      });
+    });
+    return sites;
+  } catch (err) {
+    console.warn('Error fetching live sites from Firestore:', err);
+    return [];
+  }
+}
+
+/**
+ * Delete site from Live Firestore
+ */
+export async function deleteLiveSite(siteId: string): Promise<void> {
+  if (!db) return;
+  try {
+    await deleteDoc(doc(db, COLLECTIONS.SITES, siteId));
+  } catch (err) {
+    console.warn('Error deleting site from Firestore:', err);
   }
 }
 

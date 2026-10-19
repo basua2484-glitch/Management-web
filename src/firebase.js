@@ -15,6 +15,7 @@ import {
   persistentMultipleTabManager,
   enableIndexedDbPersistence,
   doc,
+  getDoc,
   getDocFromServer,
   setLogLevel
 } from 'firebase/firestore';
@@ -81,13 +82,13 @@ export async function testFirestoreConnection() {
   if (!currentDb) return { ok: false, latency: 0 };
   const start = Date.now();
   try {
-    await getDocFromServer(doc(currentDb, 'system_settings', 'config'));
-    return { ok: true, latency: Math.max(1, Date.now() - start) };
+    const snap = await getDoc(doc(currentDb, 'system_settings', 'config'));
+    return { ok: true, latency: Math.max(1, Date.now() - start), exists: snap.exists() };
   } catch (error) {
     if (error && typeof error === 'object' && error.message && error.message.includes('the client is offline')) {
       return { ok: false, latency: 0 };
     }
-    // Any server response (document exists, not found, or rule evaluation) confirms cloud connectivity
+    // Any server or permission response confirms database cloud connectivity
     return { ok: true, latency: Math.max(1, Date.now() - start) };
   }
 }

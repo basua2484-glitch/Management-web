@@ -1219,11 +1219,22 @@ function attendanceApiPlugin(): Plugin {
               const body = JSON.parse(bodyStr || '{}');
               const siteName = (body.site_name || body.siteName || body.name || '').trim();
               const industryType = (body.industry_type || body.industryType || 'HOSPITAL').toUpperCase();
-              const address = (body.address || '').trim();
+              const address = (body.address || body.physical_address || '').trim();
+              const physicalAddress = (body.physical_address || body.address || '').trim() || null;
               const locationLat = Number(body.location_lat || body.locationLat || body.latitude) || 19.0760;
               const locationLng = Number(body.location_lng || body.locationLng || body.longitude) || 72.8777;
               const radiusMeters = Number(body.radius_meters || body.radiusMeters || body.radius) || 100;
-              const primaryManagerId = body.primary_manager_id || body.primaryManagerId || null;
+              const primaryManagerId = (body.primary_manager_id || body.primaryManagerId || body.assigned_manager || body.assigned_manager_id || '').trim() || null;
+              const assignedManager = primaryManagerId;
+
+              // Automatically attach active user's tenant/organization ID from header or body
+              const tenantId = (
+                (req.headers['x-tenant-id'] as string) ||
+                (req.headers['x-organization-id'] as string) ||
+                body.tenant_id ||
+                body.tenantId ||
+                'APEX'
+              ).trim();
 
               if (!siteName) {
                 res.statusCode = 400;
@@ -1231,21 +1242,35 @@ function attendanceApiPlugin(): Plugin {
                 return;
               }
 
-              const newId = crypto.randomUUID();
+              const newId = body.id || body.siteId || crypto.randomUUID();
               const newSite = {
                 id: newId,
-                tenant_id: '00000000-0000-0000-0000-000000000001',
+                siteId: newId,
+                tenant_id: tenantId,
+                tenantId: tenantId,
                 site_name: siteName,
+                name: siteName,
                 industry_type: industryType,
                 address,
+                physical_address: physicalAddress,
                 location_lat: locationLat,
                 location_lng: locationLng,
                 radius_meters: radiusMeters,
                 primary_manager_id: primaryManagerId,
+                assigned_manager: assignedManager,
                 created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
               };
 
-              dynamicSitesStore.push(newSite);
+              // Replace if existing or append
+              const existingIdx = dynamicSitesStore.findIndex(
+                (s) => s.id === newId || (s.site_name && s.site_name.toLowerCase() === siteName.toLowerCase())
+              );
+              if (existingIdx >= 0) {
+                dynamicSitesStore[existingIdx] = { ...dynamicSitesStore[existingIdx], ...newSite };
+              } else {
+                dynamicSitesStore.push(newSite);
+              }
 
               const formattedSite = {
                 ...newSite,
@@ -1258,6 +1283,7 @@ function attendanceApiPlugin(): Plugin {
                 locationLng,
                 radiusMeters,
                 primaryManagerId,
+                assignedManager,
               };
 
               broadcastToAll({

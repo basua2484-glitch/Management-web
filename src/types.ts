@@ -169,6 +169,15 @@ export interface HospitalSite {
   radiusMeters?: number;
   primaryManagerId?: string | null;
   primary_manager_id?: string | null;
+  assigned_manager?: string | null;
+  physical_address?: string | null;
+  tenant_id?: string;
+  tenantId?: string;
+  location_lat?: number;
+  location_lng?: number;
+  radius_meters?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 /**

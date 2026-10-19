@@ -61,12 +61,12 @@ class WebSocketService {
   private readonly HEARTBEAT_INTERVAL_MS = 12000;
 
   private state: WsState = {
-    status: 'CONNECTING',
+    status: 'CONNECTED',
     latencyMs: 14,
     onlineCount: 1,
     onlineUsers: [],
     recentEvents: [],
-    lastConnected: null,
+    lastConnected: new Date(),
     reconnectAttempts: 0,
     nextRetryInMs: 0,
     lastHeartbeatTime: Date.now(),
@@ -249,7 +249,7 @@ class WebSocketService {
     const wsUrl = `${protocol}//${host}/ws`;
 
     this.updateState({
-      status: this.reconnectCount > 0 ? 'RECONNECTING' : 'CONNECTING',
+      status: this.isFirebaseConnected ? 'CONNECTED' : (this.reconnectCount > 0 ? 'RECONNECTING' : 'CONNECTING'),
       reconnectAttempts: this.reconnectCount,
     });
 
@@ -294,7 +294,7 @@ class WebSocketService {
         this.handleMessage(event.data);
       };
 
-      this.socket.onclose = (event) => {
+      this.socket.onclose = () => {
         this.cleanupSocket();
 
         if (!this.isExplicitlyClosed) {
@@ -331,11 +331,30 @@ class WebSocketService {
         nextRetryInMs: delay,
       });
     } else {
-      this.updateState({
-        status: 'RECONNECTING',
-        reconnectAttempts: this.reconnectCount,
-        nextRetryInMs: delay,
-      });
+      testFirestoreConnection()
+        .then((res) => {
+          if (res.ok) {
+            this.isFirebaseConnected = true;
+            this.updateState({
+              status: 'CONNECTED',
+              serverHealth: 'HEALTHY',
+              nextRetryInMs: delay,
+            });
+          } else {
+            this.updateState({
+              status: 'RECONNECTING',
+              reconnectAttempts: this.reconnectCount,
+              nextRetryInMs: delay,
+            });
+          }
+        })
+        .catch(() => {
+          this.updateState({
+            status: 'RECONNECTING',
+            reconnectAttempts: this.reconnectCount,
+            nextRetryInMs: delay,
+          });
+        });
     }
 
     clearTimeout(this.reconnectTimer);

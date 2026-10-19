@@ -226,14 +226,18 @@ app.get('/api/sites', (req, res) => {
         siteId: s.id,
         name: s.name || s.site_name,
         siteName: s.site_name || s.name,
-        location: s.location || s.address || `${s.location_lat}, ${s.location_lng}`,
-        address: s.address || s.location || 'Metro Region',
-        code: (s.name || s.site_name).replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
+        location: s.location || s.physical_address || s.address || `${s.location_lat}, ${s.location_lng}`,
+        address: s.address || s.physical_address || s.location || 'Metro Region',
+        physical_address: s.physical_address || s.address || null,
+        code: (s.name || s.site_name || '').replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
         city: 'Metro Region',
-        locationLat: s.location_lat,
-        locationLng: s.location_lng,
-        radiusMeters: s.radius_meters,
-        primaryManagerId: s.primary_manager_id,
+        locationLat: Number(s.location_lat ?? s.locationLat ?? 19.0760),
+        locationLng: Number(s.location_lng ?? s.locationLng ?? 72.8777),
+        radiusMeters: Number(s.radius_meters ?? s.radiusMeters ?? 100),
+        primaryManagerId: s.primary_manager_id || s.assigned_manager || null,
+        assigned_manager: s.assigned_manager || s.primary_manager_id || null,
+        tenant_id: s.tenant_id || s.tenantId || 'APEX',
+        tenantId: s.tenant_id || s.tenantId || 'APEX',
       })),
     });
   } catch (err: any) {
@@ -241,37 +245,62 @@ app.get('/api/sites', (req, res) => {
   }
 });
 
-// POST /api/sites - Save new site into Postgres 'sites' table
+// POST /api/sites - Save new site into Postgres 'sites' table / dynamic store
 app.post('/api/sites', (req, res) => {
   try {
     const body = req.body || {};
     const siteName = (body.site_name || body.siteName || body.name || '').trim();
     const industryType = (body.industry_type || body.industryType || 'HOSPITAL').toUpperCase();
-    const address = (body.address || '').trim();
+    const address = (body.address || body.physical_address || '').trim();
+    const physicalAddress = (body.physical_address || body.address || '').trim() || null;
     const locationLat = Number(body.location_lat || body.locationLat || body.latitude) || 19.0760;
     const locationLng = Number(body.location_lng || body.locationLng || body.longitude) || 72.8777;
     const radiusMeters = Number(body.radius_meters || body.radiusMeters || body.radius) || 100;
-    const primaryManagerId = body.primary_manager_id || body.primaryManagerId || null;
+    const primaryManagerId = (body.primary_manager_id || body.primaryManagerId || body.assigned_manager || body.assigned_manager_id || '').trim() || null;
+    const assignedManager = primaryManagerId;
+
+    // Automatically attach active user's tenant/organization ID from header or body
+    const tenantId = (
+      (req.headers['x-tenant-id'] as string) ||
+      (req.headers['x-organization-id'] as string) ||
+      body.tenant_id ||
+      body.tenantId ||
+      'APEX'
+    ).trim();
 
     if (!siteName) {
-      return res.status(400).json({ success: false, error: 'Site name is required' });
+      return res.status(400).json({ success: false, error: 'Site name is required.' });
     }
 
-    const newId = crypto.randomUUID();
+    const newId = body.id || body.siteId || crypto.randomUUID();
     const newSiteRecord = {
       id: newId,
-      tenant_id: '00000000-0000-0000-0000-000000000001',
+      siteId: newId,
+      tenant_id: tenantId,
+      tenantId: tenantId,
       site_name: siteName,
+      name: siteName,
       industry_type: industryType,
       address,
+      physical_address: physicalAddress,
       location_lat: locationLat,
       location_lng: locationLng,
       radius_meters: radiusMeters,
       primary_manager_id: primaryManagerId,
+      assigned_manager: assignedManager,
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    dynamicSitesStore.push(newSiteRecord);
+    // Replace if existing or append
+    const existingIdx = dynamicSitesStore.findIndex(
+      (s) => s.id === newId || (s.site_name && s.site_name.toLowerCase() === siteName.toLowerCase())
+    );
+    if (existingIdx >= 0) {
+      dynamicSitesStore[existingIdx] = { ...dynamicSitesStore[existingIdx], ...newSiteRecord };
+    } else {
+      dynamicSitesStore.push(newSiteRecord);
+    }
 
     const formattedSite = {
       ...newSiteRecord,
@@ -284,6 +313,7 @@ app.post('/api/sites', (req, res) => {
       locationLng,
       radiusMeters,
       primaryManagerId,
+      assignedManager,
     };
 
     broadcastToAll({
@@ -294,11 +324,12 @@ app.post('/api/sites', (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: `Site ${siteName} created successfully with GPS geofence`,
+      message: `Site "${siteName}" created successfully with GPS geofence`,
       site: formattedSite,
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err?.message || 'Failed to create site' });
+    console.error('[server.ts] Failed to save new site to database:', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to save new site to database.' });
   }
 });
 

@@ -105,6 +105,27 @@
         "is_active": { "type": "boolean" }
       },
       "required": ["session_id", "user_id", "is_active"]
+    },
+    "sites": {
+      "title": "sites",
+      "description": "Hospital operational sites with GPS coordinates, geofence radius, and assigned managers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "site_name": { "type": "string" },
+        "name": { "type": "string" },
+        "tenant_id": { "type": "string" },
+        "industry_type": { "type": "string" },
+        "address": { "type": "string" },
+        "physical_address": { "type": "string" },
+        "location_lat": { "type": "number" },
+        "location_lng": { "type": "number" },
+        "radius_meters": { "type": "number" },
+        "primary_manager_id": { "type": "string" },
+        "assigned_manager": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["site_name"]
     }
   }
 }

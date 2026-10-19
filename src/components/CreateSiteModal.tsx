@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import type { HospitalSite, AppUser, IndustryType } from '../types';
 import { DeleteConfirmationModal } from './DeleteConfirmationModal';
+import { useAuth } from '../context/AuthContext';
+import { createLiveSite } from '../services/firestoreService';
 
 export interface CreateSiteModalProps {
   isOpen: boolean;
@@ -32,6 +34,16 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
   existingSites = [],
   availableManagers = [],
 }) => {
+  const { user: authUser, tenantId: authTenantId } = useAuth();
+  const activeTenantId =
+    authTenantId ||
+    authUser?.tenant_id ||
+    authUser?.tenantId ||
+    (typeof localStorage !== 'undefined'
+      ? localStorage.getItem('tenant_id') || localStorage.getItem('company_code')
+      : '') ||
+    'APEX';
+
   const [activeTab, setActiveTab] = useState<'create' | 'manage'>('create');
   const [siteName, setSiteName] = useState('');
   const [industryType, setIndustryType] = useState<IndustryType>('HOSPITAL');
@@ -114,40 +126,105 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
 
     setIsSubmitting(true);
     try {
+      const cleanAddress = address.trim() || '';
+      const cleanManager = primaryManagerId.trim() || null;
+
       const payload = {
         site_name: trimmedName,
+        siteName: trimmedName,
+        name: trimmedName,
         industry_type: industryType,
-        address: address.trim(),
+        address: cleanAddress,
+        physical_address: cleanAddress || null,
         location_lat: latNum,
         location_lng: lngNum,
         radius_meters: radiusMeters,
-        primary_manager_id: primaryManagerId || null,
+        primary_manager_id: cleanManager,
+        assigned_manager: cleanManager,
+        tenant_id: activeTenantId,
+        tenantId: activeTenantId,
       };
 
-      const res = await fetch('/api/sites', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      let apiSuccess = false;
+      let createdSite: HospitalSite | null = null;
+      let apiErrorMessage = '';
 
-      const data = await res.json().catch(() => null);
+      // 1. Submit to Backend Site Creation Route
+      try {
+        const res = await fetch('/api/sites', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-tenant-id': activeTenantId,
+            'x-user-role': authUser?.role || '',
+          },
+          body: JSON.stringify(payload),
+        });
 
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Failed to save new site to database.');
+        const data = await res.json().catch(() => null);
+
+        if (res.ok && data?.success) {
+          apiSuccess = true;
+          createdSite = data.site;
+        } else {
+          apiErrorMessage =
+            data?.error ||
+            data?.message ||
+            data?.details ||
+            `HTTP ${res.status}: ${res.statusText || 'Failed to save site'}`;
+        }
+      } catch (fetchErr: any) {
+        apiErrorMessage = fetchErr?.message || 'Network request failed';
       }
 
-      const createdSite: HospitalSite = data.site || {
+      // 2. Direct Firestore Creation in 'sites' collection
+      try {
+        const firestoreSite = await createLiveSite({
+          id: createdSite?.id,
+          siteId: createdSite?.siteId,
+          site_name: trimmedName,
+          name: trimmedName,
+          industry_type: industryType,
+          address: cleanAddress,
+          physical_address: cleanAddress || null,
+          location_lat: latNum,
+          location_lng: lngNum,
+          radius_meters: radiusMeters,
+          primary_manager_id: cleanManager,
+          assigned_manager: cleanManager,
+          tenant_id: activeTenantId,
+          tenantId: activeTenantId,
+        });
+
+        if (!createdSite) {
+          createdSite = firestoreSite;
+        }
+      } catch (fbErr: any) {
+        console.error('[CreateSiteModal] Firestore save error:', fbErr);
+        if (!apiSuccess) {
+          // If both backend and firestore failed, throw specific extracted error
+          const specificErrorMsg = fbErr?.message || apiErrorMessage || 'Failed to save new site to database.';
+          throw new Error(specificErrorMsg);
+        }
+      }
+
+      if (!createdSite && !apiSuccess) {
+        throw new Error(apiErrorMessage || 'Failed to save new site to database.');
+      }
+
+      const finalSite: HospitalSite = createdSite || {
         id: crypto.randomUUID(),
         siteId: crypto.randomUUID(),
         name: trimmedName,
         siteName: trimmedName,
         code: trimmedName.replace(/[^A-Za-z0-9]/g, '-').toUpperCase().slice(0, 10),
         industry_type: industryType,
-        address: address.trim(),
+        address: cleanAddress || 'Metro Region',
         locationLat: latNum,
         locationLng: lngNum,
         radiusMeters: radiusMeters,
-        primaryManagerId: primaryManagerId || null,
+        primaryManagerId: cleanManager,
+        tenant_id: activeTenantId,
       };
 
       setSuccessMessage(`Site "${trimmedName}" created and active with GPS geofence.`);
@@ -156,16 +233,42 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
       try {
         const stored = localStorage.getItem('hk_dynamic_sites');
         const list = stored ? JSON.parse(stored) : [];
-        list.push(createdSite);
+        list.push(finalSite);
         localStorage.setItem('hk_dynamic_sites', JSON.stringify(list));
       } catch {}
 
       setTimeout(() => {
-        onSiteCreated(createdSite);
+        onSiteCreated(finalSite);
         onClose();
       }, 700);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Error creating site.');
+      console.error('[CreateSiteModal] Submission error while saving new site:', err);
+      // Extract exact error message from response.data or err.message
+      let specificError = '';
+      if (err?.response?.data) {
+        specificError =
+          err.response.data.error ||
+          err.response.data.message ||
+          err.response.data.details ||
+          (typeof err.response.data === 'string' ? err.response.data : '');
+      }
+      if (!specificError && err?.message) {
+        try {
+          const parsed = JSON.parse(err.message);
+          specificError = parsed.error || parsed.message || parsed.details || err.message;
+        } catch {
+          specificError = err.message;
+        }
+      }
+      if (!specificError && typeof err === 'string') {
+        specificError = err;
+      }
+      const finalErrorMessage =
+        specificError && specificError !== '[object Object]'
+          ? specificError
+          : 'Failed to save new site to database: Connection or validation error.';
+
+      setErrorMessage(finalErrorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -307,9 +410,12 @@ export const CreateSiteModal: React.FC<CreateSiteModalProps> = ({
         {activeTab === 'create' && (
         <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
           {errorMessage && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
-              <span>{errorMessage}</span>
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-start gap-2.5">
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
+              <div className="flex-1 text-xs">
+                <span className="font-semibold block text-rose-900">Unable to Save Site:</span>
+                <span className="text-2xs text-rose-800 font-mono break-all">{errorMessage}</span>
+              </div>
             </div>
           )}
 

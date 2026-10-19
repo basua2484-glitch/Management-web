@@ -42,5 +42,11 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    // Operational Sites & GPS Geofence Configurations
+    match /sites/{siteId} {
+      allow read, create, update: if request.auth != null;
+      allow read, write: if true;
+    }
   }
 }
