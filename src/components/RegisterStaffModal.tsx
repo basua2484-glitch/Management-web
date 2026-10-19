@@ -13,6 +13,7 @@ interface RegisterStaffModalProps {
   currentUserSiteId?: string;
   currentUserSiteName?: string;
   sites?: HospitalSite[];
+  activeSiteFilter?: string;
   onStaffAccountCreated?: (slip: CredentialCardData) => void;
   onRegister: (data: {
     staff_id?: string;
@@ -29,7 +30,11 @@ interface RegisterStaffModalProps {
     is_temp_reliever?: boolean;
     temp_department?: string | null;
     siteId?: string;
+    site_id?: string;
     siteName?: string;
+    site_name?: string;
+    assigned_site?: string;
+    assigned_site_id?: string;
   }) => { success: boolean; message: string };
 }
 
@@ -41,6 +46,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   currentUserSiteId,
   currentUserSiteName,
   sites,
+  activeSiteFilter,
   onStaffAccountCreated,
   onRegister,
 }) => {
@@ -56,6 +62,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
   const [isTempReliever, setIsTempReliever] = useState(false);
   const [tempDepartment, setTempDepartment] = useState('');
   const [errorWarning, setErrorWarning] = useState<string | null>(null);
+  const [siteDropdownError, setSiteDropdownError] = useState<string | null>(null);
 
   const isManagerCreating = (currentUserRole || '').toLowerCase() === 'manager';
   const isAdminCreating = (currentUserRole || '').toLowerCase() === 'admin';
@@ -86,11 +93,35 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
     });
   }, [sites, companyPrefix]);
 
+  // Resolves the currently active site from the global site selector or tenant defaults
+  const getCandidateActiveSite = useMemo(() => {
+    return (): string => {
+      // 1. If currently active site filter is a specific site (not ALL or GLOBAL)
+      if (activeSiteFilter && activeSiteFilter !== 'ALL' && activeSiteFilter !== 'GLOBAL') {
+        const match = availableSites.find((s) => (s.siteId || s.id) === activeSiteFilter);
+        if (match) return match.siteId || match.id;
+      }
+      // 2. If current user has a specific assigned site
+      if (currentUserSiteId && currentUserSiteId !== 'ALL' && currentUserSiteId !== 'GLOBAL') {
+        return currentUserSiteId;
+      }
+      // 3. First available site from the tenant
+      if (availableSites.length > 0) {
+        return availableSites[0]?.siteId || availableSites[0]?.id || '';
+      }
+      // 4. Default tenant site
+      return companyPrefix ? `${companyPrefix}-MAIN-SITE` : '';
+    };
+  }, [activeSiteFilter, currentUserSiteId, availableSites, companyPrefix]);
+
   // Site selection state:
-  // Operations Manager creator: forces inheritance of their own siteId
-  // Master Admin creator: forces selection of site if creating Manager, or selection of site for others
+  // Pre-populates with candidate active site
   const [assignedSiteId, setAssignedSiteId] = useState<string>(() => {
     if (isManagerCreating && currentUserSiteId) return currentUserSiteId;
+    if (activeSiteFilter && activeSiteFilter !== 'ALL' && activeSiteFilter !== 'GLOBAL') {
+      const match = availableSites.find((s) => (s.siteId || s.id) === activeSiteFilter);
+      if (match) return match.siteId || match.id;
+    }
     return availableSites[0]?.siteId || availableSites[0]?.id || '';
   });
 
@@ -99,6 +130,37 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       setAssignedSiteId(currentUserSiteId);
     }
   }, [isManagerCreating, currentUserSiteId, isOpen]);
+
+  // When Admin changes Role dropdown to 'Manager', automatically pre-select
+  // the currently active site from the global site selector into the 'Assigned Site / Campus' field.
+  const handleRoleChange = (newRole: UserRole) => {
+    setRole(newRole);
+    setSiteDropdownError(null);
+
+    const isManagerTarget = newRole.toLowerCase() === 'manager' || (newRole as string).toLowerCase() === 'operations manager';
+    if (isManagerTarget) {
+      const defaultSite = getCandidateActiveSite();
+      if (defaultSite) {
+        setAssignedSiteId(defaultSite);
+        setSiteDropdownError(null);
+      }
+    }
+  };
+
+  // Pre-populate default site when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setErrorWarning(null);
+      setSiteDropdownError(null);
+      const isManagerTarget = role.toLowerCase() === 'manager' || (role as string).toLowerCase() === 'operations manager';
+      if (isManagerTarget && (!assignedSiteId || assignedSiteId === 'ALL' || assignedSiteId === 'GLOBAL')) {
+        const defaultSite = getCandidateActiveSite();
+        if (defaultSite) {
+          setAssignedSiteId(defaultSite);
+        }
+      }
+    }
+  }, [isOpen, role, getCandidateActiveSite]);
 
   // Auto-generate sequential unique ID whenever modal opens or role changes
   useEffect(() => {
@@ -134,15 +196,36 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       return;
     }
 
-    // When Master Admin creates an Operations Manager, force selection of an assigned 'Site'.
-    if (isAdminCreating && role === 'manager' && !assignedSiteId) {
-      setErrorWarning('Assigned Site / Campus is strictly mandatory when onboarding an Operations Manager.');
-      return;
+    // 1. Role-based Site mandate logic for Manager / Operations Manager:
+    const isManagerRole = role.toLowerCase() === 'manager' || (role as string).toLowerCase() === 'operations manager';
+    let targetSiteId = (assignedSiteId || '').trim();
+
+    if (isManagerRole) {
+      // If 'All Sites (Global)' or default site is active or empty, auto-assign the active tenant/site ID automatically to the payload so managers don't get blocked by false validation errors
+      if (!targetSiteId || targetSiteId === 'ALL' || targetSiteId === 'GLOBAL') {
+        const autoAssigned = getCandidateActiveSite();
+        if (autoAssigned) {
+          targetSiteId = autoAssigned;
+          setAssignedSiteId(autoAssigned);
+          setSiteDropdownError(null);
+        }
+      }
+
+      // If still missing a valid assigned site ID, show clear inline dropdown error and block submission
+      if (!targetSiteId || targetSiteId === 'ALL' || targetSiteId === 'GLOBAL') {
+        setSiteDropdownError('Please select a valid Assigned Site / Campus. Site assignment is mandatory for Operations Managers.');
+        setErrorWarning('Assigned Site / Campus is strictly mandatory when onboarding an Operations Manager.');
+        return;
+      }
     }
 
+    setSiteDropdownError(null);
+
     // When an Operations Manager creates a Supervisor or Staff, automatically inherit their active 'siteId'.
-    const finalSiteId = isManagerCreating ? (currentUserSiteId || '') : assignedSiteId;
-    const finalSiteName = isManagerCreating ? (currentUserSiteName || getSiteNameById(finalSiteId)) : getSiteNameById(finalSiteId);
+    const finalSiteId = isManagerCreating ? (currentUserSiteId || targetSiteId) : targetSiteId;
+    const finalSiteName = isManagerCreating
+      ? (currentUserSiteName || getSiteNameById(finalSiteId))
+      : (getSiteNameById(finalSiteId) || availableSites.find((s) => (s.siteId || s.id) === finalSiteId)?.name || 'Primary Facility');
 
     const result = onRegister({
       staff_id: regUsername,
@@ -159,7 +242,11 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
       is_temp_reliever: isTempReliever,
       temp_department: isTempReliever && tempDepartment.trim() ? tempDepartment.trim() : null,
       siteId: finalSiteId,
+      site_id: finalSiteId,
+      assigned_site: finalSiteId,
+      assigned_site_id: finalSiteId,
       siteName: finalSiteName,
+      site_name: finalSiteName,
     });
 
     if (!result.success) {
@@ -383,7 +470,7 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                     id="create-staff-role"
                     name="role"
                     value={role}
-                    onChange={(e) => setRole(e.target.value as UserRole)}
+                    onChange={(e) => handleRoleChange(e.target.value as UserRole)}
                     className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
                   >
                     <option value="staff">Staff ({companyPrefix}-STF-...)</option>
@@ -455,15 +542,45 @@ export const RegisterStaffModal: React.FC<RegisterStaffModalProps> = ({
                       name="site_id"
                       required={role === 'manager'}
                       value={assignedSiteId}
-                      onChange={(e) => setAssignedSiteId(e.target.value)}
-                      className="w-full rounded border border-white/10 bg-[#0D0D0E] px-3 py-2 text-xs text-white focus:border-[#00FF9C] focus:outline-hidden focus:ring-1 focus:ring-[#00FF9C]"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setAssignedSiteId(val);
+                        if (val && val !== 'ALL' && val !== 'GLOBAL') {
+                          setSiteDropdownError(null);
+                          if (errorWarning && errorWarning.includes('Assigned Site')) {
+                            setErrorWarning(null);
+                          }
+                        }
+                      }}
+                      className={`w-full rounded border px-3 py-2 text-xs text-white focus:outline-hidden focus:ring-1 ${
+                        siteDropdownError
+                          ? 'border-rose-500 bg-rose-950/20 focus:border-rose-500 focus:ring-rose-500 text-rose-100'
+                          : 'border-white/10 bg-[#0D0D0E] focus:border-[#00FF9C] focus:ring-[#00FF9C]'
+                      }`}
                     >
-                      {availableSites.map((s) => (
-                        <option key={s.siteId || s.id} value={s.siteId || s.id}>
-                          {s.siteName || s.name} ({s.code})
+                      {availableSites.length === 0 ? (
+                        <option value={companyPrefix ? `${companyPrefix}-MAIN-SITE` : 'MAIN-SITE'}>
+                          Default Site ({companyPrefix})
                         </option>
-                      ))}
+                      ) : (
+                        availableSites.map((s) => (
+                          <option key={s.siteId || s.id} value={s.siteId || s.id}>
+                            {s.siteName || s.name} ({s.code || s.siteId || s.id})
+                          </option>
+                        ))
+                      )}
                     </select>
+                    {/* Clear inline dropdown error */}
+                    {siteDropdownError && (
+                      <div
+                        id="assigned-site-inline-error"
+                        className="flex items-center gap-1.5 text-xs text-rose-400 mt-1.5 font-semibold bg-rose-950/50 p-2.5 rounded-lg border border-rose-800/60 animate-in fade-in"
+                        role="alert"
+                      >
+                        <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                        <span>{siteDropdownError}</span>
+                      </div>
+                    )}
                     <p className="text-3xs text-white/40 mt-1">
                       {role === 'manager'
                         ? 'Operations Manager will be strictly isolated and scoped to this site.'

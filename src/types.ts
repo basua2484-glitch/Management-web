@@ -401,6 +401,8 @@ export interface User {
   // Site Hierarchy & Scoping
   site_id?: string | null; // e.g. 'site-main', 'site-east', 'site-north'
   siteId?: string | null;
+  assigned_site?: string | null;
+  assigned_site_id?: string | null;
   site_name?: string | null;
   siteName?: string | null;
 
@@ -539,6 +541,8 @@ export interface StaffUser {
   shift: 'Morning' | 'Evening' | 'Night' | string;
   siteId?: string;
   site_id?: string;
+  assigned_site?: string;
+  assigned_site_id?: string;
   siteName?: string;
   site_name?: string;
   supervisorId?: string;

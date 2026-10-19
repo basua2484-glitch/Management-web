@@ -1800,8 +1800,27 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
     const companyPrefix = activeTenantPrefix;
     const activeTenantId = activeTenantPrefix;
 
-    const chosenSiteId = data.siteId || (isManager ? (currentUser?.siteId || currentUser?.site_id) : (effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL' ? effectiveSiteFilter : availableSites[0]?.siteId)) || availableSites[0]?.siteId || '';
-    const chosenSiteName = data.siteName || (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) || getSiteNameById(chosenSiteId);
+    const passedSiteId = data.siteId || (data as any).assigned_site || (data as any).site_id || (data as any).assigned_site_id || '';
+    const defaultSiteCandidate =
+      (effectiveSiteFilter !== 'ALL' && effectiveSiteFilter !== 'GLOBAL' ? effectiveSiteFilter : '') ||
+      availableSites[0]?.siteId ||
+      availableSites[0]?.id ||
+      `${activeTenantPrefix}-SITE-001`;
+
+    let chosenSiteId = passedSiteId;
+    if (isManager) {
+      chosenSiteId = currentUser?.siteId || currentUser?.site_id || defaultSiteCandidate;
+    } else if (!chosenSiteId || chosenSiteId === 'ALL' || chosenSiteId === 'GLOBAL') {
+      chosenSiteId = defaultSiteCandidate;
+    }
+
+    const chosenSiteName =
+      data.siteName ||
+      (data as any).site_name ||
+      (isManager ? (currentUser?.siteName || currentUser?.site_name) : getSiteNameById(chosenSiteId)) ||
+      getSiteNameById(chosenSiteId) ||
+      availableSites.find((s) => (s.siteId || s.id) === chosenSiteId)?.name ||
+      'Primary Hospital Facility';
 
     const newAppUser: AppUser = {
       id: newUserId,
@@ -1812,6 +1831,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       company_prefix: companyPrefix,
       siteId: chosenSiteId,
       site_id: chosenSiteId,
+      assigned_site: chosenSiteId,
+      assigned_site_id: chosenSiteId,
       siteName: chosenSiteName,
       site_name: chosenSiteName,
       documents: [], // Enforce empty initial state
@@ -1854,6 +1875,8 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
       company_prefix: companyPrefix,
       siteId: chosenSiteId,
       site_id: chosenSiteId,
+      assigned_site: chosenSiteId,
+      assigned_site_id: chosenSiteId,
       siteName: chosenSiteName,
       site_name: chosenSiteName,
       name: data.name.trim(),
@@ -2818,6 +2841,7 @@ export function DashboardPage({ defaultTab }: DashboardPageProps = {}) {
         currentUserSiteId={currentUser?.siteId || currentUser?.site_id}
         currentUserSiteName={currentUser?.siteName || currentUser?.site_name}
         sites={availableSites}
+        activeSiteFilter={effectiveSiteFilter}
         onStaffAccountCreated={(slip) => setActiveCredentialSlip(slip)}
         onRegister={handleCreateStaffAccount}
       />
